@@ -6,8 +6,14 @@ edition = "2018"
 
 [dependencies]
 smithay-client-toolkit = ""
-cairo-rs = ""
+cairo-rs = { version = "", features = ['png', 'svg'] }
 strfmt = ""
 wayland-protocols = ""
 wayland-client = ""
 calloop = ""
+pango = ""
+pangocairo = ""
+pango-sys = ""
+glib = ""
+chrono = ""
+chrono-tz = ""
