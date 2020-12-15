@@ -1,0 +1,13 @@
+[package]
+name = "rwaybar"
+version = "0.1.0"
+authors = ["Daniel De Graaf <code@danieldg.net>"]
+edition = "2018"
+
+[dependencies]
+smithay-client-toolkit = ""
+cairo-rs = ""
+strfmt = ""
+wayland-protocols = ""
+wayland-client = ""
+calloop = ""
