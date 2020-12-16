@@ -1,6 +1,6 @@
 use json::JsonValue;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration,Instant};
 
 enum Module {
     Clock {
@@ -57,15 +57,20 @@ impl DataSource {
         }
     }
 
-    pub fn update(&mut self, timer : &mut Option<Duration>, data : &mut HashMap<String, String>) {
+    pub fn update(&mut self, timer : &mut Option<Instant>, data : &mut HashMap<String, String>) {
         match &self.module {
             Module::Clock { format } => {
                 let now = chrono::Local::now();
 
                 // Set a timer to expire when the subsecond offset will be zero
                 let subsec = chrono::Timelike::nanosecond(&now) as u64;
-                let delay = 1_000_000_000u64.checked_sub(subsec);
-                *timer = Some(delay.map_or(Duration::from_secs(1), Duration::from_nanos));
+                // add another 1ms delay because epoll only gets 1ms granularity
+                let delay = 1_000_999_999u64.checked_sub(subsec);
+                let wake = Instant::now() + delay.map_or(Duration::from_secs(1), Duration::from_nanos);
+                match timer {
+                    Some(then) if wake > *then => {}
+                    _ => { *timer = Some(wake) }
+                }
 
                 let real_format = strfmt::strfmt(&format, data).unwrap();
 

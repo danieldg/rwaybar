@@ -2,6 +2,7 @@ use smithay_client_toolkit::environment::SimpleGlobal;
 use smithay_client_toolkit::{new_default_environment,default_environment};
 use smithay_client_toolkit::WaylandSource;
 use std::error::Error;
+use std::time::Instant;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client as layer_shell;
 
 use layer_shell::zwlr_layer_shell_v1::ZwlrLayerShellV1;
@@ -56,6 +57,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // everything else is event-triggered
     loop {
-        eloop.dispatch(None, &mut state)?;
+        let timeout = state.wake_at
+            .map(|alarm| alarm.saturating_duration_since(Instant::now()));
+        eloop.dispatch(timeout, &mut state)?;
+        if state.wake_at.map_or(false, |alarm| alarm <= Instant::now()) {
+            state.wake_at = None;
+            state.tick();
+        }
     }
 }

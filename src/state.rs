@@ -4,6 +4,7 @@ use smithay_client_toolkit::seat::SeatData;
 use smithay_client_toolkit::shm::MemPool;
 use std::collections::HashMap;
 use std::error::Error;
+use std::time::Instant;
 use wayland_client::Attached;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -97,7 +98,7 @@ impl Bar {
 
 pub struct State {
     pub eloop : calloop::LoopHandle<State>,
-    pub refresh_timer : calloop::timer::TimerHandle<()>,
+    pub wake_at : Option<Instant>,
     pub env : Environment<super::MyEnv>,
     pub ls : Attached<ZwlrLayerShellV1>,
     pub shm : MemPool,
@@ -113,12 +114,6 @@ impl State {
     pub fn new(env : Environment<super::MyEnv>, eloop : calloop::LoopHandle<State>, display : wayland_client::Display) -> Result<Self, Box<dyn Error>> {
         let shm = env.create_simple_pool(|_| ())?;
         let ls = env.require_global();
-        let timer = calloop::timer::Timer::new().unwrap();
-        let refresh_timer = timer.handle();
-
-        eloop.insert_source(timer, |_data, _timer_handle, state : &mut State| {
-            state.tick()
-        })?;
 
         let cfg = std::fs::read_to_string("rwaybar.json")?;
         let config = json::parse(&cfg)?;
@@ -135,8 +130,8 @@ impl State {
             env,
             ls,
             eloop,
-            refresh_timer,
             shm,
+            wake_at : None,
             bars : Vec::new(),
             display,
             sources,
@@ -300,12 +295,8 @@ impl State {
     }
 
     fn set_data(&mut self) {
-        let mut timer = None;
         for src in &mut self.sources {
-            src.update(&mut timer, &mut self.data);
-        }
-        if let Some(delay) = timer {
-            self.refresh_timer.add_timeout(delay, ());
+            src.update(&mut self.wake_at, &mut self.data);
         }
 
         // TODO maybe don't refresh all bars all the time?  Needs real dirty tracking.
@@ -314,7 +305,7 @@ impl State {
         }
     }
 
-    fn tick(&mut self) {
+    pub fn tick(&mut self) {
         self.set_data();
         self.draw().unwrap();
     }
