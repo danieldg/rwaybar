@@ -18,6 +18,7 @@ use layer_shell::zwlr_layer_surface_v1::Anchor;
 use layer_shell::zwlr_layer_surface_v1::Event as LayerSurfaceEvent;
 
 use crate::item::*;
+use crate::data::DataSource;
 
 struct Bar {
     surf : Attached<WlSurface>,
@@ -73,7 +74,7 @@ impl Bar {
         right.set_matrix(m);
         ctx.cairo.set_source(&right);
         ctx.cairo.paint();
-        
+
         let max_side = (self.width as f64 - cent_size.0) / 2.0;
         let total_room = self.width as f64 - (left_size.0 + right_size.0 + cent_size.0);
         if left_size.0 < max_side && right_size.0 < max_side {
@@ -102,6 +103,7 @@ pub struct State {
     pub shm : MemPool,
     bars : Vec<Bar>,
     pub display : wayland_client::Display,
+    pub sources : Vec<DataSource>,
     pub data : HashMap<String, String>,
     pub items : HashMap<String, Item>,
     pub config : JsonValue,
@@ -127,6 +129,8 @@ impl State {
             (key, value)
         }).collect();
 
+        let sources = config["vars"].entries().map(DataSource::new).collect();
+
         let mut state = Self {
             env,
             ls,
@@ -135,11 +139,15 @@ impl State {
             shm,
             bars : Vec::new(),
             display,
+            sources,
             data : HashMap::new(),
             items,
             config,
         };
 
+        for src in &mut state.sources {
+            src.init(&mut state.data);
+        }
         state.set_data();
         Ok(state)
     }
@@ -156,7 +164,7 @@ impl State {
             let len = if bar.dirty {
                 let stride = cairo::Format::ARgb32.stride_for_width(bar.width as u32).unwrap();
                 (bar.height as usize) * (stride as usize)
-            } else { 
+            } else {
                 0
             };
             shm_size += len;
@@ -240,7 +248,7 @@ impl State {
                 LayerSurfaceEvent::Closed => {
                     todo!();
                 },
-                _ => () 
+                _ => ()
             }
         });
 
@@ -292,16 +300,13 @@ impl State {
     }
 
     fn set_data(&mut self) {
-        let now = chrono::Local::now();
-
-        // Set a timer to expire when the subsecond offset will be zero
-        let subsec = chrono::Timelike::nanosecond(&now) as u64;
-        let delay = 1_000_000_000u64.checked_sub(subsec);
-        let delay = delay.map_or(std::time::Duration::from_secs(1), std::time::Duration::from_nanos);
-        self.refresh_timer.add_timeout(delay, ());
-
-        // TODO user-defined data sources
-        self.data.insert("time".into(), format!("{}", now.format("%H:%M:%S")));
+        let mut timer = None;
+        for src in &mut self.sources {
+            src.update(&mut timer, &mut self.data);
+        }
+        if let Some(delay) = timer {
+            self.refresh_timer.add_timeout(delay, ());
+        }
 
         // TODO maybe don't refresh all bars all the time?  Needs real dirty tracking.
         for bar in &mut self.bars {

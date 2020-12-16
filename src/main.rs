@@ -7,6 +7,7 @@ use wayland_protocols::wlr::unstable::layer_shell::v1::client as layer_shell;
 use layer_shell::zwlr_layer_shell_v1::ZwlrLayerShellV1;
 
 mod item;
+mod data;
 
 mod state;
 use state::State;
