@@ -120,6 +120,7 @@ pub struct State {
     pub runtime : Runtime,
     cursor : wayland_cursor::Cursor,
     cursor_surf : Attached<WlSurface>,
+    draw_pending : bool,
 }
 
 impl State {
@@ -165,10 +166,11 @@ impl State {
             config,
             cursor,
             cursor_surf,
+            draw_pending : false,
         };
 
         for src in &mut state.runtime.sources {
-            src.init(&mut state.runtime.vars);
+            src.init(&state.runtime.eloop, &mut state.runtime.vars);
         }
         state.set_data();
         Ok(state)
@@ -179,11 +181,18 @@ impl State {
         self.bars[id].height = height;
     }
 
-    fn draw(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn draw(&mut self) {
+        if !self.draw_pending {
+            self.draw_pending = true;
+            self.runtime.eloop.insert_idle(|state| state.draw_now().unwrap());
+        }
+    }
+
+    fn draw_now(&mut self) -> Result<(), Box<dyn Error>> {
         let mut shm_size = 0;
         let shm_pos : Vec<_> = self.bars.iter().map(|bar| {
             let pos = shm_size;
-            let len = if bar.dirty {
+            let len = if bar.dirty || self.draw_pending {
                 let stride = cairo::Format::ARgb32.stride_for_width(bar.width as u32).unwrap();
                 (bar.height as usize) * (stride as usize)
             } else {
@@ -192,6 +201,7 @@ impl State {
             shm_size += len;
             (pos, len)
         }).collect();
+        self.draw_pending = false;
 
         if shm_size == 0 {
             return Ok(());
@@ -227,7 +237,6 @@ impl State {
     }
 
     pub fn add_output(&mut self, output : &WlOutput, oi : &OutputInfo) {
-        dbg!(oi);
         // TODO use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1
         // to get wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_v1::Event
         // which has a better Name event
@@ -265,8 +274,8 @@ impl State {
                     ls_surf.ack_configure(serial);
                     if !state.bars[i].dirty {
                         state.bars[i].dirty = true;
-                        state.runtime.eloop.insert_idle(|state| state.draw().unwrap());
                     }
+                    state.draw();
                 }
                 LayerSurfaceEvent::Closed => {
                     todo!();
@@ -294,7 +303,6 @@ impl State {
     }
 
     pub fn add_seat(&mut self, seat : &Attached<WlSeat>, si : &SeatData) {
-        dbg!(seat, si);
         if si.has_pointer {
             let mouse = seat.get_pointer();
             let mut bar_idx = None;
@@ -393,6 +401,6 @@ impl State {
 
     pub fn tick(&mut self) {
         self.set_data();
-        self.draw().unwrap();
+        self.draw_now().unwrap();
     }
 }
