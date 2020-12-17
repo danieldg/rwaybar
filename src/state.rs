@@ -15,7 +15,7 @@ use wayland_protocols::wlr::unstable::layer_shell::v1::client as layer_shell;
 use wayland_protocols::xdg_shell::client::xdg_wm_base::XdgWmBase;
 use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1;
 use json::JsonValue;
-use log::{debug,info};
+use log::{debug,info,error};
 
 use layer_shell::zwlr_layer_shell_v1::{ZwlrLayerShellV1, Layer};
 use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
@@ -220,7 +220,7 @@ impl State {
     pub fn draw(&mut self) {
         if !self.draw_pending {
             self.draw_pending = true;
-            self.runtime.eloop.insert_idle(|state| state.draw_now().unwrap());
+            self.runtime.eloop.insert_idle(|state| state.draw_now().expect("Render error"));
         }
     }
 
@@ -342,10 +342,24 @@ impl State {
         let surf : Attached<_> = self.env.create_surface();
         let ls_surf = ls.get_layer_surface(&surf, Some(output), Layer::Top, "bar".to_owned());
 
-        // TODO load from cfg
-        ls_surf.set_size(0, 20);
-        ls_surf.set_anchor(Anchor::Top | Anchor::Left | Anchor::Right);
-//        ls_surf.set_exclusive_zone(20);
+        let size = cfg["size"].as_u32().unwrap_or(20);
+
+        match cfg["side"].as_str() {
+            Some("top") => {
+                ls_surf.set_size(0, size);
+                ls_surf.set_anchor(Anchor::Top | Anchor::Left | Anchor::Right);
+            }
+            None | Some("bottom") => {
+                ls_surf.set_size(0, size);
+                ls_surf.set_anchor(Anchor::Bottom | Anchor::Left | Anchor::Right);
+            }
+            Some(side) => {
+                error!("Unknown side '{}', defaulting to bottom", side);
+                ls_surf.set_size(0, size);
+                ls_surf.set_anchor(Anchor::Bottom | Anchor::Left | Anchor::Right);
+            }
+        }
+//        ls_surf.set_exclusive_zone(size);
         ls_surf.quick_assign(move |ls_surf, event, mut data| {
             let state : &mut State = data.get().unwrap();
             match event {
@@ -482,6 +496,6 @@ impl State {
 
     pub fn tick(&mut self) {
         self.set_data();
-        self.draw_now().unwrap();
+        self.draw_now().expect("Render error");
     }
 }

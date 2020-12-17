@@ -14,6 +14,7 @@ use libc;
 enum Module {
     Clock {
         format : String,
+        zone : String,
     },
     ReadFile {
         name : String,
@@ -38,7 +39,8 @@ impl Module {
         match value["module"].as_str() {
             Some("clock") => {
                 let format = value["format"].as_str().unwrap_or("%H:%M").to_owned();
-                Module::Clock { format }
+                let zone = value["timezone"].as_str().unwrap_or("").to_owned();
+                Module::Clock { format, zone }
             }
             Some("formatted") => {
                 let format = value["format"].as_str().unwrap_or_else(|| {
@@ -237,7 +239,7 @@ fn do_exec_json(eloop : &LoopHandle<State>, fd : i32, name : String) {
             }
         }
         Ok(())
-    }).unwrap();
+    }).expect("Error adding FD");
 }
 
 impl Variable {
@@ -284,8 +286,8 @@ impl Variable {
 
     pub fn update(&mut self, timer : &mut Option<Instant>, vars : &mut HashMap<String, String>) {
         match &mut self.module {
-            Module::Clock { format } => {
-                let now = chrono::Local::now();
+            Module::Clock { format, zone } => {
+                let now = chrono::Utc::now();
 
                 // Set a timer to expire when the subsecond offset will be zero
                 let subsec = chrono::Timelike::nanosecond(&now) as u64;
@@ -294,9 +296,29 @@ impl Variable {
                 let wake = Instant::now() + delay.map_or(Duration::from_secs(1), Duration::from_nanos);
                 set_wake_at(timer, wake);
 
-                let real_format = strfmt::strfmt(&format, vars).unwrap();
+                let real_format = strfmt::strfmt(&format, vars).unwrap_or_else(|e| {
+                    warn!("Error expanding clock format: {}", e);
+                    String::new()
+                });
+                let real_zone = strfmt::strfmt(&zone, vars).unwrap_or_else(|e| {
+                    warn!("Error expanding clock timezone format: {}", e);
+                    String::new()
+                });
+                let value = if real_zone.is_empty() {
+                    format!("{}", now.with_timezone(&chrono::Local).format(&real_format))
+                } else {
+                    match real_zone.parse::<chrono_tz::Tz>() {
+                        Ok(tz) => {
+                            format!("{}", now.with_timezone(&tz).format(&real_format))
+                        }
+                        Err(e) => {
+                            warn!("Could not find timezone '{}': {}", real_zone, e);
+                            String::new()
+                        }
+                    }
+                };
 
-                vars.insert(self.name.clone(), format!("{}", now.format(&real_format)));
+                vars.insert(self.name.clone(), value);
             }
             Module::ReadFile { name, poll, last_read } => {
                 let now = Instant::now();
@@ -325,7 +347,14 @@ impl Variable {
                 }
             }
             Module::Formatted { format } => {
-                vars.insert(self.name.clone(), strfmt::strfmt(&format, vars).unwrap());
+                match strfmt::strfmt(&format, vars) {
+                    Ok(value) => {
+                        vars.insert(self.name.clone(), value);
+                    }
+                    Err(e) => {
+                        warn!("Error expanding format for '{}': {}", self.name, e);
+                    }
+                }
             }
             Module::None |
             Module::ExecJson { .. } |

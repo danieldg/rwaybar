@@ -1,7 +1,7 @@
 use json::JsonValue;
 use crate::data::Action;
 use crate::state::Runtime;
-use log::error;
+use log::{warn,error};
 
 /// XXX hack for working around pango bugs
 struct Nop;
@@ -319,7 +319,7 @@ impl Item {
             Contents::Text { text, markup : false } => {
                 let text = strfmt::strfmt(&text, &ctx.runtime.vars)
                     .unwrap_or_else(|e| {
-                        error!("Error formatting text: {}", e);
+                        warn!("Error formatting text: {}", e);
                         "Error".into()
                     });
                 let attrs = pango::AttrList::new();
@@ -336,7 +336,7 @@ impl Item {
             Contents::Text { text, markup : true } => {
                 let text = strfmt::strfmt(&text, &ctx.runtime.vars)
                     .unwrap_or_else(|e| {
-                        error!("Error formatting text: {}", e);
+                        warn!("Error formatting text: {}", e);
                         "Error".into()
                     });
                 let (attrs, s) = match pango::parse_markup(&text, '\x01') {
@@ -354,7 +354,7 @@ impl Item {
                     let mut glyphs = pango::GlyphString::new();
                     let pa = item.analysis();
                     let ps = &s[item.offset() as usize .. (item.offset() + item.length()) as usize];
-                    // XXX this avoids a double-free bug in pango
+                    // XXX this avoids a double-free bug in the pango rust bindings
                     //
                     // pango_attr_iterator_get is "transfer none" but the rust get() uses from_glib_full
                     // https://developer.gnome.org/pango/unstable/pango-Text-Attributes.html#pango-attr-iterator-get
