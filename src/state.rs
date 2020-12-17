@@ -1,5 +1,4 @@
 use smithay_client_toolkit::environment::Environment;
-use smithay_client_toolkit::output::OutputInfo;
 use smithay_client_toolkit::seat::SeatData;
 use smithay_client_toolkit::shm::MemPool;
 use std::collections::HashMap;
@@ -13,11 +12,13 @@ use wayland_client::protocol::wl_pointer::Event as MouseEvent;
 use wayland_client::protocol::wl_pointer::{ButtonState,Axis};
 use wayland_client::protocol::wl_touch::Event as TouchEvent;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client as layer_shell;
+use wayland_protocols::xdg_shell::client::xdg_wm_base::XdgWmBase;
+use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1;
 use json::JsonValue;
-use log::debug;
+use log::{debug,info};
 
 use layer_shell::zwlr_layer_shell_v1::{ZwlrLayerShellV1, Layer};
-use layer_shell::zwlr_layer_surface_v1::Anchor;
+use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
 use layer_shell::zwlr_layer_surface_v1::Event as LayerSurfaceEvent;
 
 use crate::item::*;
@@ -25,6 +26,7 @@ use crate::data::Variable;
 
 struct Bar {
     surf : Attached<WlSurface>,
+    ls_surf : Attached<ZwlrLayerSurfaceV1>,
     sink : EventSink,
     width : i32,
     height : i32,
@@ -100,6 +102,29 @@ impl Bar {
         ctx.cairo.set_source(&cent);
         ctx.cairo.paint();
     }
+
+    #[allow(dead_code)] // TODO wire up
+    fn do_popup(&self, env : &Environment<super::Globals>) {
+        let surf = env.create_surface();
+        let wmb : Attached<XdgWmBase> = env.require_global();
+        let pos = wmb.create_positioner();
+/* TODO
+        pos.set_size(232, 87)
+        pos.set_anchor_rect(3614, -4, 122, 56) // gtk adds 4 pixels padding to the object
+        pos.set_offset(0, 0)
+        pos.set_anchor(2)
+        pos.set_gravity(2)
+        pos.set_constraint_adjustment(9)
+*/
+        let xdg_surf = wmb.get_xdg_surface(&surf);
+        let popup = xdg_surf.get_popup(None, &pos);
+        self.ls_surf.get_popup(&popup);
+        xdg_surf.set_window_geometry(0, 0, 100, 100);
+        surf.commit();
+        // TODO handle Configure on popup
+        // TODO handle Configure on surface by ACKing
+        // TODO actually draw something
+    }
 }
 
 pub struct Runtime {
@@ -110,12 +135,24 @@ pub struct Runtime {
     pub items : HashMap<String, Item>,
 }
 
+#[derive(Debug)]
+pub struct OutputData {
+    output : WlOutput,
+
+    pos_x : i32,
+    pos_y : i32,
+    size_x : i32,
+    size_y : i32,
+    name : String,
+    description: String,
+}
+
 pub struct State {
-    pub env : Environment<super::MyEnv>,
-    pub ls : Attached<ZwlrLayerShellV1>,
+    pub env : Environment<super::Globals>,
     pub shm : MemPool,
     bars : Vec<Bar>,
     pub display : wayland_client::Display,
+    pub outputs : Vec<OutputData>,
     pub config : JsonValue,
     pub runtime : Runtime,
     cursor : wayland_cursor::Cursor,
@@ -124,9 +161,8 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(env : Environment<super::MyEnv>, eloop : calloop::LoopHandle<State>, display : wayland_client::Display) -> Result<Self, Box<dyn Error>> {
+    pub fn new(env : Environment<super::Globals>, eloop : calloop::LoopHandle<State>, display : wayland_client::Display) -> Result<Self, Box<dyn Error>> {
         let shm = env.create_simple_pool(|_| ())?;
-        let ls = env.require_global();
 
         let cursor_shm = env.require_global();
         let mut cursor_theme = wayland_cursor::CursorTheme::load(32, &cursor_shm);
@@ -152,10 +188,10 @@ impl State {
 
         let mut state = Self {
             env,
-            ls,
             shm,
             bars : Vec::new(),
             display,
+            outputs : Vec::new(),
             runtime : Runtime {
                 eloop,
                 wake_at : None,
@@ -236,31 +272,75 @@ impl State {
         Ok(())
     }
 
-    pub fn add_output(&mut self, output : &WlOutput, oi : &OutputInfo) {
-        // TODO use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1
-        // to get wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_v1::Event
-        // which has a better Name event
-        for cfg in self.config["bars"].members() {
-            if let Some(id) = cfg["wl_id"].as_u32() {
-                if oi.id != id {
-                    continue;
-                }
+    pub fn add_output(&mut self, output : &WlOutput) {
+        for (i, data) in self.outputs.iter().enumerate() {
+            if data.output == *output {
+                self.output_ready(i);
+                return;
             }
-            if let Some(model) = cfg["model"].as_str() {
-                if model != &oi.model {
+        }
+        let i = self.outputs.len();
+        let mgr : Attached<ZxdgOutputManagerV1> = self.env.require_global();
+        let xdg_out = mgr.get_xdg_output(output);
+
+        xdg_out.quick_assign(move |_xdg_out, event, mut data| {
+            use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_v1::Event;
+            let state : &mut State = data.get().unwrap();
+            let data = &mut state.outputs[i];
+            match event {
+                Event::LogicalPosition { x, y } => {
+                    data.pos_x = x;
+                    data.pos_y = y;
+                }
+                Event::LogicalSize { width, height } => {
+                    data.size_x = width;
+                    data.size_y = height;
+                }
+                Event::Name { name } => {
+                    data.name = name;
+                }
+                Event::Description { description } => {
+                    data.description = description;
+                }
+                Event::Done => {
+                    state.output_ready(i);
+                }
+                _ => ()
+            }
+        });
+        self.outputs.push(OutputData {
+            output : output.clone(),
+            pos_x : 0,
+            pos_y : 0,
+            size_x : 0,
+            size_y : 0,
+            name : String::new(),
+            description: String::new(),
+        });
+    }
+
+    fn output_ready(&mut self, i : usize) {
+        let output = self.outputs[i].output.clone();
+        let data = &self.outputs[i];
+        info!("Output name='{}' description='{}' at {},{} {}x{}",
+            data.name, data.description, data.pos_x, data.pos_y, data.size_x, data.size_y);
+        for cfg in self.config["bars"].members() {
+            if let Some(name) = cfg["name"].as_str() {
+                if name != &data.name {
                     continue;
                 }
             }
 
-            let bar = self.new_bar(output, cfg);
+            let bar = self.new_bar(&output, cfg);
             self.bars.push(bar);
         }
     }
 
     fn new_bar(&self, output : &WlOutput, cfg : &JsonValue) -> Bar {
         let i = self.bars.len();
+        let ls : Attached<ZwlrLayerShellV1> = self.env.require_global();
         let surf : Attached<_> = self.env.create_surface();
-        let ls_surf = self.ls.get_layer_surface(&surf, Some(output), Layer::Top, "bar".to_owned());
+        let ls_surf = ls.get_layer_surface(&surf, Some(output), Layer::Top, "bar".to_owned());
 
         // TODO load from cfg
         ls_surf.set_size(0, 20);
@@ -292,6 +372,7 @@ impl State {
 
         Bar {
             surf,
+            ls_surf : ls_surf.into(),
             left,
             center,
             right,
