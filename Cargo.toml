@@ -5,16 +5,33 @@ authors = ["Daniel De Graaf <code@danieldg.net>"]
 edition = "2018"
 
 [dependencies]
+
+# Wayland
 smithay-client-toolkit = ""
-cairo-rs = { version = "", features = ['png', 'svg'] }
-strfmt = ""
 wayland-protocols = ""
 wayland-client = ""
-calloop = ""
-pango = ""
+wayland-cursor = ""
+
+# Drawing
+cairo-rs = { version = "", features = ['png'] }
 pangocairo = ""
+pango = ""
+# Bugfixes in pango
 pango-sys = ""
 glib = ""
+
+# icons
+gdk-pixbuf = ""
+
+# Runtime
+calloop = ""
 chrono = ""
 chrono-tz = ""
+env_logger = ""
 json = ""
+libc = ""
+log = ""
+strfmt = ""
+
+# TODO
+regex = ""

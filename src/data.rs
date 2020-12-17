@@ -1,7 +1,10 @@
 use json::JsonValue;
 use std::collections::HashMap;
 use std::time::{Duration,Instant};
+use log::{info,warn,error};
+use crate::state::Runtime;
 
+#[derive(Debug)]
 enum Module {
     Clock {
         format : String,
@@ -22,42 +25,130 @@ impl Module {
                 Module::Clock { format }
             }
             Some("formatted") => {
-                let format = value["format"].as_str().unwrap().to_owned();
+                let format = value["format"].as_str().unwrap_or_else(|| {
+                    error!("Formatted variables require a format: {}", value);
+                    ""
+                }).to_owned();
                 Module::Formatted { format }
             }
-            None if value.is_string() => {
-                Module::Value { value : value.as_str().unwrap().to_owned() }
+            None => {
+                if let Some(value) = value.as_str().map(String::from) {
+                    Module::Value { value }
+                } else {
+                    error!("Invalid module definition: {}", value);
+                    Module::Value { value : String::new() }
+                }
             }
-            _ => panic!("Unknown module in source: {}", value),
+            Some(m) => {
+                error!("Unknown module '{}' in variable definition", m);
+                Module::Value { value : String::new() }
+            }
         }
     }
 }
 
-pub struct DataSource {
+#[derive(Debug,Clone)]
+pub enum Action {
+    Exec { format : String },
+    Write { target : String, format : String },
+    List(Vec<Action>),
+    None,
+}
+
+impl Action {
+    pub fn from_json(value : &JsonValue) -> Self {
+        if value.is_array() {
+            return Action::List(value.members().map(Action::from_json).collect());
+        }
+        if let Some(dest) = value["write"].as_str().or_else(|| value["send"].as_str()) {
+            let format = value["format"].as_str()
+                .or_else(|| value["msg"].as_str())
+                .unwrap_or("").to_owned();
+            return Action::Write { target : dest.into(), format };
+        }
+        if let Some(cmd) = value["exec"].as_str() {
+            return Action::Exec { format : cmd.into() };
+        }
+        error!("Unknown action: {}", value);
+        Action::None
+    }
+
+    pub fn invoke(&self, runtime : &mut Runtime) {
+        match self {
+            Action::List(actions) => {
+                for action in actions {
+                    action.invoke(runtime);
+                }
+            }
+            Action::Write { target, format } => {
+                let value = match strfmt::strfmt(&format, &runtime.vars) {
+                    Ok(value) => value,
+                    Err(e) => {
+                        error!("Error expanding format for command: {}", e);
+                        return;
+                    }
+                };
+
+                let (name, key) = match target.find('.') {
+                    Some(p) => (&target[..p], &target[p + 1..]),
+                    None => (&target[..], ""),
+                };
+
+                match runtime.sources.iter_mut().find(|v| &v.name == name) {
+                    Some(var) => {
+                        var.write(key, value, &mut runtime.vars);
+                    }
+                    None => error!("Could not find variable {}", target),
+                }
+            }
+            Action::Exec { format } => {
+                match strfmt::strfmt(&format, &runtime.vars) {
+                    Ok(cmd) => {
+                        info!("Executing '{}'", cmd);
+                        let rv = std::process::Command::new("/bin/sh")
+                            .arg("-c").arg(cmd)
+                            .spawn();
+                        drop(rv);
+                    }
+                    Err(e) => {
+                        error!("Error expanding format for command: {}", e);
+                    }
+                }
+            }
+            Action::None => { info!("Invoked a no-op"); }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Variable {
     name : String,
     module : Module,
 }
 
-impl DataSource {
+impl Variable {
     pub fn new((key, value) : (&str, &JsonValue)) -> Self {
         let name = key.into();
+        if key.contains('.') {
+            warn!("Variable name '{}' contains a '.', may produce unexpected behavior", key);
+        }
         let module = Module::from_json(value);
-        DataSource {
+        Variable {
             name,
             module
         }
     }
 
-    pub fn init(&self, data : &mut HashMap<String, String>) {
+    pub fn init(&self, vars : &mut HashMap<String, String>) {
         match &self.module {
             Module::Value { value } => {
-                data.insert(self.name.clone(), value.clone());
+                vars.insert(self.name.clone(), value.clone());
             }
             _ => {}
         }
     }
 
-    pub fn update(&mut self, timer : &mut Option<Instant>, data : &mut HashMap<String, String>) {
+    pub fn update(&mut self, timer : &mut Option<Instant>, vars : &mut HashMap<String, String>) {
         match &self.module {
             Module::Clock { format } => {
                 let now = chrono::Local::now();
@@ -72,14 +163,25 @@ impl DataSource {
                     _ => { *timer = Some(wake) }
                 }
 
-                let real_format = strfmt::strfmt(&format, data).unwrap();
+                let real_format = strfmt::strfmt(&format, vars).unwrap();
 
-                data.insert(self.name.clone(), format!("{}", now.format(&real_format)));
+                vars.insert(self.name.clone(), format!("{}", now.format(&real_format)));
             }
             Module::Formatted { format } => {
-                data.insert(self.name.clone(), strfmt::strfmt(&format, data).unwrap());
+                vars.insert(self.name.clone(), strfmt::strfmt(&format, vars).unwrap());
             }
             Module::Value { .. } => {} // only assigns at init
+        }
+    }
+
+    pub fn write(&mut self, key : &str, value : String, vars : &mut HashMap<String, String>) {
+        match &self.module {
+            Module::Value { .. } if key == "" => {
+                vars.get_mut(&self.name).map(|v| *v = value);
+            }
+            _ => {
+                error!("Ignoring write to {}.{}", self.name, key);
+            }
         }
     }
 }

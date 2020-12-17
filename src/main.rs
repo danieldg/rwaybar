@@ -23,6 +23,12 @@ default_environment!(MyEnv,
 );
 
 fn main() -> Result<(), Box<dyn Error>> {
+    env_logger::init();
+
+    // Avoid producing zombies.  We don't need exit status, and can detect end-of-file on pipes to
+    // handle any respawning required.
+    unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN); }
+
     let mut eloop = calloop::EventLoop::new()?;
     let (env, display, wl_queue) = new_default_environment!(MyEnv,
         fields=[
@@ -57,11 +63,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // everything else is event-triggered
     loop {
-        let timeout = state.wake_at
+        let timeout = state.runtime.wake_at
             .map(|alarm| alarm.saturating_duration_since(Instant::now()));
         eloop.dispatch(timeout, &mut state)?;
-        if state.wake_at.map_or(false, |alarm| alarm <= Instant::now()) {
-            state.wake_at = None;
+        if state.runtime.wake_at.map_or(false, |alarm| alarm <= Instant::now()) {
+            state.runtime.wake_at = None;
             state.tick();
         }
     }

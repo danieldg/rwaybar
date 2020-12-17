@@ -10,19 +10,22 @@ use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::protocol::wl_pointer::Event as MouseEvent;
+use wayland_client::protocol::wl_pointer::{ButtonState,Axis};
 use wayland_client::protocol::wl_touch::Event as TouchEvent;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client as layer_shell;
 use json::JsonValue;
+use log::debug;
 
 use layer_shell::zwlr_layer_shell_v1::{ZwlrLayerShellV1, Layer};
 use layer_shell::zwlr_layer_surface_v1::Anchor;
 use layer_shell::zwlr_layer_surface_v1::Event as LayerSurfaceEvent;
 
 use crate::item::*;
-use crate::data::DataSource;
+use crate::data::Variable;
 
 struct Bar {
     surf : Attached<WlSurface>,
+    sink : EventSink,
     width : i32,
     height : i32,
     dirty : bool,
@@ -32,7 +35,7 @@ struct Bar {
 }
 
 impl Bar {
-    fn render(&self, surf : &cairo::ImageSurface, data : &HashMap<String, String>, items : &HashMap<String, Item>) {
+    fn render(&mut self, surf : &cairo::ImageSurface, runtime : &Runtime) {
         let ctx = cairo::Context::new(surf);
         let font = cairo::FontFace::toy_create("Liberation Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
         ctx.set_operator(cairo::Operator::Clear);
@@ -46,32 +49,36 @@ impl Bar {
         let ctx = Render {
             pango : pangocairo::create_context(&ctx).unwrap(),
             cairo : ctx,
-            data,
-            items,
+            runtime,
         };
 
         ctx.cairo.push_group();
         ctx.cairo.move_to(0.0, self.height as f64 * 0.8);
-        self.left.render(&ctx);
+        let mut left_ev = self.left.render(&ctx);
         let left_size = ctx.cairo.get_current_point();
         let left = ctx.cairo.pop_group();
 
         ctx.cairo.push_group();
         ctx.cairo.move_to(0.0, self.height as f64 * 0.8);
-        self.center.render(&ctx);
+        let mut cent_ev = self.center.render(&ctx);
         let cent_size = ctx.cairo.get_current_point();
         let cent = ctx.cairo.pop_group();
 
         ctx.cairo.push_group();
         ctx.cairo.move_to(0.0, self.height as f64 * 0.8);
-        self.right.render(&ctx);
+        let mut right_ev = self.right.render(&ctx);
         let right_size = ctx.cairo.get_current_point();
         let right = ctx.cairo.pop_group();
+
+        left_ev.offset_clamp(0.0, left_size.0);
+        self.sink = left_ev;
 
         ctx.cairo.set_source(&left);
         ctx.cairo.paint();
         let mut m = cairo::Matrix::identity();
         m.x0 = right_size.0 - (self.width as f64);
+        right_ev.offset_clamp(-m.x0, self.width as f64);
+        self.sink.merge(right_ev);
         right.set_matrix(m);
         ctx.cairo.set_source(&right);
         ctx.cairo.paint();
@@ -80,40 +87,56 @@ impl Bar {
         let total_room = self.width as f64 - (left_size.0 + right_size.0 + cent_size.0);
         if left_size.0 < max_side && right_size.0 < max_side {
             // Actually center the center module
-            let mut m = cairo::Matrix::identity();
             m.x0 = -max_side;
-            cent.set_matrix(m);
         } else if total_room >= 0.0 {
             // At least it will fit somewhere
-            let mut m = cairo::Matrix::identity();
             m.x0 = -(left_size.0 + total_room / 2.0);
-            cent.set_matrix(m);
         } else {
             return;
         }
+        cent.set_matrix(m);
+        cent_ev.offset_clamp(-m.x0, cent_size.0 - m.x0);
+        self.sink.merge(cent_ev);
         ctx.cairo.set_source(&cent);
         ctx.cairo.paint();
     }
 }
 
-pub struct State {
+pub struct Runtime {
     pub eloop : calloop::LoopHandle<State>,
     pub wake_at : Option<Instant>,
+    pub sources : Vec<Variable>,
+    pub vars : HashMap<String, String>,
+    pub items : HashMap<String, Item>,
+}
+
+pub struct State {
     pub env : Environment<super::MyEnv>,
     pub ls : Attached<ZwlrLayerShellV1>,
     pub shm : MemPool,
     bars : Vec<Bar>,
     pub display : wayland_client::Display,
-    pub sources : Vec<DataSource>,
-    pub data : HashMap<String, String>,
-    pub items : HashMap<String, Item>,
     pub config : JsonValue,
+    pub runtime : Runtime,
+    cursor : wayland_cursor::Cursor,
+    cursor_surf : Attached<WlSurface>,
 }
 
 impl State {
     pub fn new(env : Environment<super::MyEnv>, eloop : calloop::LoopHandle<State>, display : wayland_client::Display) -> Result<Self, Box<dyn Error>> {
         let shm = env.create_simple_pool(|_| ())?;
         let ls = env.require_global();
+
+        let cursor_shm = env.require_global();
+        let mut cursor_theme = wayland_cursor::CursorTheme::load(32, &cursor_shm);
+        let cursor = cursor_theme.get_cursor("default").expect("Could not load cursor, check XCURSOR_THEME").clone();
+
+        let cursor_surf = env.create_surface();
+        let cursor_img = &cursor[0];
+        let dim = cursor_img.dimensions();
+        cursor_surf.attach(Some(&cursor_img), 0, 0);
+        cursor_surf.damage_buffer(0, 0, dim.0 as _, dim.1 as _);
+        cursor_surf.commit();
 
         let cfg = std::fs::read_to_string("rwaybar.json")?;
         let config = json::parse(&cfg)?;
@@ -124,24 +147,28 @@ impl State {
             (key, value)
         }).collect();
 
-        let sources = config["vars"].entries().map(DataSource::new).collect();
+        let sources = config["vars"].entries().map(Variable::new).collect();
 
         let mut state = Self {
             env,
             ls,
-            eloop,
             shm,
-            wake_at : None,
             bars : Vec::new(),
             display,
-            sources,
-            data : HashMap::new(),
-            items,
+            runtime : Runtime {
+                eloop,
+                wake_at : None,
+                sources,
+                vars : HashMap::new(),
+                items,
+            },
             config,
+            cursor,
+            cursor_surf,
         };
 
-        for src in &mut state.sources {
-            src.init(&mut state.data);
+        for src in &mut state.runtime.sources {
+            src.init(&mut state.runtime.vars);
         }
         state.set_data();
         Ok(state)
@@ -184,7 +211,7 @@ impl State {
                 let buf : &'static mut [u8] = &mut *(buf as *mut [u8]);
                 let surf = cairo::ImageSurface::create_for_data(buf, cairo::Format::ARgb32, bar.width, bar.height, stride)?;
                 // safety: ImageSurface never gives out direct access to D
-                bar.render(&surf, &self.data, &self.items);
+                bar.render(&surf, &self.runtime);
                 // safety: we must finish the cairo surface to end the 'static borrow
                 surf.finish();
                 drop(surf);
@@ -226,9 +253,10 @@ impl State {
         let surf : Attached<_> = self.env.create_surface();
         let ls_surf = self.ls.get_layer_surface(&surf, Some(output), Layer::Top, "bar".to_owned());
 
+        // TODO load from cfg
         ls_surf.set_size(0, 20);
         ls_surf.set_anchor(Anchor::Top | Anchor::Left | Anchor::Right);
-        ls_surf.set_exclusive_zone(20);
+//        ls_surf.set_exclusive_zone(20);
         ls_surf.quick_assign(move |ls_surf, event, mut data| {
             let state : &mut State = data.get().unwrap();
             match event {
@@ -237,7 +265,7 @@ impl State {
                     ls_surf.ack_configure(serial);
                     if !state.bars[i].dirty {
                         state.bars[i].dirty = true;
-                        state.eloop.insert_idle(|state| state.draw().unwrap());
+                        state.runtime.eloop.insert_idle(|state| state.draw().unwrap());
                     }
                 }
                 LayerSurfaceEvent::Closed => {
@@ -260,6 +288,7 @@ impl State {
             right,
             width : 0,
             height : 0,
+            sink : EventSink::default(),
             dirty : false,
         }
     }
@@ -268,12 +297,63 @@ impl State {
         dbg!(seat, si);
         if si.has_pointer {
             let mouse = seat.get_pointer();
+            let mut bar_idx = None;
+            let mut x = 0.0;
+            let mut y = 0.0;
             mouse.quick_assign(move |mouse, event, mut data| {
                 let state : &mut State = data.get().unwrap();
-                drop((state, mouse));
-                match event {
-                    MouseEvent::Button { .. } => {
-                        dbg!(event);
+                match &event {
+                    MouseEvent::Enter { serial, surface, surface_x, surface_y, .. } => {
+                        let spot = state.cursor[0].hotspot();
+                        mouse.set_cursor(*serial, Some(&state.cursor_surf), spot.0 as _, spot.1 as _);
+
+                        for (i, bar) in state.bars.iter().enumerate() {
+                            if *surface == *bar.surf {
+                                bar_idx = Some(i);
+                                break;
+                            }
+                        }
+                        assert!(bar_idx.is_some());
+                        x = *surface_x;
+                        y = *surface_y;
+                    }
+                    MouseEvent::Motion { surface_x, surface_y, .. } => {
+                        x = *surface_x;
+                        y = *surface_y;
+                    }
+                    MouseEvent::Leave { surface, .. } => {
+                        if *surface == *state.bars[bar_idx.unwrap()].surf {
+                            bar_idx = None;
+                        }
+                    }
+                    &MouseEvent::Button {
+                        button, state : ButtonState::Pressed, ..
+                    } => {
+                        let button_id = match button {
+                            0x110 => 0, // BTN_LEFT
+                            0x111 => 1, // BTN_RIGHT
+                            0x112 => 2, // BTN_MIDDLE
+                            0x113 => 3, // BTN_SIDE or "back"
+                            0x114 => 4, // BTN_EXTRA or "forward"
+                            // note scrolling uses the next 4
+                            _ => {
+                                debug!("You can add events for this button ({})", button);
+                                return;
+                            }
+                        };
+                        state.bars[bar_idx.unwrap()].sink.button(x,y,button_id, &mut state.runtime);
+                    }
+                    &MouseEvent::Axis { axis, value, .. } => {
+                        dbg!(value);
+                        // TODO minimum scroll distance and/or rate?
+                        let button_id = match axis {
+                            Axis::VerticalScroll if value < 0.0 => 5, // up
+                            Axis::VerticalScroll if value > 0.0 => 6, // down
+                            Axis::HorizontalScroll if value < 0.0 => 7, // left
+                            Axis::HorizontalScroll if value > 0.0 => 8, // right
+                            _ => return,
+                        };
+                        state.bars[bar_idx.unwrap()].sink.button(x,y,button_id, &mut state.runtime);
                     }
                     _ => ()
                 }
@@ -283,10 +363,16 @@ impl State {
             let finger = seat.get_touch();
             finger.quick_assign(move |finger, event, mut data| {
                 let state : &mut State = data.get().unwrap();
-                drop((state, finger));
+                drop(finger);
                 match event {
-                    TouchEvent::Down { .. } => {
-                        dbg!(event);
+                    TouchEvent::Down { surface, x, y, .. } => {
+                        // TODO support gestures - wait for Up, detect Cancel
+                        for bar in &mut state.bars {
+                            if surface == *bar.surf {
+                                bar.sink.button(x,y,0, &mut state.runtime);
+                                break;
+                            }
+                        }
                     }
                     _ => ()
                 }
@@ -295,8 +381,8 @@ impl State {
     }
 
     fn set_data(&mut self) {
-        for src in &mut self.sources {
-            src.update(&mut self.wake_at, &mut self.data);
+        for src in &mut self.runtime.sources {
+            src.update(&mut self.runtime.wake_at, &mut self.runtime.vars);
         }
 
         // TODO maybe don't refresh all bars all the time?  Needs real dirty tracking.
