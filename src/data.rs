@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::time::{Duration,Instant};
 use libc;
 
+/// Wrapper around [std::cell::Cell] that implements [fmt::Debug].
 #[derive(Default)]
 struct Cell<T>(std::cell::Cell<T>);
 
@@ -42,6 +43,7 @@ impl<T> fmt::Debug for Cell<T> {
     }
 }
 
+/// Type-specific part of a [Variable]
 #[derive(Debug)]
 enum Module {
     Clock {
@@ -128,6 +130,7 @@ impl Module {
     }
 }
 
+/// Handler invoked by a click or touch event
 #[derive(Debug,Clone)]
 pub enum Action {
     Exec { format : String },
@@ -201,6 +204,12 @@ impl Action {
     }
 }
 
+/// A value or set of values usable in string expansions
+///
+/// The value of a variable may be the contents of a file or the output of a command; it may change
+/// while the bar is running.
+///
+/// Some types of variables allow an [Action] to write to the variable in response to clicks.
 #[derive(Debug)]
 pub struct Variable {
     module : Module,

@@ -26,6 +26,7 @@ use layer_shell::zwlr_layer_surface_v1::Event as LayerSurfaceEvent;
 use crate::item::*;
 use crate::data::Variable;
 
+/// A single taskbar on a single output
 struct Bar {
     surf : Attached<WlSurface>,
     ls_surf : Attached<ZwlrLayerSurfaceV1>,
@@ -39,11 +40,10 @@ struct Bar {
 impl Bar {
     fn render(&mut self, surf : &cairo::ImageSurface, runtime : &Runtime) {
         let ctx = cairo::Context::new(surf);
-        let font = pango::FontDescription::from_string("Liberation Sans 13"); // TODO config
+        let font = pango::FontDescription::new();
         ctx.set_operator(cairo::Operator::Clear);
         ctx.paint();
         ctx.set_operator(cairo::Operator::Over);
-        ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0);
         ctx.move_to(0.0, 0.0);
 
         let ctx = Render {
@@ -79,6 +79,7 @@ impl Bar {
     }
 }
 
+/// Common state available during rendering operations
 pub struct Runtime {
     pub eloop : calloop::LoopHandle<State>,
     pub wake_at : Cell<Option<Instant>>,
@@ -110,6 +111,7 @@ impl Runtime {
     }
 }
 
+/// Metadata on a [WlOutput]
 #[derive(Debug)]
 pub struct OutputData {
     output : WlOutput,
@@ -122,6 +124,7 @@ pub struct OutputData {
     description: String,
 }
 
+/// The singleton global state object bound to the calloop runner
 pub struct State {
     pub env : Environment<super::Globals>,
     pub shm : MemPool,

@@ -3,6 +3,7 @@ use crate::data::Action;
 use crate::state::Runtime;
 use log::{warn,error};
 
+/// State available to an [Item] render function
 #[derive(Clone,Copy)]
 pub struct Render<'a> {
     pub cairo : &'a cairo::Context,
@@ -11,7 +12,7 @@ pub struct Render<'a> {
 }
 
 #[derive(Debug,Clone,Copy,PartialEq)]
-pub enum Width {
+enum Width {
     /// Some fraction (0.0-1.0) of the total width
     Fraction(f64),
     /// Some number of pixels
@@ -19,24 +20,17 @@ pub enum Width {
 }
 
 impl Width {
-    pub fn from_json(value : &JsonValue) -> Option<Self> {
-        if let Some(w) = value.as_f64() {
-            if w > 1.0 {
-                return Some(Width::Pixels(w));
-            } else {
-                return Some(Width::Fraction(w));
-            }
+    pub fn from_str(mut value : String) -> Option<Self> {
+        if value.ends_with('%') {
+            value.pop();
+            let pct = value.parse::<f64>().ok()?;
+            return Some(Width::Fraction(pct / 100.0));
         }
-
-        if let Some(s) = value.as_str() {
-            if let Some(pos) = s.find('%') {
-                if let Ok(w) = s[..pos].parse::<f64>() {
-                    return Some(Width::Fraction(w / 100.0));
-                }
-            }
+        if value.contains('.') {
+            value.parse().ok().map(Width::Fraction)
+        } else {
+            value.parse().ok().map(Width::Pixels)
         }
-
-        None
     }
 }
 
@@ -48,29 +42,31 @@ pub enum Align {
 }
 
 impl Align {
-    pub fn from_json(value : &JsonValue) -> Option<Self> {
+    pub fn from_str(value : String) -> Option<Self> {
         match value.as_str() {
-            Some("left") => Some(Align::Left),
-            Some("right") => Some(Align::Right),
-            Some("center") => Some(Align::Center),
-            Some(x) => {
+            "left" => Some(Align::Left),
+            "right" => Some(Align::Right),
+            "center" => Some(Align::Center),
+            x => {
                 error!("Unknown alignment {}", x);
                 None
             }
-            None => None
         }
     }
 }
 
+/// A visible item in a bar
 #[derive(Debug)]
 pub struct Item {
-    format : Formatting,
+    fmt_config : json::object::Object,
     contents : Contents,
     events : EventSink,
 }
 
+/// Formatting information (colors, width, etc) for an [Item]
 #[derive(Debug,Clone,Default,PartialEq)]
 struct Formatting {
+    font : Option<String>,
     fg_rgba : Option<(u16, u16, u16, u16)>,
     bg_rgba : Option<(u16, u16, u16, u16)>,
     min_width : Option<Width>,
@@ -80,17 +76,48 @@ struct Formatting {
 }
 
 impl Formatting {
-    fn from_json(value : &JsonValue) -> Self {
-        let mut bg_rgba = None;
-        let mut fg_rgba = None;
-        let min_width = Width::from_json(&value["min_width"]);
-        let max_width = Width::from_json(&value["max_width"]);
-        let align = Align::from_json(&value["align"]);
-        let alpha = value["alpha"].as_f64().map(|f| {
+    fn filter_json(value : &JsonValue) -> json::object::Object {
+        let mut rv = json::object::Object::new();
+        if let JsonValue::Object(src) = value {
+            for key in &["font", "min_width", "max_width", "align", "alpha", "bg", "bg_alpha", "fg", "fg_alpha"] {
+                if let Some(v) = src.get(key) {
+                    rv.insert(key, v.clone());
+                }
+            }
+        }
+        rv
+    }
+
+    fn expand(obj : &json::object::Object, runtime : &Runtime) -> Self {
+        let get = |key| {
+            obj.get(key).and_then(|v| match v.as_str() {
+                Some(fmt) => runtime.format(&fmt).or_else(|e| {
+                    warn!("Error expanding '{}' when rendering: {}", fmt, e);
+                    Err(())
+                }).ok(),
+                None => Some(v.dump())
+            })
+        };
+
+        let get_f64 = |key| {
+            obj.get(key).and_then(|v| match v.as_str() {
+                Some(fmt) => runtime.format(&fmt).or_else(|e| {
+                    warn!("Error expanding '{}' when rendering: {}", fmt, e);
+                    Err(())
+                }).ok().and_then(|v| v.parse().ok()),
+                None => v.as_f64(),
+            })
+        };
+
+        let font = get("font");
+        let min_width = get("min_width").and_then(Width::from_str);
+        let max_width = get("max_width").and_then(Width::from_str);
+        let align = get("align").and_then(Align::from_str);
+        let alpha = get_f64("alpha").map(|f| {
             f64::min(65535.0, f64::max(0.0, f * 65535.0)) as u16
         });
 
-        if let Some(bg_str) = value["bg"].as_str() {
+        let bg_rgba = if let Some(bg_str) = get("bg") {
             let mut bg = pango_sys::PangoColor {
                 red : 0, blue : 0, green : 0
             };
@@ -98,12 +125,14 @@ impl Formatting {
             unsafe {
                 pango_sys::pango_color_parse(&mut bg, cstr.as_ptr());
             }
-            let alpha_f = value["bg_alpha"].as_f64().unwrap_or(1.0) * 65535.0;
+            let alpha_f = get_f64("bg_alpha").unwrap_or(1.0) * 65535.0;
             let bga = f64::min(65535.0, f64::max(0.0, alpha_f)) as u16;
-            bg_rgba = Some((bg.red, bg.green, bg.blue, bga));
-        }
+            Some((bg.red, bg.green, bg.blue, bga))
+        } else {
+            None
+        };
 
-        if let Some(fg_str) = value["fg"].as_str() {
+        let fg_rgba = if let Some(fg_str) = get("fg") {
             let mut fg = pango_sys::PangoColor {
                 red : 0, blue : 0, green : 0
             };
@@ -111,13 +140,15 @@ impl Formatting {
             unsafe {
                 pango_sys::pango_color_parse(&mut fg, cstr.as_ptr());
             }
-            let alpha_f = value["fg_alpha"].as_f64().unwrap_or(1.0) * 65535.0;
+            let alpha_f = get_f64("fg_alpha").unwrap_or(1.0) * 65535.0;
             let fga = f64::min(65535.0, f64::max(0.0, alpha_f)) as u16;
-            fg_rgba = Some((fg.red, fg.green, fg.blue, fga))
-        }
-
+            Some((fg.red, fg.green, fg.blue, fga))
+        } else {
+            None
+        };
 
         Self {
+            font,
             fg_rgba,
             bg_rgba,
             min_width,
@@ -132,6 +163,7 @@ impl Formatting {
     }
 }
 
+/// Type-specific part of an [Item]
 #[derive(Debug)]
 enum Contents {
     Reference { name : String },
@@ -267,6 +299,7 @@ impl Contents {
     }
 }
 
+/// A single click action associated with the area that activates it
 #[derive(Debug,Clone)]
 struct EventListener {
     x_min : f64,
@@ -275,10 +308,12 @@ struct EventListener {
     target : Action,
 }
 
+/// A list of [EventListener]s
 #[derive(Debug,Default,Clone)]
 pub struct EventSink {
     handlers : Vec<EventListener>
 }
+
 impl EventSink {
     fn from_json(value : &JsonValue) -> Self {
         let mut sink = EventSink::default();
@@ -343,7 +378,7 @@ impl EventSink {
 impl From<Contents> for Item {
     fn from(contents : Contents) -> Self {
         Self {
-            format : Formatting::default(),
+            fmt_config : json::object::Object::new(),
             events : EventSink::default(),
             contents
         }
@@ -357,7 +392,7 @@ impl Item {
         let center = Item::from_json_ref(&cfg["center"]);
 
         Item {
-            format : Formatting::from_json(cfg),
+            fmt_config : Formatting::filter_json(cfg),
             contents : Contents::Bar { items : Box::new([left, center, right]) },
             events : EventSink::from_json(cfg),
         }
@@ -404,7 +439,7 @@ impl Item {
                 let items = value["items"].members().map(Item::from_json_ref).collect();
 
                 Item {
-                    format : Formatting::from_json(value),
+                    fmt_config : Formatting::filter_json(value),
                     contents : Contents::Group {
                         items,
                         spacing,
@@ -421,7 +456,7 @@ impl Item {
                     }).to_owned();
                 let markup = value["markup"].as_bool().unwrap_or(false);
                 Item {
-                    format : Formatting::from_json(value),
+                    fmt_config : Formatting::filter_json(value),
                     contents : Contents::Text { text, markup },
                     events : EventSink::from_json(value),
                 }
@@ -436,7 +471,9 @@ impl Item {
     pub fn render(&self, ctx : &Render) -> EventSink {
         let mut rv = self.events.clone();
 
-        if self.format.is_boring() {
+        let format = Formatting::expand(&self.fmt_config, ctx.runtime);
+
+        if format.is_boring() {
             self.contents.render(ctx, &mut rv);
             return rv;
         }
@@ -444,7 +481,7 @@ impl Item {
         let (clip_x0, clip_y0, clip_x1, clip_y1) = ctx.cairo.clip_extents();
         let start_pos = ctx.cairo.get_current_point();
         ctx.cairo.push_group();
-        match self.format.max_width {
+        match format.max_width {
             None => {}
             Some(Width::Pixels(n)) => {
                 ctx.cairo.rectangle(start_pos.0, clip_y0, start_pos.0 + n, clip_y1);
@@ -458,18 +495,28 @@ impl Item {
             }
         }
 
-        if let Some(rgba) = self.format.fg_rgba {
+        if let Some(rgba) = format.fg_rgba {
             ctx.cairo.set_source_rgba(rgba.0 as f64 / 65535.0, rgba.1 as f64 / 65535.0, rgba.2 as f64 / 65535.0, rgba.3 as f64 / 65535.0);
         }
 
-        self.contents.render(ctx, &mut rv);
+        if let Some(font) = format.font {
+            let font = pango::FontDescription::from_string(&font);
+            let ctx = Render {
+                cairo : &*ctx.cairo,
+                runtime : &*ctx.runtime,
+                font : &font,
+            };
+            self.contents.render(&ctx, &mut rv);
+        } else {
+            self.contents.render(ctx, &mut rv);
+        }
 
         let mut end_pos = ctx.cairo.get_current_point();
         let group = ctx.cairo.pop_group();
         ctx.cairo.save();
 
         let base_width = end_pos.0 - start_pos.0;
-        let mut min_width = match self.format.min_width {
+        let mut min_width = match format.min_width {
             None => 0.0,
             Some(Width::Pixels(n)) => n,
             Some(Width::Fraction(f)) => f * (clip_x1 - clip_x0),
@@ -480,7 +527,7 @@ impl Item {
 
         if base_width < min_width {
             let expand = min_width - base_width;
-            match self.format.align.unwrap_or(Align::Left) {
+            match format.align.unwrap_or(Align::Left) {
                 Align::Left => {}
                 Align::Right => {
                     let mut m = cairo::Matrix::identity();
@@ -496,7 +543,7 @@ impl Item {
             end_pos.0 = start_pos.0 + min_width;
         }
 
-        if let Some(rgba) = self.format.bg_rgba {
+        if let Some(rgba) = format.bg_rgba {
             ctx.cairo.set_operator(cairo::Operator::Source);
             ctx.cairo.set_source_rgba(rgba.0 as f64 / 65535.0, rgba.1 as f64 / 65535.0, rgba.2 as f64 / 65535.0, rgba.3 as f64 / 65535.0);
             ctx.cairo.rectangle(start_pos.0, clip_y0, end_pos.0 - start_pos.0, clip_y1);
@@ -504,7 +551,7 @@ impl Item {
             ctx.cairo.set_operator(cairo::Operator::Over);
         }
         ctx.cairo.set_source(&group);
-        if let Some(alpha) = self.format.alpha {
+        if let Some(alpha) = format.alpha {
             ctx.cairo.paint_with_alpha(alpha as f64 / 65535.0);
         } else {
             ctx.cairo.paint();
