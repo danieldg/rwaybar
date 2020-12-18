@@ -251,3 +251,104 @@ impl Variable for Mode {
         })
     }
 }
+
+#[derive(Debug,Default)]
+struct WorkspaceData {
+    focus : String,
+    list : Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct Workspace {
+    // TODO configuration to track all outputs vs one output
+    value : Rc<Cell<Option<WorkspaceData>>>,
+}
+
+impl Variable for Workspace {
+    fn from_json(_config : &json::JsonValue) -> Option<Self> {
+        Some(Workspace { value : Rc::new(Cell::new(None)) })
+    }
+
+    fn init(&self, _name : &str, rt : &Runtime) {
+        let value = self.value.clone();
+        SwaySocket::subscribe(rt, "workspace", 0x80000000, Box::new(move |state, buf| {
+            match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
+                Ok(Ok(msg)) => {
+                    value.take_in_some(|data| {
+                        match msg["change"].as_str() {
+                            Some("focus") => {
+                                data.focus = msg["current"]["name"].as_str().unwrap_or("").to_owned();
+                            }
+                            Some("init") => {
+                                msg["current"]["name"].as_str().map(|v| data.list.push(v.to_owned()));
+                            }
+                            Some("empty") => {
+                                msg["current"]["name"].as_str().map(|gone| {
+                                    data.list.retain(|n| n != gone)
+                                });
+                            }
+                            Some("rename") => {
+                                let old = msg["old"]["name"].as_str();
+                                let new = msg["current"]["name"].as_str();
+                                if let (Some(old), Some(new)) = (old,new) {
+                                    for name in &mut data.list {
+                                        if *name == old {
+                                            *name = new.to_owned();
+                                        }
+                                    }
+                                }
+                            }
+                            // TODO move, if we track outputs
+                            _ => {}
+                        }
+                    });
+                    state.request_draw();
+                }
+                _ => warn!("Ignoring invalid workspace change message")
+            }
+            ListenerResult {
+                remove_callback : Rc::strong_count(&value) == 1,
+                consumed : false,
+            }
+        }));
+        let value = self.value.clone();
+        SwaySocket::send(rt, 1, b"", move |state, buf| {
+            match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
+                Ok(Ok(msg)) => {
+                    let mut data = WorkspaceData::default();
+                    for workspace in msg.members() {
+                        workspace["name"].as_str().map(|name| {
+                            data.list.push(name.to_owned());
+                            if workspace["focused"].as_bool() == Some(true) {
+                                data.focus = name.to_owned();
+                            }
+                        });
+                    }
+                    value.set(Some(data));
+                    state.request_draw();
+                }
+                _ => warn!("Ignoring invalid get_workspaces reply")
+            }
+        });
+    }
+
+    fn read_in<F : FnOnce(&str) -> R,R>(&self, _name : &str, key : &str, _rt : &Runtime, f : F) -> R {
+        self.value.take_in(|v| {
+            if let Some(data) = v {
+                match key {
+                    "" | "focus" => f(&data.focus),
+                    "list" => {
+                        let w = data.list.join(" ");
+                        f(&w)
+                    }
+                    _ => {
+                        warn!("Unknown key in sway-workspace");
+                        f("")
+                    }
+                }
+            } else {
+                f("")
+            }
+        })
+    }
+}

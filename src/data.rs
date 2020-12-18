@@ -32,6 +32,15 @@ impl<T : Default> Cell<T> {
     }
 }
 
+impl<T> Cell<Option<T>> {
+    pub fn take_in_some<F : FnOnce(&mut T) -> R, R>(&self, f : F) -> Option<R> {
+        let mut t = self.0.take();
+        let rv = t.as_mut().map(f);
+        self.0.set(t);
+        rv
+    }
+}
+
 impl<T> std::ops::Deref for Cell<T> {
     type Target = std::cell::Cell<T>;
     fn deref(&self) -> &std::cell::Cell<T> {
@@ -85,6 +94,7 @@ enum Module {
         looped : Cell<bool>,
     },
     SwayMode(sway::Mode),
+    SwayWorkspace(sway::Workspace),
     None,
 }
 
@@ -185,6 +195,9 @@ impl Module {
             }
             Some("sway-mode") => {
                 sway::Mode::from_json(value).map_or(Module::None, Module::SwayMode)
+            }
+            Some("sway-workspaces") => {
+                sway::Workspace::from_json(value).map_or(Module::None, Module::SwayWorkspace)
             }
             Some(m) => {
                 error!("Unknown module '{}' in variable definition", m);
@@ -374,6 +387,7 @@ impl Variable {
                 }
             }
             Module::SwayMode(mode) => mode.init(name, rt),
+            Module::SwayWorkspace(ws) => ws.init(name, rt),
             _ => {}
         }
     }
@@ -439,6 +453,7 @@ impl Variable {
                 }
             }
             Module::SwayMode(mode) => mode.update(name, rt),
+            Module::SwayWorkspace(ws) => ws.update(name, rt),
             _ => {}
         }
     }
@@ -509,6 +524,7 @@ impl Variable {
                 f(&res)
             }
             Module::SwayMode(mode) => mode.read_in(name, key, rt, f),
+            Module::SwayWorkspace(ws) => ws.read_in(name, key, rt, f),
         }
     }
 
@@ -545,6 +561,7 @@ impl Variable {
                 }
             }
             Module::SwayMode(mode) => mode.write(name, key, value, rt),
+            Module::SwayWorkspace(ws) => ws.write(name, key, value, rt),
             _ => {
                 error!("Ignoring write to {}.{}", name, key);
             }
