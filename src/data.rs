@@ -323,7 +323,7 @@ fn do_exec_json(eloop : &LoopHandle<State>, fd : i32, name : String, value : Rc<
                     buffer.drain(..eol + 1);
                     let json = match json { Some(json) => json, None => continue };
                     value.set(json);
-                    state.draw();
+                    state.request_draw();
                 }
             }
         }
@@ -332,6 +332,7 @@ fn do_exec_json(eloop : &LoopHandle<State>, fd : i32, name : String, value : Rc<
 }
 
 impl Variable {
+    /// Parse a variable from the JSON configuration
     pub fn new((key, value) : (&str, &JsonValue)) -> (String, Self) {
         let name = key.into();
         if key.contains('.') {
@@ -341,6 +342,7 @@ impl Variable {
         (name, Variable { module })
     }
 
+    /// One-time setup, if needed
     pub fn init(&self, name : &str, rt : &Runtime) {
         match &self.module {
             Module::ExecJson { command, stdin, value } => {
@@ -369,7 +371,8 @@ impl Variable {
         }
     }
 
-    pub fn update(&self, _name : &str, rt : &Runtime) {
+    /// Periodic update (triggered by timer)
+    pub fn update(&self, name : &str, rt : &Runtime) {
         match &self.module {
             Module::Clock { format, zone, time } => {
                 let now = chrono::Utc::now();
@@ -382,11 +385,11 @@ impl Variable {
                 rt.set_wake_at(wake);
 
                 let real_format = rt.format(&format).unwrap_or_else(|e| {
-                    warn!("Error expanding clock format: {}", e);
+                    warn!("Error expanding '{}' format: {}", name, e);
                     String::new()
                 });
                 let real_zone = rt.format(&zone).unwrap_or_else(|e| {
-                    warn!("Error expanding clock timezone format: {}", e);
+                    warn!("Error expanding '{}' timezone format: {}", name, e);
                     String::new()
                 });
                 if real_zone.is_empty() {
@@ -432,6 +435,13 @@ impl Variable {
         }
     }
 
+    /// Read the value of a variable
+    ///
+    /// This is the only "mandatory" function for a Variable; it generally doesn't make sense to
+    /// have a variable that can't be read.
+    ///
+    /// The provided closure should be passed the value of the variable.  This is done instead of
+    /// returning the value to avoid unneeded string copies.
     pub fn read_in<F : FnOnce(&str) -> R, R>(&self, name : &str, key : &str, rt : &Runtime, f : F) -> R {
         match &self.module {
             Module::None => f(""),
@@ -493,6 +503,7 @@ impl Variable {
         }
     }
 
+    /// Handle a write or send to the variable
     pub fn write(&self, name : &str, key : &str, value : String, _rt : &Runtime) {
         match &self.module {
             Module::Value { value : v } if key == "" => {
