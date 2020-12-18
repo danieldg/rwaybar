@@ -140,11 +140,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // everything else is event-triggered
     loop {
-        let timeout = state.runtime.wake_at
+        let timeout = state.runtime.wake_at.get()
             .map(|alarm| alarm.saturating_duration_since(Instant::now()));
         eloop.dispatch(timeout, &mut state)?;
-        if state.runtime.wake_at.map_or(false, |alarm| alarm <= Instant::now()) {
-            state.runtime.wake_at = None;
+        if state.runtime.wake_at.get().map_or(false, |alarm| alarm <= Instant::now()) {
+            state.runtime.wake_at.set(None);
             state.tick();
         }
     }

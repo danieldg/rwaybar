@@ -5,6 +5,9 @@ authors = ["Daniel De Graaf <code@danieldg.net>"]
 edition = "2018"
 
 [dependencies]
+env_logger = ""
+log = ""
+linked-hash-map = ""
 
 # Wayland
 smithay-client-toolkit = ""
@@ -27,10 +30,8 @@ gdk-pixbuf = ""
 calloop = ""
 chrono = ""
 chrono-tz = ""
-env_logger = ""
 json = ""
 libc = ""
-log = ""
 strfmt = ""
 
 # TODO

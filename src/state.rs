@@ -1,21 +1,23 @@
+use json::JsonValue;
+use linked_hash_map::LinkedHashMap;
+use log::{debug,info,error};
 use smithay_client_toolkit::environment::Environment;
 use smithay_client_toolkit::seat::SeatData;
 use smithay_client_toolkit::shm::MemPool;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::time::Instant;
 use wayland_client::Attached;
 use wayland_client::protocol::wl_output::WlOutput;
-use wayland_client::protocol::wl_surface::WlSurface;
-use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::protocol::wl_pointer::Event as MouseEvent;
 use wayland_client::protocol::wl_pointer::{ButtonState,Axis};
+use wayland_client::protocol::wl_seat::WlSeat;
+use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::protocol::wl_touch::Event as TouchEvent;
+use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client as layer_shell;
 use wayland_protocols::xdg_shell::client::xdg_wm_base::XdgWmBase;
-use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1;
-use json::JsonValue;
-use log::{debug,info,error};
 
 use layer_shell::zwlr_layer_shell_v1::{ZwlrLayerShellV1, Layer};
 use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
@@ -79,10 +81,33 @@ impl Bar {
 
 pub struct Runtime {
     pub eloop : calloop::LoopHandle<State>,
-    pub wake_at : Option<Instant>,
-    pub sources : Vec<Variable>,
-    pub vars : HashMap<String, String>,
+    pub wake_at : Cell<Option<Instant>>,
+    pub vars : LinkedHashMap<String, Variable>,
     pub items : HashMap<String, Item>,
+}
+
+impl Runtime {
+    pub fn set_wake_at(&self, wake : Instant) {
+        match self.wake_at.get() {
+            Some(then) if wake > then => {}
+            _ => { self.wake_at.set(Some(wake)) }
+        }
+    }
+
+    pub fn format(&self, fmt : &str) -> Result<String, strfmt::FmtError> {
+        strfmt::strfmt_map(fmt, &|mut q| {
+            let (name, key) = match q.key.find('.') {
+                Some(p) => (&q.key[..p], &q.key[p + 1..]),
+                None => (&q.key[..], ""),
+            };
+            match self.vars.get(name) {
+                Some(var) => {
+                    var.read_in(name, key, self, |s| q.str(s))
+                }
+                None => Err(strfmt::FmtError::KeyError(name.to_string()))
+            }
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -134,7 +159,7 @@ impl State {
             (key, value)
         }).collect();
 
-        let sources = config["vars"].entries().map(Variable::new).collect();
+        let vars = config["vars"].entries().map(Variable::new).collect();
 
         let mut state = Self {
             env,
@@ -144,9 +169,8 @@ impl State {
             outputs : Vec::new(),
             runtime : Runtime {
                 eloop,
-                wake_at : None,
-                sources,
-                vars : HashMap::new(),
+                wake_at : Cell::new(None),
+                vars,
                 items,
             },
             config,
@@ -155,8 +179,8 @@ impl State {
             draw_pending : false,
         };
 
-        for src in &mut state.runtime.sources {
-            src.init(&state.runtime.eloop, &mut state.runtime.vars);
+        for (k,v) in &state.runtime.vars {
+            v.init(k, &state.runtime);
         }
         state.set_data();
         Ok(state)
@@ -430,8 +454,8 @@ impl State {
     }
 
     fn set_data(&mut self) {
-        for src in &mut self.runtime.sources {
-            src.update(&mut self.runtime.wake_at, &mut self.runtime.vars);
+        for (k, v) in &self.runtime.vars {
+            v.update(k, &self.runtime);
         }
 
         // TODO maybe don't refresh all bars all the time?  Needs real dirty tracking.

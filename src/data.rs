@@ -2,34 +2,70 @@ use calloop::LoopHandle;
 use crate::state::{State,Runtime};
 use json::JsonValue;
 use log::{debug,info,warn,error};
-use std::collections::HashMap;
+use std::fmt;
 use std::io;
 use std::io::Write;
-use std::process::{Command,Stdio,ChildStdin};
 use std::os::unix::io::{AsRawFd,IntoRawFd};
+use std::process::{Command,Stdio,ChildStdin};
+use std::rc::Rc;
 use std::time::{Duration,Instant};
 use libc;
+
+#[derive(Default)]
+struct Cell<T>(std::cell::Cell<T>);
+
+impl<T> Cell<T> {
+    fn new(t : T) -> Self {
+        Cell(std::cell::Cell::new(t))
+    }
+}
+
+impl<T : Default> Cell<T> {
+    fn take_in<F : FnOnce(&mut T) -> R, R>(&self, f : F) -> R {
+        let mut t = self.0.take();
+        let rv = f(&mut t);
+        self.0.set(t);
+        rv
+    }
+}
+
+impl<T> std::ops::Deref for Cell<T> {
+    type Target = std::cell::Cell<T>;
+    fn deref(&self) -> &std::cell::Cell<T> {
+        &self.0
+    }
+}
+
+impl<T> fmt::Debug for Cell<T> {
+    fn fmt(&self, fmt : &mut fmt::Formatter) -> fmt::Result {
+        write!(fmt, "Cell")
+    }
+}
 
 #[derive(Debug)]
 enum Module {
     Clock {
         format : String,
         zone : String,
+        time : Cell<String>,
     },
     ReadFile {
         name : String,
         poll : f64,
-        last_read : Option<Instant>,
+        last_read : Cell<Option<Instant>>,
+        contents : Cell<String>,
     },
     ExecJson {
         command : String,
-        stdin : Option<ChildStdin>,
+        stdin : Cell<Option<ChildStdin>>,
+        value : Rc<Cell<JsonValue>>,
     },
     Value {
-        value : String,
+        value : Cell<String>,
     },
     Formatted {
         format : String,
+        looped : Cell<bool>,
     },
     None,
 }
@@ -40,14 +76,14 @@ impl Module {
             Some("clock") => {
                 let format = value["format"].as_str().unwrap_or("%H:%M").to_owned();
                 let zone = value["timezone"].as_str().unwrap_or("").to_owned();
-                Module::Clock { format, zone }
+                Module::Clock { format, zone, time : Cell::new(String::new()) }
             }
             Some("formatted") => {
                 let format = value["format"].as_str().unwrap_or_else(|| {
                     error!("Formatted variables require a format: {}", value);
                     ""
                 }).to_owned();
-                Module::Formatted { format }
+                Module::Formatted { format, looped : Cell::new(false) }
             }
             Some("read-file") => {
                 let name = match value["file"].as_str() {
@@ -59,7 +95,7 @@ impl Module {
                 };
                 let poll = value["poll"].as_f64().unwrap_or(60.0);
                 Module::ReadFile {
-                    name, poll, last_read: None
+                    name, poll, last_read: Cell::default(), contents : Cell::default()
                 }
             }
             Some("exec-json") => {
@@ -72,12 +108,13 @@ impl Module {
                 };
                 Module::ExecJson {
                     command,
-                    stdin : None
+                    stdin : Cell::new(None),
+                    value : Rc::new(Cell::new(JsonValue::Null)),
                 }
             }
             None => {
                 if let Some(value) = value.as_str().map(String::from) {
-                    Module::Value { value }
+                    Module::Value { value : Cell::new(value) }
                 } else {
                     error!("Invalid module definition: {}", value);
                     Module::None
@@ -117,7 +154,7 @@ impl Action {
         Action::None
     }
 
-    pub fn invoke(&self, runtime : &mut Runtime) {
+    pub fn invoke(&self, runtime : &Runtime) {
         match self {
             Action::List(actions) => {
                 for action in actions {
@@ -125,7 +162,7 @@ impl Action {
                 }
             }
             Action::Write { target, format } => {
-                let value = match strfmt::strfmt(&format, &runtime.vars) {
+                let value = match runtime.format(&format) {
                     Ok(value) => value,
                     Err(e) => {
                         error!("Error expanding format for command: {}", e);
@@ -138,15 +175,15 @@ impl Action {
                     None => (&target[..], ""),
                 };
 
-                match runtime.sources.iter_mut().find(|v| &v.name == name) {
+                match runtime.vars.get(name) {
                     Some(var) => {
-                        var.write(key, value, &mut runtime.vars);
+                        var.write(name, key, value, &runtime);
                     }
                     None => error!("Could not find variable {}", target),
                 }
             }
             Action::Exec { format } => {
-                match strfmt::strfmt(&format, &runtime.vars) {
+                match runtime.format(&format) {
                     Ok(cmd) => {
                         info!("Executing '{}'", cmd);
                         match Command::new("/bin/sh").arg("-c").arg(&cmd).spawn() {
@@ -166,18 +203,10 @@ impl Action {
 
 #[derive(Debug)]
 pub struct Variable {
-    name : String,
     module : Module,
 }
 
-fn set_wake_at(timer : &mut Option<Instant>, wake : Instant) {
-    match timer {
-        Some(then) if wake > *then => {}
-        _ => { *timer = Some(wake) }
-    }
-}
-
-fn do_exec_json(eloop : &LoopHandle<State>, fd : i32, name : String) {
+fn do_exec_json(eloop : &LoopHandle<State>, fd : i32, name : String, value : Rc<Cell<JsonValue>>) {
     let src = calloop::generic::Generic::from_fd(fd, calloop::Interest::Readable, calloop::Mode::Level);
     let mut buffer : Vec<u8> = Vec::with_capacity(1024);
 
@@ -226,14 +255,7 @@ fn do_exec_json(eloop : &LoopHandle<State>, fd : i32, name : String) {
                     }
                     buffer.drain(..eol + 1);
                     let json = match json { Some(json) => json, None => continue };
-                    for (key, value) in json.entries() {
-                        let key = format!("{}.{}", name, key);
-                        if let Some(value) = value.as_str() {
-                            state.runtime.vars.insert(key, value.to_owned());
-                        } else {
-                            state.runtime.vars.insert(key, value.dump());
-                        }
-                    }
+                    value.set(json);
                     state.draw();
                 }
             }
@@ -243,24 +265,18 @@ fn do_exec_json(eloop : &LoopHandle<State>, fd : i32, name : String) {
 }
 
 impl Variable {
-    pub fn new((key, value) : (&str, &JsonValue)) -> Self {
+    pub fn new((key, value) : (&str, &JsonValue)) -> (String, Self) {
         let name = key.into();
         if key.contains('.') {
-            warn!("Variable name '{}' contains a '.', may produce unexpected behavior", key);
+            error!("Variable name '{}' contains a '.', cannot be read", key);
         }
         let module = Module::from_json(value);
-        Variable {
-            name,
-            module
-        }
+        (name, Variable { module })
     }
 
-    pub fn init(&mut self, eloop : &LoopHandle<State>, vars : &mut HashMap<String, String>) {
-        match &mut self.module {
-            Module::Value { value } => {
-                vars.insert(self.name.clone(), value.clone());
-            }
-            Module::ExecJson { command, stdin } => {
+    pub fn init(&self, name : &str, rt : &Runtime) {
+        match &self.module {
+            Module::ExecJson { command, stdin, value } => {
                 match Command::new("/bin/sh")
                     .arg("-c").arg(&command)
                     .stdin(Stdio::piped())
@@ -269,14 +285,16 @@ impl Variable {
                 {
                     Err(e) => error!("Could not execute {}: {}", command, e),
                     Ok(mut child) => {
-                        *stdin = child.stdin.take();
+                        let pipe_in = child.stdin.take().unwrap();
                         let fd = child.stdout.take().unwrap().into_raw_fd();
                         unsafe {
-                            libc::fcntl(stdin.as_ref().unwrap().as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK);
+                            libc::fcntl(pipe_in.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK);
                             libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
                         }
+                        stdin.set(Some(pipe_in));
+                        value.set(JsonValue::Null);
 
-                        do_exec_json(eloop, fd, self.name.clone());
+                        do_exec_json(&rt.eloop, fd, name.to_owned(), value.clone());
                     }
                 }
             }
@@ -284,9 +302,9 @@ impl Variable {
         }
     }
 
-    pub fn update(&mut self, timer : &mut Option<Instant>, vars : &mut HashMap<String, String>) {
-        match &mut self.module {
-            Module::Clock { format, zone } => {
+    pub fn update(&self, _name : &str, rt : &Runtime) {
+        match &self.module {
+            Module::Clock { format, zone, time } => {
                 let now = chrono::Utc::now();
 
                 // Set a timer to expire when the subsecond offset will be zero
@@ -294,84 +312,106 @@ impl Variable {
                 // add another 1ms delay because epoll only gets 1ms granularity
                 let delay = 1_000_999_999u64.checked_sub(subsec);
                 let wake = Instant::now() + delay.map_or(Duration::from_secs(1), Duration::from_nanos);
-                set_wake_at(timer, wake);
+                rt.set_wake_at(wake);
 
-                let real_format = strfmt::strfmt(&format, vars).unwrap_or_else(|e| {
+                let real_format = rt.format(&format).unwrap_or_else(|e| {
                     warn!("Error expanding clock format: {}", e);
                     String::new()
                 });
-                let real_zone = strfmt::strfmt(&zone, vars).unwrap_or_else(|e| {
+                let real_zone = rt.format(&zone).unwrap_or_else(|e| {
                     warn!("Error expanding clock timezone format: {}", e);
                     String::new()
                 });
-                let value = if real_zone.is_empty() {
-                    format!("{}", now.with_timezone(&chrono::Local).format(&real_format))
+                if real_zone.is_empty() {
+                    time.set(format!("{}", now.with_timezone(&chrono::Local).format(&real_format)));
                 } else {
                     match real_zone.parse::<chrono_tz::Tz>() {
                         Ok(tz) => {
-                            format!("{}", now.with_timezone(&tz).format(&real_format))
+                            time.set(format!("{}", now.with_timezone(&tz).format(&real_format)));
                         }
                         Err(e) => {
                             warn!("Could not find timezone '{}': {}", real_zone, e);
-                            String::new()
                         }
                     }
-                };
-
-                vars.insert(self.name.clone(), value);
+                }
             }
-            Module::ReadFile { name, poll, last_read } => {
+            Module::ReadFile { name, poll, last_read, contents } => {
                 let now = Instant::now();
                 if *poll > 0.0 {
-                    match *last_read {
-                        Some(then) if then + Duration::from_secs_f64(*poll) > now => return,
-                        _ => ()
+                    let next = last_read.get().map_or(now, |v| v + Duration::from_secs_f64(*poll));
+                    if next > now {
+                        rt.set_wake_at(next);
+                        return;
+                    } else {
+                        rt.set_wake_at(now + Duration::from_secs_f64(*poll));
                     }
-
-                    set_wake_at(timer, now + Duration::from_secs_f64(*poll));
-                } else if last_read.is_some() {
+                } else if last_read.get().is_some() {
                     return;
                 }
-                *last_read = Some(now);
+                last_read.set(Some(now));
                 match std::fs::read_to_string(&name) {
                     Ok(mut v) => {
                         if v.ends_with('\n') {
                             v.pop();
                         }
-                        vars.insert(self.name.clone(), v);
+                        contents.set(v);
                     }
                     Err(e) => {
                         warn!("Could not read {}: {}", name, e);
-                        vars.insert(self.name.clone(), String::new());
                     }
                 }
             }
-            Module::Formatted { format } => {
-                match strfmt::strfmt(&format, vars) {
-                    Ok(value) => {
-                        vars.insert(self.name.clone(), value);
-                    }
-                    Err(e) => {
-                        warn!("Error expanding format for '{}': {}", self.name, e);
-                    }
-                }
-            }
-            Module::None |
-            Module::ExecJson { .. } |
-            Module::Value { .. } => {} // only assigns at init
+            _ => {}
         }
     }
 
-    pub fn write(&mut self, key : &str, value : String, vars : &mut HashMap<String, String>) {
-        match &mut self.module {
-            Module::Value { .. } if key == "" => {
-                vars.get_mut(&self.name).map(|v| *v = value);
+    pub fn read_in<F : FnOnce(&str) -> R, R>(&self, name : &str, key : &str, rt : &Runtime, f : F) -> R {
+        match &self.module {
+            Module::None => f(""),
+            Module::Clock { time, .. } => time.take_in(|s| f(s)),
+            Module::Value { value } => value.take_in(|s| f(s)),
+            Module::ReadFile { contents, .. } => contents.take_in(|s| f(s)),
+            Module::Formatted { format, looped } => {
+                if looped.get() {
+                    error!("Recursion detected when expanding {}", name);
+                    return f("");
+                }
+                looped.set(true);
+                let value = rt.format(&format);
+                looped.set(false);
+                match value {
+                    Ok(v) => f(&v),
+                    Err(e) => {
+                        warn!("Error formatting {}: {}", name, e);
+                        f("")
+                    }
+                }
+            }
+            Module::ExecJson { command, value, .. } => {
+                let v = value.replace(JsonValue::Null);
+                let rv = f(v[key].as_str().unwrap_or_else(|| {
+                    debug!("Could not find {}.{} in the output of {}", name, key, command);
+                    ""
+                }));
+                value.set(v);
+                rv
+            }
+        }
+    }
+
+    pub fn write(&self, name : &str, key : &str, value : String, _rt : &Runtime) {
+        match &self.module {
+            Module::Value { value : v } if key == "" => {
+                v.set(value);
             }
             Module::ExecJson { stdin, .. } => {
-                if stdin.is_none() {
-                    warn!("Not writing to closed exec-json stream");
-                    return;
-                }
+                let w = match stdin.take() {
+                    None => {
+                        warn!("Not writing to closed exec-json stream");
+                        return;
+                    }
+                    Some(w) => w,
+                };
                 let mut json = JsonValue::new_object();
                 json.insert(key, value).unwrap();
                 let mut line : Vec<u8> = Vec::new();
@@ -381,16 +421,17 @@ impl Variable {
                 // sending instead of blocking the GUI or buffering messages.
                 //
                 // This could be changed to write via the event loop if needed.
-                match stdin.as_mut().unwrap().write_all(&line) {
-                    Ok(()) => {}
+                match (&w).write_all(&line) {
+                    Ok(()) => {
+                        stdin.set(Some(w));
+                    }
                     Err(e) => {
-                        warn!("Could not write to '{}' : {}", self.name, e);
-                        stdin.take();
+                        warn!("Could not write to '{}' : {}", name, e);
                     }
                 }
             }
             _ => {
-                error!("Ignoring write to {}.{}", self.name, key);
+                error!("Ignoring write to {}.{}", name, key);
             }
         }
     }

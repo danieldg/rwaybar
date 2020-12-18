@@ -177,7 +177,7 @@ impl Contents {
                 }
             }
             Contents::Text { text, markup } => {
-                let text = strfmt::strfmt(&text, &ctx.runtime.vars)
+                let text = ctx.runtime.format(&text)
                     .unwrap_or_else(|e| {
                         warn!("Error formatting text: {}", e);
                         "Error".into()
