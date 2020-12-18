@@ -69,6 +69,12 @@ enum Module {
         format : String,
         looped : Cell<bool>,
     },
+    Regex {
+        regex : regex::Regex,
+        text : String,
+        replace : String,
+        looped : Cell<bool>,
+    },
     None,
 }
 
@@ -86,6 +92,27 @@ impl Module {
                     ""
                 }).to_owned();
                 Module::Formatted { format, looped : Cell::new(false) }
+            }
+            Some("regex") => {
+                let text = value["text"].as_str().unwrap_or_else(|| {
+                    error!("Regex requires a text expression");
+                    ""
+                }).to_owned();
+                let replace = value["replace"].as_str().unwrap_or_else(|| {
+                    error!("Regex requires an replace expression");
+                    ""
+                }).to_owned();
+                let regex = value["regex"].as_str().unwrap_or_else(|| {
+                    error!("Regex requires a regex expression");
+                    ""
+                }).to_owned();
+                match regex::Regex::new(&regex) {
+                    Ok(regex) => Module::Regex { regex, text, replace, looped : Cell::new(false) },
+                    Err(e) => {
+                        error!("Error compiling regex '{}': {}", regex, e);
+                        Module::None
+                    }
+                }
             }
             Some("read-file") => {
                 let name = match value["file"].as_str() {
@@ -395,6 +422,24 @@ impl Variable {
                         f("")
                     }
                 }
+            }
+            Module::Regex { regex, text, replace, looped } => {
+                if looped.get() {
+                    error!("Recursion detected when expanding {}", name);
+                    return f("");
+                }
+                looped.set(true);
+                let text = rt.format(&text);
+                looped.set(false);
+                let text = match text {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!("Error formatting {}: {}", name, e);
+                        return f("");
+                    }
+                };
+                let output = regex.replace_all(&text, replace.as_str());
+                f(&output)
             }
             Module::ExecJson { command, value, .. } => {
                 let v = value.replace(JsonValue::Null);
