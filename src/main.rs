@@ -4,7 +4,23 @@ use std::time::Instant;
 mod data;
 mod item;
 mod state;
+mod sway;
 mod wayland;
+
+pub trait Variable : std::fmt::Debug {
+    fn from_json(config : &json::JsonValue) -> Option<Self>
+        where Self : Sized;
+    fn init(&self, name : &str, rt : &state::Runtime) {
+        let _ = (name, rt);
+    }
+    fn update(&self, name : &str, rt : &state::Runtime) {
+        let _ = (name, rt);
+    }
+    fn read_in<F : FnOnce(&str) -> R,R>(&self, name : &str, key : &str, rt : &state::Runtime, f : F) -> R;
+    fn write(&self, name : &str, key : &str, value : String, rt : &state::Runtime) {
+        let _ = (name, key, value, rt);
+    }
+}
 
 use state::State;
 use wayland::WaylandClient;

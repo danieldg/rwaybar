@@ -1,4 +1,6 @@
 use calloop::LoopHandle;
+use crate::Variable as VariableTrait;
+use crate::sway;
 use crate::state::{State,Runtime};
 use json::JsonValue;
 use log::{debug,info,warn,error};
@@ -13,16 +15,16 @@ use libc;
 
 /// Wrapper around [std::cell::Cell] that implements [fmt::Debug].
 #[derive(Default)]
-struct Cell<T>(std::cell::Cell<T>);
+pub struct Cell<T>(std::cell::Cell<T>);
 
 impl<T> Cell<T> {
-    fn new(t : T) -> Self {
+    pub fn new(t : T) -> Self {
         Cell(std::cell::Cell::new(t))
     }
 }
 
 impl<T : Default> Cell<T> {
-    fn take_in<F : FnOnce(&mut T) -> R, R>(&self, f : F) -> R {
+    pub fn take_in<F : FnOnce(&mut T) -> R, R>(&self, f : F) -> R {
         let mut t = self.0.take();
         let rv = f(&mut t);
         self.0.set(t);
@@ -82,6 +84,7 @@ enum Module {
         values : Box<[String]>,
         looped : Cell<bool>,
     },
+    SwayMode(sway::Mode),
     None,
 }
 
@@ -179,6 +182,9 @@ impl Module {
                     error!("Invalid module definition: {}", value);
                     Module::None
                 }
+            }
+            Some("sway-mode") => {
+                sway::Mode::from_json(value).map_or(Module::None, Module::SwayMode)
             }
             Some(m) => {
                 error!("Unknown module '{}' in variable definition", m);
@@ -367,6 +373,7 @@ impl Variable {
                     }
                 }
             }
+            Module::SwayMode(mode) => mode.init(name, rt),
             _ => {}
         }
     }
@@ -431,6 +438,7 @@ impl Variable {
                     }
                 }
             }
+            Module::SwayMode(mode) => mode.update(name, rt),
             _ => {}
         }
     }
@@ -500,11 +508,12 @@ impl Variable {
                 looped.set(false);
                 f(&res)
             }
+            Module::SwayMode(mode) => mode.read_in(name, key, rt, f),
         }
     }
 
     /// Handle a write or send to the variable
-    pub fn write(&self, name : &str, key : &str, value : String, _rt : &Runtime) {
+    pub fn write(&self, name : &str, key : &str, value : String, rt : &Runtime) {
         match &self.module {
             Module::Value { value : v } if key == "" => {
                 v.set(value);
@@ -535,6 +544,7 @@ impl Variable {
                     }
                 }
             }
+            Module::SwayMode(mode) => mode.write(name, key, value, rt),
             _ => {
                 error!("Ignoring write to {}.{}", name, key);
             }
