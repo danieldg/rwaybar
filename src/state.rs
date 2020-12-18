@@ -31,76 +31,26 @@ struct Bar {
     width : i32,
     height : i32,
     dirty : bool,
-    left : Item,
-    center : Item,
-    right : Item,
+    item : Item,
 }
 
 impl Bar {
     fn render(&mut self, surf : &cairo::ImageSurface, runtime : &Runtime) {
         let ctx = cairo::Context::new(surf);
-        let font = cairo::FontFace::toy_create("Liberation Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+        let font = pango::FontDescription::from_string("Liberation Sans 13"); // TODO config
         ctx.set_operator(cairo::Operator::Clear);
-        ctx.set_source_rgba(0.0, 0.0, 0.0, 0.0);
         ctx.paint();
         ctx.set_operator(cairo::Operator::Over);
         ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0);
-        ctx.set_font_face(&font);
-        ctx.set_font_size(self.height as f64 * 0.8);
+        ctx.move_to(0.0, 0.0);
 
         let ctx = Render {
-            pango : pangocairo::create_context(&ctx).unwrap(),
-            cairo : ctx,
+            cairo : &ctx,
+            font : &font,
             runtime,
         };
 
-        ctx.cairo.push_group();
-        ctx.cairo.move_to(0.0, self.height as f64 * 0.8);
-        let mut left_ev = self.left.render(&ctx);
-        let left_size = ctx.cairo.get_current_point();
-        let left = ctx.cairo.pop_group();
-
-        ctx.cairo.push_group();
-        ctx.cairo.move_to(0.0, self.height as f64 * 0.8);
-        let mut cent_ev = self.center.render(&ctx);
-        let cent_size = ctx.cairo.get_current_point();
-        let cent = ctx.cairo.pop_group();
-
-        ctx.cairo.push_group();
-        ctx.cairo.move_to(0.0, self.height as f64 * 0.8);
-        let mut right_ev = self.right.render(&ctx);
-        let right_size = ctx.cairo.get_current_point();
-        let right = ctx.cairo.pop_group();
-
-        left_ev.offset_clamp(0.0, left_size.0);
-        self.sink = left_ev;
-
-        ctx.cairo.set_source(&left);
-        ctx.cairo.paint();
-        let mut m = cairo::Matrix::identity();
-        m.x0 = right_size.0 - (self.width as f64);
-        right_ev.offset_clamp(-m.x0, self.width as f64);
-        self.sink.merge(right_ev);
-        right.set_matrix(m);
-        ctx.cairo.set_source(&right);
-        ctx.cairo.paint();
-
-        let max_side = (self.width as f64 - cent_size.0) / 2.0;
-        let total_room = self.width as f64 - (left_size.0 + right_size.0 + cent_size.0);
-        if left_size.0 < max_side && right_size.0 < max_side {
-            // Actually center the center module
-            m.x0 = -max_side;
-        } else if total_room >= 0.0 {
-            // At least it will fit somewhere
-            m.x0 = -(left_size.0 + total_room / 2.0);
-        } else {
-            return;
-        }
-        cent.set_matrix(m);
-        cent_ev.offset_clamp(-m.x0, cent_size.0 - m.x0);
-        self.sink.merge(cent_ev);
-        ctx.cairo.set_source(&cent);
-        ctx.cairo.paint();
+        self.sink = self.item.render(&ctx);
     }
 
     #[allow(dead_code)] // TODO wire up
@@ -220,7 +170,7 @@ impl State {
     pub fn draw(&mut self) {
         if !self.draw_pending {
             self.draw_pending = true;
-            self.runtime.eloop.insert_idle(|state| state.draw_now().expect("Render error"));
+            self.runtime.eloop.insert_idle(|state| state.tick());
         }
     }
 
@@ -322,8 +272,8 @@ impl State {
     fn output_ready(&mut self, i : usize) {
         let output = self.outputs[i].output.clone();
         let data = &self.outputs[i];
-        info!("Output name='{}' description='{}' at {},{} {}x{}",
-            data.name, data.description, data.pos_x, data.pos_y, data.size_x, data.size_y);
+        info!("Output[{}] name='{}' description='{}' at {},{} {}x{}",
+            i, data.name, data.description, data.pos_x, data.pos_y, data.size_x, data.size_y);
         for cfg in self.config["bars"].members() {
             if let Some(name) = cfg["name"].as_str() {
                 if name != &data.name {
@@ -380,16 +330,10 @@ impl State {
 
         surf.commit();
 
-        let left = Item::from_json_ref(&cfg["left"]);
-        let right = Item::from_json_ref(&cfg["right"]);
-        let center = Item::from_json_ref(&cfg["center"]);
-
         Bar {
             surf,
             ls_surf : ls_surf.into(),
-            left,
-            center,
-            right,
+            item : Item::new_bar(cfg),
             width : 0,
             height : 0,
             sink : EventSink::default(),
@@ -445,6 +389,7 @@ impl State {
                             }
                         };
                         state.bars[bar_idx.unwrap()].sink.button(x,y,button_id, &mut state.runtime);
+                        state.draw();
                     }
                     &MouseEvent::Axis { axis, value, .. } => {
                         dbg!(value);
@@ -457,6 +402,7 @@ impl State {
                             _ => return,
                         };
                         state.bars[bar_idx.unwrap()].sink.button(x,y,button_id, &mut state.runtime);
+                        state.draw();
                     }
                     _ => ()
                 }
