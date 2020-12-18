@@ -75,6 +75,13 @@ enum Module {
         replace : String,
         looped : Cell<bool>,
     },
+    Meter {
+        min : f64,
+        max : f64,
+        src : String,
+        values : Box<[String]>,
+        looped : Cell<bool>,
+    },
     None,
 }
 
@@ -140,6 +147,30 @@ impl Module {
                     stdin : Cell::new(None),
                     value : Rc::new(Cell::new(JsonValue::Null)),
                 }
+            }
+            Some("meter") => {
+                let min = value["min"].as_f64().unwrap_or(0.0);
+                let max = value["max"].as_f64().unwrap_or(100.0);
+                let src = value["src"].as_str().unwrap_or_else(|| {
+                    error!("Meter requires a src expression");
+                    ""
+                }).to_owned();
+                let mut values = match Some(Some("")).into_iter()
+                        .chain(value["values"].members().map(JsonValue::as_str))
+                        .chain(Some(Some("")))
+                        .map(|v| v.map(String::from))
+                        .collect::<Option<Box<[_]>>>()
+                    {
+                        Some(v) if v.len() > 2 => v,
+                        _ => {
+                            error!("Meter requires an array of string values");
+                            return Module::None;
+                        }
+                    };
+                let e = values.len() - 1;
+                values[0] = value["below"].as_str().unwrap_or(&values[1]).to_owned();
+                values[e] = value["above"].as_str().unwrap_or(&values[e - 1]).to_owned();
+                Module::Meter { min, max, src, values, looped : Cell::new(false) }
             }
             None => {
                 if let Some(value) = value.as_str().map(String::from) {
@@ -413,15 +444,9 @@ impl Variable {
                     return f("");
                 }
                 looped.set(true);
-                let value = rt.format(&format);
+                let value = rt.format_or(&format, &name);
                 looped.set(false);
-                match value {
-                    Ok(v) => f(&v),
-                    Err(e) => {
-                        warn!("Error formatting {}: {}", name, e);
-                        f("")
-                    }
-                }
+                f(&value)
             }
             Module::Regex { regex, text, replace, looped } => {
                 if looped.get() {
@@ -429,15 +454,8 @@ impl Variable {
                     return f("");
                 }
                 looped.set(true);
-                let text = rt.format(&text);
+                let text = rt.format_or(&text, &name);
                 looped.set(false);
-                let text = match text {
-                    Ok(v) => v,
-                    Err(e) => {
-                        warn!("Error formatting {}: {}", name, e);
-                        return f("");
-                    }
-                };
                 let output = regex.replace_all(&text, replace.as_str());
                 f(&output)
             }
@@ -449,6 +467,28 @@ impl Variable {
                 }));
                 value.set(v);
                 rv
+            }
+            Module::Meter { min, max, src, values, looped } => {
+                if looped.get() {
+                    error!("Recursion detected when expanding {}", name);
+                    return f("");
+                }
+                looped.set(true);
+                let value = rt.format_or(&src, &name);
+                let value = value.parse::<f64>().unwrap_or(0.0);
+                let steps = values.len() - 2;
+                let step = (*max - *min) / (steps as f64);
+                let expr = if value < *min {
+                    &values[0]
+                } else if value > *max {
+                    &values[values.len() - 1]
+                } else {
+                    let i = (value - min) / step;
+                    &values[i as usize + 1]
+                };
+                let res = rt.format_or(&expr, &name);
+                looped.set(false);
+                f(&res)
             }
         }
     }

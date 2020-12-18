@@ -1,6 +1,6 @@
 use json::JsonValue;
 use linked_hash_map::LinkedHashMap;
-use log::{debug,info,error};
+use log::{debug,info,warn,error};
 use smithay_client_toolkit::environment::Environment;
 use smithay_client_toolkit::seat::SeatData;
 use smithay_client_toolkit::shm::MemPool;
@@ -108,6 +108,16 @@ impl Runtime {
                 None => Err(strfmt::FmtError::KeyError(name.to_string()))
             }
         })
+    }
+
+    pub fn format_or(&self, fmt : &str, context : &str) -> String {
+        match self.format(fmt) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Error formatting '{}': {}", context, e);
+                String::new()
+            }
+        }
     }
 }
 
