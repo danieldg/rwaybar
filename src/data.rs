@@ -1,6 +1,7 @@
 use crate::Variable as VariableTrait;
 use crate::sway;
 use crate::state::Runtime;
+use crate::mpris::MediaPlayer2;
 use json::JsonValue;
 use log::{debug,info,warn,error};
 use std::fmt;
@@ -95,6 +96,9 @@ enum Module {
         src : String,
         values : Box<[String]>,
         looped : Cell<bool>,
+    },
+    MediaPlayer2 {
+        mpris : Rc<MediaPlayer2>,
     },
     SwayMode(sway::Mode),
     SwayWorkspace(sway::Workspace),
@@ -195,6 +199,10 @@ impl Module {
                     error!("Invalid module definition: {}", value);
                     Module::None
                 }
+            }
+            Some("mpris") => {
+                let mpris = MediaPlayer2::new();
+                Module::MediaPlayer2 { mpris }
             }
             Some("sway-mode") => {
                 sway::Mode::from_json(value).map_or(Module::None, Module::SwayMode)
@@ -555,6 +563,7 @@ impl Variable {
                 looped.set(false);
                 f(&res)
             }
+            Module::MediaPlayer2 { mpris } => mpris.read_in(name, key, rt, f),
             Module::SwayMode(mode) => mode.read_in(name, key, rt, f),
             Module::SwayWorkspace(ws) => ws.read_in(name, key, rt, f),
         }

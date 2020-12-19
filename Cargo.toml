@@ -13,6 +13,7 @@ json = ""
 libc = ""
 linked-hash-map = ""
 log = ""
+once_cell = ""
 strfmt = ""
 tokio = { version = "0.3", features = ['rt', 'net', 'sync', 'io-util', 'time'] }
 

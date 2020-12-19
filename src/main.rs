@@ -4,7 +4,9 @@ use std::os::unix::io::RawFd;
 use tokio::io::unix::AsyncFd;
 
 mod data;
+mod dbus;
 mod item;
+mod mpris;
 mod state;
 mod sway;
 mod wayland;
@@ -46,13 +48,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (client, mut wl_queue) = WaylandClient::new()?;
 
     tokio::task::LocalSet::new().block_on(&rt, async move {
+        dbus::init()?;
+
         let state = State::new(client)?;
         let fd = AsyncFd::new(Fd(wl_queue.display().get_connection_fd()))?;
 
         loop {
             if let Some(reader) = wl_queue.prepare_read() {
                 let mut rg = fd.readable().await?;
-                dbg!();
                 match reader.read_events() {
                     Ok(()) => {
                         rg.retain_ready();
@@ -92,7 +95,5 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Err(e) => Err(e)?,
             }
         }
-
-        //std::future::pending().await
     })
 }
