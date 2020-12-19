@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::rc::Rc;
 use std::time::Duration;
-use log::debug;
+use log::{debug,warn,error};
 
 #[derive(Debug,Eq,PartialEq,Copy,Clone)]
 enum PlayState {
@@ -176,17 +176,29 @@ impl MediaPlayer2 {
     pub fn read_in<F : FnOnce(&str) -> R, R>(&self, _name : &str, key : &str, rt : &Runtime, f : F) -> R {
         self.0.take_in(|oi| {
             oi.as_mut().map(|inner| inner.redraw = Some(rt.notify.clone()));
+            let player;
+            let field;
 
-            if let Some(player) = oi.as_ref()
-                .and_then(|inner| {
-                    inner.players.iter()
-                        .filter(|p| p.playing == Some(PlayState::Playing))
-                        .chain(inner.players.iter().filter(|p| p.playing == Some(PlayState::Paused)))
-                        .chain(inner.players.iter())
-                        .next()
-                })
-            {
-                match key {
+            if let Some(dot) = key.find('.') {
+                let name = &key[..dot];
+                field = &key[dot + 1..];
+                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| p.name == name));
+            } else {
+                field = key;
+                // Prefer playing players, then paused, then any
+                //
+                player = oi.as_ref()
+                    .and_then(|inner| {
+                        inner.players.iter()
+                            .filter(|p| p.playing == Some(PlayState::Playing))
+                            .chain(inner.players.iter().filter(|p| p.playing == Some(PlayState::Paused)))
+                            .chain(inner.players.iter())
+                            .next()
+                    });
+            }
+
+            if let Some(player) = player {
+                match field {
                     "length" => {
                         match player.meta.as_ref().and_then(|md| md.get("mpris:length")).and_then(|v| v.as_u64()) {
                             Some(len) => f(&format!("{}.{:06}", len / 1_000_000, len % 1_000_000)),
@@ -223,6 +235,51 @@ impl MediaPlayer2 {
                 debug!("No media players found");
                 f("")
             }
+        })
+    }
+
+    pub fn write(&self, _name : &str, key : &str, command : String, _rt : &Runtime) {
+        self.0.take_in(|oi| {
+            let player;
+
+            if !key.is_empty() {
+                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| p.name == key));
+            } else {
+                // Prefer playing players, then paused, then any
+                player = oi.as_ref()
+                    .and_then(|inner| {
+                        inner.players.iter()
+                            .filter(|p| p.playing == Some(PlayState::Playing))
+                            .chain(inner.players.iter().filter(|p| p.playing == Some(PlayState::Paused)))
+                            .chain(inner.players.iter())
+                            .next()
+                    });
+            }
+
+            let player = match player {
+                Some(p) => p,
+                None => { warn!("No player found when sending {}", key); return }
+            };
+
+            let name = player.owner.clone();
+
+            tokio::task::spawn_local(async move {
+                let dbus = get_dbus();
+                let player = Proxy::new(&name, "/org/mpris/MediaPlayer2", Duration::from_secs(10), &dbus.local);
+                match command.as_str() {
+                    "Next" | "Previous" | "Pause" | "PlayPause" | "Stop" | "Play" => {
+                        player.method_call("org.mpris.MediaPlayer2.Player", command, ()).await
+                    }
+                    // TODO seek, volume?
+                    "Raise" | "Quit" => {
+                        player.method_call("org.mpris.MediaPlayer2", command, ()).await
+                    }
+                    _ => {
+                        error!("Unknown command {}", command);
+                        Ok(())
+                    }
+                }
+            });
         })
     }
 }

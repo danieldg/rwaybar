@@ -602,6 +602,7 @@ impl Variable {
                     }
                 }
             }
+            Module::MediaPlayer2 { mpris } => mpris.write(name, key, value, rt),
             Module::SwayMode(mode) => mode.write(name, key, value, rt),
             Module::SwayWorkspace(ws) => ws.write(name, key, value, rt),
             _ => {
