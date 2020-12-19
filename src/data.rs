@@ -57,6 +57,12 @@ impl<T> fmt::Debug for Cell<T> {
 /// Type-specific part of a [Variable]
 #[derive(Debug)]
 enum Module {
+    Value {
+        value : Cell<String>,
+    },
+    Item {
+        value : Cell<String>,
+    },
     Clock {
         format : String,
         zone : String,
@@ -72,9 +78,6 @@ enum Module {
         command : String,
         stdin : Cell<Option<ChildStdin>>,
         value : Rc<Cell<JsonValue>>,
-    },
-    Value {
-        value : Cell<String>,
     },
     Formatted {
         format : String,
@@ -196,7 +199,7 @@ impl Module {
             Some("sway-mode") => {
                 sway::Mode::from_json(value).map_or(Module::None, Module::SwayMode)
             }
-            Some("sway-workspaces") => {
+            Some("sway-workspace") => {
                 sway::Workspace::from_json(value).map_or(Module::None, Module::SwayWorkspace)
             }
             Some(m) => {
@@ -357,6 +360,12 @@ impl Variable {
         if key.contains('.') {
             error!("Variable name '{}' contains a '.', cannot be read", key);
         }
+        match key {
+            "item" => {
+                warn!("Variable name '{}' may collide with an automatic variable", key);
+            }
+            _ => {}
+        }
         let module = Module::from_json(value);
         (name, Variable { module })
     }
@@ -470,6 +479,7 @@ impl Variable {
             Module::None => f(""),
             Module::Clock { time, .. } => time.take_in(|s| f(s)),
             Module::Value { value } => value.take_in(|s| f(s)),
+            Module::Item { value } => value.take_in(|s| f(s)),
             Module::ReadFile { contents, .. } => contents.take_in(|s| f(s)),
             Module::Formatted { format, looped } => {
                 if looped.get() {
@@ -530,6 +540,7 @@ impl Variable {
 
     /// Handle a write or send to the variable
     pub fn write(&self, name : &str, key : &str, value : String, rt : &Runtime) {
+        debug!("Writing {} to {}.{}", value, name, key);
         match &self.module {
             Module::Value { value : v } if key == "" => {
                 v.set(value);
@@ -567,4 +578,24 @@ impl Variable {
             }
         }
     }
+
+
+    pub fn new_current_item() -> Self {
+        Variable { module : Module::Item { value : Cell::new(String::new()) } }
+    }
+
+    pub fn read_focus_list<F : FnMut(&str, bool)>(&self, f : F) {
+        match &self.module {
+            Module::SwayWorkspace(ws) => ws.read_focus_list(f),
+            _ => ()
+        }
+    }
+
+    pub fn set_current_item(&self, new : Option<String>) {
+        match &self.module {
+            Module::Item { value } => value.set(new.unwrap_or_default()),
+            _ => error!("set_current_item on non-Item"),
+        }
+    }
+
 }

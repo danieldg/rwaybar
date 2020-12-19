@@ -200,14 +200,14 @@ impl SwaySocket {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug,Default)]
 pub struct Mode {
     value : Rc<Cell<String>>,
 }
 
 impl Variable for Mode {
     fn from_json(_config : &json::JsonValue) -> Option<Self> {
-        Some(Mode { value : Rc::new(Cell::new(String::new())) })
+        Some(Mode::default())
     }
 
     fn init(&self, _name : &str, rt : &Runtime) {
@@ -258,15 +258,26 @@ struct WorkspaceData {
     list : Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug,Default)]
 pub struct Workspace {
     // TODO configuration to track all outputs vs one output
     value : Rc<Cell<Option<WorkspaceData>>>,
 }
 
+impl Workspace {
+    pub fn read_focus_list<F : FnMut(&str, bool)>(&self, mut f : F) {
+        self.value.take_in_some(|data| {
+            for item in &data.list {
+                let focus = *item == data.focus;
+                f(&item, focus);
+            }
+        });
+    }
+}
+
 impl Variable for Workspace {
     fn from_json(_config : &json::JsonValue) -> Option<Self> {
-        Some(Workspace { value : Rc::new(Cell::new(None)) })
+        Some(Workspace::default())
     }
 
     fn init(&self, _name : &str, rt : &Runtime) {
@@ -350,5 +361,14 @@ impl Variable for Workspace {
                 f("")
             }
         })
+    }
+
+    fn write(&self, name : &str, key : &str, value : String, rt : &Runtime) {
+        match key {
+            "switch" => SwaySocket::send(rt, 0, format!(r#"workspace --no-auto-back-and-forth "{}""#, value).as_bytes(), |_,_| ()),
+            _ => {
+                error!("Ignoring write to {}.{}", name, key);
+            }
+        }
     }
 }

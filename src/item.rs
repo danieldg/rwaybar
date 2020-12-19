@@ -177,6 +177,12 @@ enum Contents {
         // TODO crop ordering: allow specific items to be cropped first
         // TODO use min-width to force earlier cropping
     },
+    FocusList {
+        source : String,
+        // always two items: non-focused, focused
+        items : Box<[Item;2]>,
+        spacing : f64,
+    },
     Bar {
         // always three items: left, center, right
         items : Box<[Item;3]>,
@@ -232,10 +238,35 @@ impl Contents {
                     let x0 = ctx.cairo.get_current_point().0;
                     let mut ev = item.render(ctx);
                     let x1 = ctx.cairo.get_current_point().0;
-                    ev.offset_clamp(x0, x1);
+                    ev.offset_clamp(0.0, x0, x1);
                     rv.merge(ev);
                     ctx.cairo.rel_move_to(*spacing, 0.0);
                 }
+            }
+            Contents::FocusList { source, items, spacing } => {
+                let source = match ctx.runtime.vars.get(source) {
+                    Some(var) => var,
+                    None => return,
+                };
+                let item_var = ctx.runtime.vars.get("item").unwrap();
+                ctx.cairo.rel_move_to(*spacing, 0.0);
+                source.read_focus_list(|item, focus| {
+                    item_var.set_current_item(Some(item.to_owned()));
+                    let x0 = ctx.cairo.get_current_point().0;
+                    let mut ev = if focus {
+                        items[1].render(ctx)
+                    } else {
+                        items[0].render(ctx)
+                    };
+                    let x1 = ctx.cairo.get_current_point().0;
+                    ev.offset_clamp(0.0, x0, x1);
+                    for h in &mut ev.handlers {
+                        h.item = item.to_owned();
+                    }
+                    rv.merge(ev);
+                    ctx.cairo.rel_move_to(*spacing, 0.0);
+                });
+                item_var.set_current_item(None);
             }
             Contents::Bar { items } => {
                 let start = ctx.cairo.get_current_point();
@@ -250,7 +281,7 @@ impl Contents {
                 let mut left_ev = left.render(&ctx);
                 let left_size = ctx.cairo.get_current_point();
                 let left = ctx.cairo.pop_group();
-                left_ev.offset_clamp(0.0, left_size.0);
+                left_ev.offset_clamp(0.0, 0.0, left_size.0);
                 rv.merge(left_ev);
 
                 ctx.cairo.push_group();
@@ -270,7 +301,7 @@ impl Contents {
 
                 let mut m = cairo::Matrix::identity();
                 m.x0 = right_size.0 - clip_x1;
-                right_ev.offset_clamp(-m.x0, clip_x1);
+                right_ev.offset_clamp(-m.x0, -m.x0, clip_x1);
                 rv.merge(right_ev);
                 right.set_matrix(m);
                 ctx.cairo.set_source(&right);
@@ -278,18 +309,21 @@ impl Contents {
 
                 let max_side = (width - cent_size.0) / 2.0;
                 let total_room = width - (left_size.0 + right_size.0 + cent_size.0);
-                if left_size.0 < max_side && right_size.0 < max_side {
-                    // Actually center the center module
-                    m.x0 = -max_side;
-                } else if total_room >= 0.0 {
-                    // At least it will fit somewhere
-                    m.x0 = -(left_size.0 + total_room / 2.0);
-                } else {
+                if total_room < 0.0 {
                     // TODO maybe we should have cropped it?
                     return;
+                } else if left_size.0 > max_side {
+                    // left side is too long to properly center; put it just to the right of that
+                    m.x0 = -left_size.0;
+                } else if right_size.0 > max_side {
+                    // right side is too long to properly center; put it just to the left of that
+                    m.x0 = right_size.0 + cent_size.0 - clip_x1;
+                } else {
+                    // Actually center the center module
+                    m.x0 = -max_side;
                 }
                 cent.set_matrix(m);
-                cent_ev.offset_clamp(-m.x0, cent_size.0 - m.x0);
+                cent_ev.offset_clamp(-m.x0, -m.x0, cent_size.0 - m.x0);
                 rv.merge(cent_ev);
                 ctx.cairo.set_source(&cent);
                 ctx.cairo.paint();
@@ -305,6 +339,7 @@ struct EventListener {
     x_min : f64,
     x_max : f64,
     buttons : u32,
+    item : String,
     target : Action,
 }
 
@@ -340,6 +375,7 @@ impl EventSink {
             x_min : 0.0,
             x_max : 1e20,
             buttons,
+            item : String::new(),
             target : Action::from_json(value)
         })
     }
@@ -348,14 +384,18 @@ impl EventSink {
         self.handlers.extend(sink.handlers);
     }
 
-    pub fn offset_clamp(&mut self, offset : f64, max : f64) {
+    pub fn offset_clamp(&mut self, offset : f64, min : f64, max : f64) {
         for h in &mut self.handlers {
             h.x_min += offset;
             h.x_max += offset;
-            if h.x_min > max {
+            if h.x_min < min {
+                h.x_min = min;
+            } else if h.x_min > max {
                 h.x_min = max;
             }
-            if h.x_max > max {
+            if h.x_max < min {
+                h.x_max = min;
+            } else if h.x_max > max {
                 h.x_max = max;
             }
         }
@@ -370,7 +410,13 @@ impl EventSink {
             if (h.buttons & (1 << button)) == 0 {
                 continue;
             }
-            h.target.invoke(runtime);
+            if h.item.is_empty() {
+                h.target.invoke(runtime);
+            } else {
+                runtime.vars.get("item").unwrap().set_current_item(Some(h.item.clone()));
+                h.target.invoke(runtime);
+                runtime.vars.get("item").unwrap().set_current_item(None);
+            }
         }
     }
 }
@@ -446,6 +492,34 @@ impl Item {
                     },
                     events : EventSink::from_json(value),
                 }
+            }
+            Some("focus-list") => {
+                let source = match value["source"].as_str() {
+                    Some(s) => s.into(),
+                    None => {
+                        error!("A source is required for focus-list");
+                        return Contents::Null.into();
+                    }
+                };
+                let spacing = value["spacing"].as_f64().unwrap_or(0.0);
+                let item = Item::from_json_ref(&value["item"]);
+                let fitem = if value["focused-item"].is_null() {
+                    Item::from_json_ref(&value["item"])
+                } else {
+                    Item::from_json_ref(&value["focused-item"])
+                };
+
+                let items = Box::new([item, fitem]);
+                Item {
+                    fmt_config : Formatting::filter_json(value),
+                    contents : Contents::FocusList {
+                        source,
+                        items,
+                        spacing,
+                    },
+                    events : EventSink::from_json(value),
+                }
+
             }
             Some("text") |
             None => {

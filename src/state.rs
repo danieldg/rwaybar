@@ -124,6 +124,8 @@ impl State {
             draw_pending : false,
         };
 
+        state.runtime.vars.insert("item".into(), Variable::new_current_item());
+
         for (k,v) in &state.runtime.vars {
             v.init(k, &state.runtime);
         }

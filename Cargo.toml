@@ -5,34 +5,28 @@ authors = ["Daniel De Graaf <code@danieldg.net>"]
 edition = "2018"
 
 [dependencies]
-env_logger = ""
-log = ""
-linked-hash-map = ""
-
-# Wayland
-smithay-client-toolkit = ""
-wayland-protocols = ""
-wayland-client = ""
-wayland-cursor = ""
-
-# Drawing
-cairo-rs = { version = "", features = ['png'] }
-pangocairo = ""
-pango = ""
-# Bugfixes in pango
-pango-sys = ""
-glib = ""
-
-# icons
-gdk-pixbuf = ""
-
-# Runtime
+# Basic runtime
 calloop = ""
-chrono = ""
-chrono-tz = ""
+env_logger = ""
 json = ""
 libc = ""
+linked-hash-map = ""
+log = ""
 strfmt = ""
 
-# TODO
+# GUI
+cairo-rs = { version = "", features = ['png'] }
+pango = ""
+pango-sys = "" # for pango_color_parse
+pangocairo = ""
+smithay-client-toolkit = ""
+wayland-client = ""
+wayland-cursor = ""
+wayland-protocols = ""
+
+# Module specific (could be optional deps)
+chrono = ""
+chrono-tz = ""
+dbus = { version = "", features = ['futures'] }
+gdk-pixbuf = ""
 regex = ""
