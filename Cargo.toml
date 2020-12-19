@@ -6,20 +6,22 @@ edition = "2018"
 
 [dependencies]
 # Basic runtime
-calloop = ""
+bytes = ""
 env_logger = ""
+futures-util = ""
 json = ""
 libc = ""
 linked-hash-map = ""
 log = ""
 strfmt = ""
+tokio = { version = "0.3", features = ['rt', 'net', 'sync', 'io-util', 'time'] }
 
 # GUI
 cairo-rs = { version = "", features = ['png'] }
 pango = ""
 pango-sys = "" # for pango_color_parse
 pangocairo = ""
-smithay-client-toolkit = ""
+smithay-client-toolkit = { version = "", default-features = false }
 wayland-client = ""
 wayland-cursor = ""
 wayland-protocols = ""

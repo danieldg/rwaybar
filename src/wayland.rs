@@ -1,5 +1,4 @@
 use log::debug;
-use smithay_client_toolkit::WaylandSource;
 use smithay_client_toolkit::environment::{SimpleGlobal,MultiGlobalHandler};
 use smithay_client_toolkit::environment::Environment;
 use smithay_client_toolkit::environment;
@@ -129,7 +128,7 @@ pub struct WaylandClient {
 }
 
 impl WaylandClient {
-    pub fn new(eloop : calloop::LoopHandle<State>) -> Result<Self, Box<dyn Error>> {
+    pub fn new() -> Result<(Self, wayland_client::EventQueue), Box<dyn Error>> {
         let display = wayland_client::Display::connect_to_env()?;
 
         let mut wl_queue = display.create_event_queue();
@@ -143,8 +142,6 @@ impl WaylandClient {
             xdg_wm : SimpleGlobal::new(),
             xdg_out : SimpleGlobal::new(),
         })?;
-
-        WaylandSource::new(wl_queue).quick_insert(eloop)?;
 
         let shm = env.create_simple_pool(|_| ())?;
 
@@ -184,7 +181,7 @@ impl WaylandClient {
         // kick off the initial configuration events
         client.display.flush()?;
 
-        Ok(client)
+        Ok((client, wl_queue))
     }
 
     pub fn add_seat(&mut self, seat : &Attached<WlSeat>, si : &SeatData) {

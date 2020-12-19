@@ -1,7 +1,6 @@
-use calloop::LoopHandle;
 use crate::Variable as VariableTrait;
 use crate::sway;
-use crate::state::{State,Runtime};
+use crate::state::Runtime;
 use json::JsonValue;
 use log::{debug,info,warn,error};
 use std::fmt;
@@ -11,6 +10,7 @@ use std::os::unix::io::{AsRawFd,IntoRawFd};
 use std::process::{Command,Stdio,ChildStdin};
 use std::rc::Rc;
 use std::time::{Duration,Instant};
+use tokio::io::unix::AsyncFd;
 use libc;
 
 /// Wrapper around [std::cell::Cell] that implements [fmt::Debug].
@@ -295,62 +295,73 @@ pub struct Variable {
     module : Module,
 }
 
-fn do_exec_json(eloop : &LoopHandle<State>, fd : i32, name : String, value : Rc<Cell<JsonValue>>) {
-    let src = calloop::generic::Generic::from_fd(fd, calloop::Interest::Readable, calloop::Mode::Level);
-    let mut buffer : Vec<u8> = Vec::with_capacity(1024);
+fn do_exec_json(fd : i32, name : String, value : Rc<Cell<JsonValue>>, redraw : Rc<tokio::sync::Notify>) {
+    tokio::task::spawn_local(async move {
+        let afd = match AsyncFd::new(super::Fd(fd)) {
+            Ok(fd) => fd,
+            Err(_) => return,
+        };
+        let mut buffer : Vec<u8> = Vec::with_capacity(1024);
 
-    eloop.insert_source(src, move |how, fd, state| {
-        let fd = fd.as_raw_fd();
-        if how.error {
-            unsafe { libc::close(fd); }
-        } else if how.readable {
-            loop {
-                if buffer.len() == buffer.capacity() {
-                    buffer.reserve(2048);
-                }
-                unsafe {
-                    let start = buffer.len();
-                    let max_len = buffer.capacity() - start;
-                    let rv = libc::read(fd, buffer.as_mut_ptr().offset(start as isize) as *mut _, max_len);
-                    match rv {
-                        0 => {
-                            libc::close(fd);
-                            return Ok(());
-                        }
-                        len if rv > 0 && rv <= max_len as _ => {
-                            buffer.set_len(start + len as usize);
-                        }
-                        _ => {
-                            let e = io::Error::last_os_error();
-                            match e.kind() {
-                                io::ErrorKind::Interrupted => continue,
-                                io::ErrorKind::WouldBlock => return Ok(()),
-                                _ => return Err(e),
+        loop {
+            match async {
+                let mut rh = afd.readable().await?;
+                loop {
+                    if buffer.len() == buffer.capacity() {
+                        buffer.reserve(2048);
+                    }
+                    unsafe {
+                        let start = buffer.len();
+                        let max_len = buffer.capacity() - start;
+                        let rv = libc::read(fd, buffer.as_mut_ptr().offset(start as isize) as *mut _, max_len);
+                        match rv {
+                            0 => {
+                                libc::close(fd);
+                                return Ok(());
+                            }
+                            len if rv > 0 && rv <= max_len as _ => {
+                                buffer.set_len(start + len as usize);
+                            }
+                            _ => {
+                                let e = io::Error::last_os_error();
+                                match e.kind() {
+                                    io::ErrorKind::Interrupted => continue,
+                                    io::ErrorKind::WouldBlock => {
+                                        rh.clear_ready();
+                                        return Ok(());
+                                    }
+                                    _ => return Err(e),
+                                }
                             }
                         }
                     }
-                }
-                while let Some(eol) = buffer.iter().position(|&c| c == b'\n') {
-                    let mut json = None;
-                    match std::str::from_utf8(&buffer[..eol]) {
-                        Err(_) => info!("Ignoring bad UTF8 from '{}'", name),
-                        Ok(v) => {
-                            debug!("'{}': {}", name, v);
-                            match json::parse(v) {
-                                Ok(v) => { json = Some(v); }
-                                Err(e) => info!("Ignoring bad JSON from '{}': {}", name, e),
+                    while let Some(eol) = buffer.iter().position(|&c| c == b'\n') {
+                        let mut json = None;
+                        match std::str::from_utf8(&buffer[..eol]) {
+                            Err(_) => info!("Ignoring bad UTF8 from '{}'", name),
+                            Ok(v) => {
+                                debug!("'{}': {}", name, v);
+                                match json::parse(v) {
+                                    Ok(v) => { json = Some(v); }
+                                    Err(e) => info!("Ignoring bad JSON from '{}': {}", name, e),
+                                }
                             }
                         }
+                        buffer.drain(..eol + 1);
+                        let json = match json { Some(json) => json, None => continue };
+                        value.set(json);
+                        redraw.notify_one();
                     }
-                    buffer.drain(..eol + 1);
-                    let json = match json { Some(json) => json, None => continue };
-                    value.set(json);
-                    state.request_draw();
+                }
+            }.await {
+                Ok(()) => continue,
+                Err(e) => {
+                    warn!("Error reading from JSON child: {}", e);
+                    return;
                 }
             }
         }
-        Ok(())
-    }).expect("Error adding FD");
+    });
 }
 
 impl Variable {
@@ -391,7 +402,7 @@ impl Variable {
                         stdin.set(Some(pipe_in));
                         value.set(JsonValue::Null);
 
-                        do_exec_json(&rt.eloop, fd, name.to_owned(), value.clone());
+                        do_exec_json(fd, name.to_owned(), value.clone(), rt.notify.clone());
                     }
                 }
             }
@@ -405,15 +416,6 @@ impl Variable {
     pub fn update(&self, name : &str, rt : &Runtime) {
         match &self.module {
             Module::Clock { format, zone, time } => {
-                let now = chrono::Utc::now();
-
-                // Set a timer to expire when the subsecond offset will be zero
-                let subsec = chrono::Timelike::nanosecond(&now) as u64;
-                // add another 1ms delay because epoll only gets 1ms granularity
-                let delay = 1_000_999_999u64.checked_sub(subsec);
-                let wake = Instant::now() + delay.map_or(Duration::from_secs(1), Duration::from_nanos);
-                rt.set_wake_at(wake);
-
                 let real_format = rt.format(&format).unwrap_or_else(|e| {
                     warn!("Error expanding '{}' format: {}", name, e);
                     String::new()
@@ -422,6 +424,23 @@ impl Variable {
                     warn!("Error expanding '{}' timezone format: {}", name, e);
                     String::new()
                 });
+
+                let now = chrono::Utc::now();
+                let subsec = chrono::Timelike::nanosecond(&now) as u64;
+                let wake;
+                if real_format.contains("%S") || real_format.contains("%T") || real_format.contains("%X") {
+                    let delay = 1_000_999_999u64.checked_sub(subsec);
+                    wake = Instant::now() + delay.map_or(Duration::from_secs(1), Duration::from_nanos);
+                } else {
+                    let sec = chrono::Timelike::second(&now) as u64;
+                    let delay = (1_000_000_000 * (60 - sec) + 999_999).checked_sub(subsec);
+                    wake = Instant::now() + delay.map_or(Duration::from_secs(1), Duration::from_nanos);
+                }
+
+                // Set a timer to expire when the subsecond offset will be zero
+                // add another 1ms delay because epoll only gets 1ms granularity
+                rt.set_wake_at(wake);
+
                 if real_zone.is_empty() {
                     time.set(format!("{}", now.with_timezone(&chrono::Local).format(&real_format)));
                 } else {
@@ -438,13 +457,16 @@ impl Variable {
             Module::ReadFile { name, poll, last_read, contents } => {
                 let now = Instant::now();
                 if *poll > 0.0 {
-                    let next = last_read.get().map_or(now, |v| v + Duration::from_secs_f64(*poll));
-                    if next > now {
-                        rt.set_wake_at(next);
-                        return;
-                    } else {
-                        rt.set_wake_at(now + Duration::from_secs_f64(*poll));
+                    let last = last_read.get();
+                    if let Some(last) = last {
+                        let next = last + Duration::from_secs_f64(*poll);
+                        let early = last + Duration::from_secs_f64(*poll * 0.9);
+                        if early > now {
+                            rt.set_wake_at(next);
+                            return;
+                        }
                     }
+                    rt.set_wake_at(now + Duration::from_secs_f64(*poll));
                 } else if last_read.get().is_some() {
                     return;
                 }

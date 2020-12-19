@@ -1,10 +1,13 @@
+use futures_util::future::select;
+use futures_util::pin_mut;
 use json::JsonValue;
 use linked_hash_map::LinkedHashMap;
 use log::{info,warn,error};
-use std::cell::Cell;
+use std::cell::{Cell,RefCell};
 use std::collections::HashMap;
 use std::error::Error;
 use std::time::Instant;
+use std::rc::Rc;
 use wayland_client::Attached;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -49,18 +52,27 @@ impl Bar {
 
 /// Common state available during rendering operations
 pub struct Runtime {
-    pub eloop : calloop::LoopHandle<State>,
-    pub wake_at : Cell<Option<Instant>>,
     pub vars : LinkedHashMap<String, Variable>,
     pub items : HashMap<String, Item>,
+    pub notify : Rc<tokio::sync::Notify>,
+    refresh : Rc<RefreshState>,
+}
+
+#[derive(Default)]
+struct RefreshState {
+    time : Cell<Option<Instant>>,
+    notify : tokio::sync::Notify,
 }
 
 impl Runtime {
     pub fn set_wake_at(&self, wake : Instant) {
-        match self.wake_at.get() {
-            Some(then) if wake > then => {}
-            _ => { self.wake_at.set(Some(wake)) }
+        match self.refresh.time.get() {
+            Some(t) if t < wake => return,
+            _ => ()
         }
+
+        self.refresh.time.set(Some(wake));
+        self.refresh.notify.notify_one();
     }
 
     pub fn format(&self, fmt : &str) -> Result<String, strfmt::FmtError> {
@@ -95,11 +107,10 @@ pub struct State {
     pub bars : Vec<Bar>,
     config : JsonValue,
     pub runtime : Runtime,
-    draw_pending : bool,
 }
 
 impl State {
-    pub fn new(wayland : WaylandClient, eloop : calloop::LoopHandle<State>) -> Result<Self, Box<dyn Error>> {
+    pub fn new(wayland : WaylandClient) -> Result<Rc<RefCell<Self>>, Box<dyn Error>> {
         let cfg = std::fs::read_to_string("rwaybar.json")?;
         let config = json::parse(&cfg)?;
 
@@ -115,13 +126,12 @@ impl State {
             wayland,
             bars : Vec::new(),
             runtime : Runtime {
-                eloop,
-                wake_at : Cell::new(None),
                 vars,
                 items,
+                refresh : Default::default(),
+                notify : Rc::new(tokio::sync::Notify::new()),
             },
             config,
-            draw_pending : false,
         };
 
         state.runtime.vars.insert("item".into(), Variable::new_current_item());
@@ -130,21 +140,53 @@ impl State {
             v.init(k, &state.runtime);
         }
         state.set_data();
-        Ok(state)
+
+        let notify = state.runtime.notify.clone();
+        let refresh = state.runtime.refresh.clone();
+        tokio::task::spawn_local(async move {
+            loop {
+                use futures_util::future::Either;
+                if let Some(deadline) = refresh.time.get() {
+                    let sleep = tokio::time::sleep_until(deadline.into());
+                    let wake = refresh.notify.notified();
+                    pin_mut!(sleep, wake);
+                    match select(sleep, wake).await {
+                        Either::Left(_) => {
+                            log::debug!("wake_at triggered refresh");
+                            refresh.time.set(None);
+                            notify.notify_one();
+                        }
+                        _ => {}
+                    }
+                } else {
+                    refresh.notify.notified().await;
+                }
+            }
+        });
+
+        let notify = state.runtime.notify.clone();
+        let rv = Rc::new(RefCell::new(state));
+        let state = rv.clone();
+        tokio::task::spawn_local(async move {
+            loop {
+                notify.notified().await;
+                state.borrow_mut().tick();
+            }
+        });
+
+
+        Ok(rv)
     }
 
     pub fn request_draw(&mut self) {
-        if !self.draw_pending {
-            self.draw_pending = true;
-            self.runtime.eloop.insert_idle(|state| state.tick());
-        }
+        self.runtime.notify.notify_one();
     }
 
     fn draw_now(&mut self) -> Result<(), Box<dyn Error>> {
         let mut shm_size = 0;
         let shm_pos : Vec<_> = self.bars.iter().map(|bar| {
             let pos = shm_size;
-            let len = if bar.dirty || self.draw_pending {
+            let len = if bar.dirty || true {
                 let stride = cairo::Format::ARgb32.stride_for_width(bar.width as u32).unwrap();
                 (bar.height as usize) * (stride as usize)
             } else {
@@ -153,7 +195,6 @@ impl State {
             shm_size += len;
             (pos, len)
         }).collect();
-        self.draw_pending = false;
 
         if shm_size == 0 {
             return Ok(());

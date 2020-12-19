@@ -1,11 +1,16 @@
 use std::error::Error;
-use std::time::Instant;
+use std::io;
+use std::os::unix::io::RawFd;
+use tokio::io::unix::AsyncFd;
 
 mod data;
 mod item;
 mod state;
 mod sway;
 mod wayland;
+
+use state::State;
+use wayland::WaylandClient;
 
 pub trait Variable : std::fmt::Debug {
     fn from_json(config : &json::JsonValue) -> Option<Self>
@@ -22,8 +27,12 @@ pub trait Variable : std::fmt::Debug {
     }
 }
 
-use state::State;
-use wayland::WaylandClient;
+struct Fd(RawFd);
+impl std::os::unix::io::AsRawFd for Fd {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0
+    }
+}
 
 fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
@@ -32,19 +41,58 @@ fn main() -> Result<(), Box<dyn Error>> {
     // handle any respawning required.
     unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN); }
 
-    let mut eloop = calloop::EventLoop::new()?;
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
 
-    let client = WaylandClient::new(eloop.handle())?;
-    let mut state = State::new(client, eloop.handle())?;
+    let (client, mut wl_queue) = WaylandClient::new()?;
 
-    // everything else is event-triggered
-    loop {
-        let timeout = state.runtime.wake_at.get()
-            .map(|alarm| alarm.saturating_duration_since(Instant::now()));
-        eloop.dispatch(timeout, &mut state)?;
-        if state.runtime.wake_at.get().map_or(false, |alarm| alarm <= Instant::now()) {
-            state.runtime.wake_at.set(None);
-            state.tick();
+    tokio::task::LocalSet::new().block_on(&rt, async move {
+        let state = State::new(client)?;
+        let fd = AsyncFd::new(Fd(wl_queue.display().get_connection_fd()))?;
+
+        loop {
+            if let Some(reader) = wl_queue.prepare_read() {
+                let mut rg = fd.readable().await?;
+                dbg!();
+                match reader.read_events() {
+                    Ok(()) => {
+                        rg.retain_ready();
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        rg.clear_ready();
+                    }
+                    Err(e) => Err(e)?,
+                }
+            }
+
+            let mut lock = state.borrow_mut();
+            wl_queue.dispatch_pending(&mut *lock, |event, object, _| {
+                panic!("Orphan event: {}@{} : {}", event.interface, object.as_ref().id(), event.name);
+            })?;
+            drop(lock);
+
+
+            match wl_queue.display().flush() {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    dbg!();
+                    let mut wg = fd.writable().await?;
+                    loop {
+                        match wl_queue.display().flush() {
+                            Ok(()) => {
+                                wg.retain_ready();
+                                break;
+                            }
+                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                                wg.clear_ready();
+                            }
+                            Err(e) => Err(e)?,
+                        }
+                    }
+                }
+                Err(e) => Err(e)?,
+            }
         }
-    }
+
+        //std::future::pending().await
+    })
 }
