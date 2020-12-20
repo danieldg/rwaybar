@@ -108,7 +108,7 @@ enum Module {
 
 impl Module {
     fn from_json(value : &JsonValue) -> Self {
-        match value["module"].as_str() {
+        match value["type"].as_str() {
             Some("clock") => {
                 let format = value["format"].as_str().unwrap_or("%H:%M").to_owned();
                 let zone = value["timezone"].as_str().unwrap_or("").to_owned();
@@ -193,13 +193,9 @@ impl Module {
                 values[e] = value["above"].as_str().unwrap_or(&values[e - 1]).to_owned();
                 Module::Meter { min, max, src, values, looped : Cell::new(false) }
             }
-            None => {
-                if let Some(value) = value.as_str().map(String::from) {
-                    Module::Value { value : Cell::new(value) }
-                } else {
-                    error!("Invalid module definition: {}", value);
-                    Module::None
-                }
+            None if value.as_str().is_some() => {
+                let value = value.as_str().unwrap().into();
+                Module::Value { value : Cell::new(value) }
             }
             Some("mpris") => {
                 let mpris = MediaPlayer2::new();
@@ -211,8 +207,7 @@ impl Module {
             Some("sway-workspace") => {
                 sway::Workspace::from_json(value).map_or(Module::None, Module::SwayWorkspace)
             }
-            Some(m) => {
-                error!("Unknown module '{}' in variable definition", m);
+            _ => {
                 Module::None
             }
         }
@@ -272,9 +267,9 @@ impl Action {
                     None => (&target[..], ""),
                 };
 
-                match runtime.vars.get(name) {
-                    Some(var) => {
-                        var.write(name, key, value, &runtime);
+                match runtime.items.get(name) {
+                    Some(item) => {
+                        item.data.write(name, key, value, &runtime);
                     }
                     None => error!("Could not find variable {}", target),
                 }
@@ -383,19 +378,13 @@ fn do_exec_json(fd : i32, name : String, value : Rc<Cell<JsonValue>>, redraw : R
 
 impl Variable {
     /// Parse a variable from the JSON configuration
-    pub fn new((key, value) : (&str, &JsonValue)) -> (String, Self) {
-        let name = key.into();
-        if key.contains('.') {
-            error!("Variable name '{}' contains a '.', cannot be read", key);
-        }
-        match key {
-            "item" => {
-                warn!("Variable name '{}' may collide with an automatic variable", key);
-            }
-            _ => {}
-        }
+    pub fn from_json(value : &JsonValue) -> Self {
         let module = Module::from_json(value);
-        (name, Variable { module })
+        Variable { module }
+    }
+
+    pub fn is_none(&self) -> bool {
+        matches!(self.module, Module::None)
     }
 
     /// One-time setup, if needed
@@ -620,6 +609,9 @@ impl Variable {
         }
     }
 
+    pub fn none() -> Self {
+        Variable { module : Module::None }
+    }
 
     pub fn new_current_item() -> Self {
         Variable { module : Module::Item { value : Cell::new(String::new()) } }

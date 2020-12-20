@@ -1,7 +1,6 @@
 use futures_util::future::select;
 use futures_util::pin_mut;
 use json::JsonValue;
-use linked_hash_map::LinkedHashMap;
 use log::{info,warn,error};
 use std::cell::{Cell,RefCell};
 use std::collections::HashMap;
@@ -53,7 +52,6 @@ impl Bar {
 
 /// Common state available during rendering operations
 pub struct Runtime {
-    pub vars : LinkedHashMap<String, Variable>,
     pub items : HashMap<String, Item>,
     pub notify : Rc<tokio::sync::Notify>,
     refresh : Rc<RefreshState>,
@@ -82,9 +80,9 @@ impl Runtime {
                 Some(p) => (&q.key[..p], &q.key[p + 1..]),
                 None => (&q.key[..], ""),
             };
-            match self.vars.get(name) {
-                Some(var) => {
-                    var.read_in(name, key, self, |s| q.str(s))
+            match self.items.get(name) {
+                Some(item) => {
+                    item.data.read_in(name, key, self, |s| q.str(s))
                 }
                 None => Err(strfmt::FmtError::KeyError(name.to_string()))
             }
@@ -117,17 +115,14 @@ impl State {
 
         let items = config["items"].entries().map(|(key, value)| {
             let key = key.to_owned();
-            let value = Item::from_json_txt(value);
+            let value = Item::from_item_list(value);
             (key, value)
         }).collect();
-
-        let vars = config["vars"].entries().map(Variable::new).collect();
 
         let mut state = Self {
             wayland,
             bars : Vec::new(),
             runtime : Runtime {
-                vars,
                 items,
                 refresh : Default::default(),
                 notify : Rc::new(tokio::sync::Notify::new()),
@@ -135,10 +130,10 @@ impl State {
             config,
         };
 
-        state.runtime.vars.insert("item".into(), Variable::new_current_item());
+        state.runtime.items.insert("item".into(), Variable::new_current_item().into());
 
-        for (k,v) in &state.runtime.vars {
-            v.init(k, &state.runtime);
+        for (k,v) in &state.runtime.items {
+            v.data.init(k, &state.runtime);
         }
         state.set_data();
 
@@ -316,8 +311,8 @@ impl State {
     }
 
     fn set_data(&mut self) {
-        for (k, v) in &self.runtime.vars {
-            v.update(k, &self.runtime);
+        for (k, v) in &self.runtime.items {
+            v.data.update(k, &self.runtime);
         }
 
         // TODO maybe don't refresh all bars all the time?  Needs real dirty tracking.

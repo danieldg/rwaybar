@@ -1,5 +1,5 @@
 use json::JsonValue;
-use crate::data::Action;
+use crate::data::{Action,Variable};
 use crate::state::Runtime;
 use crate::tray;
 use log::{debug,warn,error};
@@ -88,6 +88,7 @@ impl Align {
 pub struct Item {
     fmt_config : json::object::Object,
     contents : Contents,
+    pub data : Variable,
     events : EventSink,
 }
 
@@ -335,14 +336,14 @@ impl Contents {
                 }
             }
             Contents::FocusList { source, items, spacing } => {
-                let source = match ctx.runtime.vars.get(source) {
+                let source = match ctx.runtime.items.get(source) {
                     Some(var) => var,
                     None => return,
                 };
-                let item_var = ctx.runtime.vars.get("item").unwrap();
+                let item_var = ctx.runtime.items.get("item").unwrap();
                 ctx.cairo.rel_move_to(*spacing, 0.0);
-                source.read_focus_list(|item, focus| {
-                    item_var.set_current_item(Some(item.to_owned()));
+                source.data.read_focus_list(|item, focus| {
+                    item_var.data.set_current_item(Some(item.to_owned()));
                     let x0 = ctx.cairo.get_current_point().0;
                     let mut ev = if focus {
                         items[1].render(ctx)
@@ -357,11 +358,11 @@ impl Contents {
                     rv.merge(ev);
                     ctx.cairo.rel_move_to(*spacing, 0.0);
                 });
-                item_var.set_current_item(None);
+                item_var.data.set_current_item(None);
             }
             Contents::Bar { items } => {
                 let start = ctx.cairo.get_current_point();
-                let (clip_x0, _y0, clip_x1, _y1) = ctx.cairo.clip_extents();
+                let (clip_x0, clip_y0, clip_x1, _y1) = ctx.cairo.clip_extents();
                 let width = clip_x1 - clip_x0;
 
                 let left = &items[0];
@@ -418,6 +419,8 @@ impl Contents {
                 rv.merge(cent_ev);
                 ctx.cairo.set_source(&cent);
                 ctx.cairo.paint();
+
+                ctx.cairo.move_to(clip_x1, clip_y0);
             }
             Contents::Tray { spacing } => {
                 tray::show(ctx, rv, *spacing);
@@ -520,9 +523,9 @@ impl EventSink {
             if h.item.is_empty() {
                 h.target.invoke(runtime, button);
             } else {
-                runtime.vars.get("item").unwrap().set_current_item(Some(h.item.clone()));
+                runtime.items.get("item").unwrap().data.set_current_item(Some(h.item.clone()));
                 h.target.invoke(runtime, button);
-                runtime.vars.get("item").unwrap().set_current_item(None);
+                runtime.items.get("item").unwrap().data.set_current_item(None);
             }
         }
     }
@@ -533,7 +536,19 @@ impl From<Contents> for Item {
         Self {
             fmt_config : json::object::Object::new(),
             events : EventSink::default(),
-            contents
+            contents,
+            data : Variable::none(),
+        }
+    }
+}
+
+impl From<Variable> for Item {
+    fn from(data : Variable) -> Self {
+        Self {
+            fmt_config : json::object::Object::new(),
+            events : EventSink::default(),
+            contents : Contents::Null,
+            data
         }
     }
 }
@@ -548,6 +563,7 @@ impl Item {
             fmt_config : Formatting::filter_json(cfg),
             contents : Contents::Bar { items : Box::new([left, center, right]) },
             events : EventSink::from_json(cfg),
+            data : Variable::none(),
         }
     }
 
@@ -571,10 +587,15 @@ impl Item {
         Self::from_json_i(value)
     }
 
-    pub fn from_json_txt(value : &JsonValue) -> Self {
+    pub fn from_item_list(value : &JsonValue) -> Self {
         if let Some(text) = value.as_str() {
             let text = text.to_owned();
-            return Contents::Text { text, markup : false }.into();
+            return Item {
+                fmt_config : json::object::Object::new(),
+                events : EventSink::default(),
+                contents : Contents::Text { text, markup : false },
+                data : Variable::from_json(value),
+            };
         }
 
         Self::from_json_i(value)
@@ -598,6 +619,7 @@ impl Item {
                         spacing,
                     },
                     events : EventSink::from_json(value),
+                    data : Variable::from_json(value),
                 }
             }
             Some("focus-list") => {
@@ -625,6 +647,7 @@ impl Item {
                         spacing,
                     },
                     events : EventSink::from_json(value),
+                    data : Variable::from_json(value),
                 }
             }
             Some("tray") => {
@@ -635,6 +658,7 @@ impl Item {
                         spacing,
                     },
                     events : EventSink::from_json(value),
+                    data : Variable::from_json(value),
                 }
             }
             Some("text") |
@@ -649,11 +673,20 @@ impl Item {
                     fmt_config : Formatting::filter_json(value),
                     contents : Contents::Text { text, markup },
                     events : EventSink::from_json(value),
+                    data : Variable::from_json(value),
                 }
             }
             Some(tipe) => {
-                error!("Unknown item type: {}", tipe);
-                Contents::Null.into()
+                let data = Variable::from_json(value);
+                if data.is_none() {
+                    error!("Unknown item type: {}", tipe);
+                }
+                Item {
+                    fmt_config : Formatting::filter_json(value),
+                    contents : Contents::Null,
+                    events : EventSink::from_json(value),
+                    data,
+                }
             }
         }
     }
