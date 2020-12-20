@@ -9,6 +9,7 @@ mod item;
 mod mpris;
 mod state;
 mod sway;
+mod tray;
 mod wayland;
 
 use state::State;

@@ -1,5 +1,6 @@
 use crate::Variable as VariableTrait;
 use crate::sway;
+use crate::tray;
 use crate::state::Runtime;
 use crate::mpris::MediaPlayer2;
 use json::JsonValue;
@@ -224,6 +225,7 @@ pub enum Action {
     Exec { format : String },
     Write { target : String, format : String },
     List(Vec<Action>),
+    Tray { owner : String, path : String },
     None,
 }
 
@@ -245,11 +247,15 @@ impl Action {
         Action::None
     }
 
-    pub fn invoke(&self, runtime : &Runtime) {
+    pub fn from_tray(owner : String, path : String) -> Self {
+        Action::Tray { owner, path }
+    }
+
+    pub fn invoke(&self, runtime : &Runtime, how : u32) {
         match self {
             Action::List(actions) => {
                 for action in actions {
-                    action.invoke(runtime);
+                    action.invoke(runtime, how);
                 }
             }
             Action::Write { target, format } => {
@@ -286,6 +292,9 @@ impl Action {
                         error!("Error expanding format for command: {}", e);
                     }
                 }
+            }
+            Action::Tray { owner, path } => {
+                tray::do_click(owner, path, how);
             }
             Action::None => { info!("Invoked a no-op"); }
         }

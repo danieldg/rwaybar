@@ -1,6 +1,7 @@
 use json::JsonValue;
 use crate::data::Action;
 use crate::state::Runtime;
+use crate::tray;
 use log::{warn,error};
 
 /// State available to an [Item] render function
@@ -187,6 +188,9 @@ enum Contents {
         // always three items: left, center, right
         items : Box<[Item;3]>,
     },
+    Tray {
+        spacing : f64,
+    },
     Null,
 }
 impl Contents {
@@ -328,6 +332,9 @@ impl Contents {
                 ctx.cairo.set_source(&cent);
                 ctx.cairo.paint();
             }
+            Contents::Tray { spacing } => {
+                tray::show(ctx, rv, *spacing);
+            }
             Contents::Null => {}
         }
     }
@@ -356,6 +363,7 @@ impl EventSink {
         sink.add_click(&value["on-click-right"], 1 << 1);
         sink.add_click(&value["on-click-middle"], 1 << 2);
         sink.add_click(&value["on-click-back"], 1 << 3);
+        sink.add_click(&value["on-click-backward"], 1 << 3);
         sink.add_click(&value["on-click-forward"], 1 << 4);
         sink.add_click(&value["on-scroll-up"], 1 << 5);
         sink.add_click(&value["on-scroll-down"], 1 << 6);
@@ -378,6 +386,18 @@ impl EventSink {
             item : String::new(),
             target : Action::from_json(value)
         })
+    }
+
+    pub fn from_tray(owner : String, path : String) -> Self {
+        let mut sink = EventSink::default();
+        sink.handlers.push(EventListener {
+            x_min : 0.0,
+            x_max : 1e20,
+            buttons : 7 | (15 << 5),
+            item : String::new(),
+            target : Action::from_tray(owner, path),
+        });
+        sink
     }
 
     pub fn merge(&mut self, sink : Self) {
@@ -411,10 +431,10 @@ impl EventSink {
                 continue;
             }
             if h.item.is_empty() {
-                h.target.invoke(runtime);
+                h.target.invoke(runtime, button);
             } else {
                 runtime.vars.get("item").unwrap().set_current_item(Some(h.item.clone()));
-                h.target.invoke(runtime);
+                h.target.invoke(runtime, button);
                 runtime.vars.get("item").unwrap().set_current_item(None);
             }
         }
@@ -519,7 +539,16 @@ impl Item {
                     },
                     events : EventSink::from_json(value),
                 }
-
+            }
+            Some("tray") => {
+                let spacing = value["spacing"].as_f64().unwrap_or(0.0);
+                Item {
+                    fmt_config : Formatting::filter_json(value),
+                    contents : Contents::Tray {
+                        spacing,
+                    },
+                    events : EventSink::from_json(value),
+                }
             }
             Some("text") |
             None => {
