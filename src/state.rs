@@ -186,7 +186,7 @@ impl State {
         let mut shm_size = 0;
         let shm_pos : Vec<_> = self.bars.iter().map(|bar| {
             let pos = shm_size;
-            let len = if bar.dirty || true {
+            let len = if bar.dirty {
                 let stride = cairo::Format::ARgb32.stride_for_width(bar.width as u32).unwrap();
                 (bar.height as usize) * (stride as usize)
             } else {
@@ -246,7 +246,6 @@ impl State {
     }
 
     fn new_bar(&self, output : &WlOutput, cfg : &JsonValue) -> Bar {
-        let i = self.bars.len();
         let ls : Attached<ZwlrLayerShellV1> = self.wayland.env.require_global();
         let surf : Attached<_> = self.wayland.env.create_surface();
         let ls_surf = ls.get_layer_surface(&surf, Some(output), Layer::Top, "bar".to_owned());
@@ -268,23 +267,35 @@ impl State {
                 ls_surf.set_anchor(Anchor::Bottom | Anchor::Left | Anchor::Right);
             }
         }
-//        ls_surf.set_exclusive_zone(size);
+        ls_surf.set_exclusive_zone(size as i32);
         ls_surf.quick_assign(move |ls_surf, event, mut data| {
             use layer_shell::zwlr_layer_surface_v1::Event;
             let state : &mut State = data.get().unwrap();
             match event {
                 Event::Configure { serial, width, height } => {
-                    state.bars[i].width = width as i32;
-                    state.bars[i].height = height as i32;
+                    for bar in &mut state.bars {
+                        if bar.ls_surf != *ls_surf {
+                            continue;
+                        }
 
-                    ls_surf.ack_configure(serial);
-                    if !state.bars[i].dirty {
-                        state.bars[i].dirty = true;
+                        bar.width = width as i32;
+                        bar.height = height as i32;
+
+                        ls_surf.ack_configure(serial);
+                        bar.dirty = true;
                     }
                     state.request_draw();
                 }
                 Event::Closed => {
-                    todo!();
+                    state.bars.retain(|bar| {
+                        if bar.ls_surf == *ls_surf {
+                            bar.ls_surf.destroy();
+                            bar.surf.destroy();
+                            false
+                        } else {
+                            true
+                        }
+                    });
                 },
                 _ => ()
             }

@@ -13,6 +13,7 @@ use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::protocol::wl_shm::WlShm;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1;
+use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_v1::ZxdgOutputV1;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 use wayland_protocols::xdg_shell::client::xdg_wm_base::XdgWmBase;
@@ -44,13 +45,13 @@ impl MultiGlobalHandler<WlOutput> for OutputHandler {
                 Event::Done => {
                     if let Some(state) = data.get::<State>() {
                         for (i, data) in state.wayland.outputs.iter().enumerate() {
-                            if data.output == **output {
+                            if data.output == *output {
                                 // TODO state tracking, catch other causes of Done being sent?
                                 state.output_ready(i);
                                 return;
                             }
                         }
-                        state.wayland.add_new_output(&output);
+                        state.wayland.add_new_output(output.into());
                     }
                 }
                 _ => ()
@@ -58,8 +59,25 @@ impl MultiGlobalHandler<WlOutput> for OutputHandler {
         });
         self.outputs.push(output.into());
     }
-    fn removed(&mut self, id: u32, _: wayland_client::DispatchData) {
-        dbg!(id); // TODO destroy bars on output removal
+    fn removed(&mut self, id: u32, mut data: wayland_client::DispatchData) {
+        if let Some(state) = data.get::<State>() {
+            state.wayland.outputs.retain(|out| {
+                if out.output.as_ref().id() == id {
+                    out.xdg.destroy();
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        self.outputs.retain(|out| {
+            if out.as_ref().id() == id {
+                out.release();
+                false
+            } else {
+                true
+            }
+        });
     }
     fn get_all(&self) -> Vec<Attached<WlOutput>> {
         self.outputs.clone()
@@ -107,7 +125,8 @@ environment!(Globals,
 /// Metadata on a [WlOutput]
 #[derive(Debug)]
 pub struct OutputData {
-    pub output : WlOutput,
+    pub output : Attached<WlOutput>,
+    pub xdg : Attached<ZxdgOutputV1>,
 
     pub pos_x : i32,
     pub pos_y : i32,
@@ -166,7 +185,7 @@ impl WaylandClient {
         };
 
         for output in client.env.get_all_globals() {
-            client.add_new_output(&output);
+            client.add_new_output(output);
         }
 
         let _seat_watcher = client.env.listen_for_seats(|seat, si, mut data| {
@@ -187,37 +206,31 @@ impl WaylandClient {
     pub fn add_seat(&mut self, seat : &Attached<WlSeat>, si : &SeatData) {
         if si.has_pointer {
             let mouse = seat.get_pointer();
-            let mut bar_idx = None;
+            let mut over = None;
             let mut x = 0.0;
             let mut y = 0.0;
             mouse.quick_assign(move |mouse, event, mut data| {
                 use wayland_client::protocol::wl_pointer::Event;
                 let state : &mut State = data.get().unwrap();
-                match &event {
+                match event {
                     Event::Enter { serial, surface, surface_x, surface_y, .. } => {
                         let spot = state.wayland.cursor[0].hotspot();
-                        mouse.set_cursor(*serial, Some(&state.wayland.cursor_surf), spot.0 as _, spot.1 as _);
+                        mouse.set_cursor(serial, Some(&state.wayland.cursor_surf), spot.0 as _, spot.1 as _);
 
-                        for (i, bar) in state.bars.iter().enumerate() {
-                            if *surface == *bar.surf {
-                                bar_idx = Some(i);
-                                break;
-                            }
-                        }
-                        assert!(bar_idx.is_some());
-                        x = *surface_x;
-                        y = *surface_y;
+                        over = Some(surface.as_ref().id());
+                        x = surface_x;
+                        y = surface_y;
                     }
                     Event::Motion { surface_x, surface_y, .. } => {
-                        x = *surface_x;
-                        y = *surface_y;
+                        x = surface_x;
+                        y = surface_y;
                     }
                     Event::Leave { surface, .. } => {
-                        if *surface == *state.bars[bar_idx.unwrap()].surf {
-                            bar_idx = None;
+                        if Some(surface.as_ref().id()) == over {
+                            over = None;
                         }
                     }
-                    &Event::Button {
+                    Event::Button {
                         button, state : ButtonState::Pressed, ..
                     } => {
                         let button_id = match button {
@@ -232,10 +245,15 @@ impl WaylandClient {
                                 return;
                             }
                         };
-                        state.bars[bar_idx.unwrap()].sink.button(x,y,button_id, &mut state.runtime);
+                        for bar in &mut state.bars {
+                            if Some(bar.surf.as_ref().id()) != over {
+                                continue;
+                            }
+                            bar.sink.button(x,y,button_id, &mut state.runtime);
+                        }
                         state.request_draw();
                     }
-                    &Event::Axis { axis, value, .. } => {
+                    Event::Axis { axis, value, .. } => {
                         dbg!(value);
                         // TODO minimum scroll distance and/or rate?
                         let button_id = match axis {
@@ -245,7 +263,12 @@ impl WaylandClient {
                             Axis::HorizontalScroll if value > 0.0 => 8, // right
                             _ => return,
                         };
-                        state.bars[bar_idx.unwrap()].sink.button(x,y,button_id, &mut state.runtime);
+                        for bar in &mut state.bars {
+                            if Some(bar.surf.as_ref().id()) != over {
+                                continue;
+                            }
+                            bar.sink.button(x,y,button_id, &mut state.runtime);
+                        }
                         state.request_draw();
                     }
                     _ => ()
@@ -274,38 +297,43 @@ impl WaylandClient {
         }
     }
 
-    pub fn add_new_output(&mut self, output : &WlOutput) {
-        let i = self.outputs.len();
+    pub fn add_new_output(&mut self, output : Attached<WlOutput>) {
         let mgr : Attached<ZxdgOutputManagerV1> = self.env.require_global();
-        let xdg_out = mgr.get_xdg_output(output);
+        let xdg_out = mgr.get_xdg_output(&output);
 
-        xdg_out.quick_assign(move |_xdg_out, event, mut data| {
+        xdg_out.quick_assign(move |xdg_out, event, mut data| {
             use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_v1::Event;
             let state : &mut State = data.get().unwrap();
-            let data = &mut state.wayland.outputs[i];
-            match event {
-                Event::LogicalPosition { x, y } => {
-                    data.pos_x = x;
-                    data.pos_y = y;
+            for (i, data) in state.wayland.outputs.iter_mut().enumerate() {
+                if data.xdg != *xdg_out {
+                    continue;
                 }
-                Event::LogicalSize { width, height } => {
-                    data.size_x = width;
-                    data.size_y = height;
+                match event {
+                    Event::LogicalPosition { x, y } => {
+                        data.pos_x = x;
+                        data.pos_y = y;
+                    }
+                    Event::LogicalSize { width, height } => {
+                        data.size_x = width;
+                        data.size_y = height;
+                    }
+                    Event::Name { name } => {
+                        data.name = name;
+                    }
+                    Event::Description { description } => {
+                        data.description = description;
+                    }
+                    Event::Done => {
+                        state.output_ready(i);
+                    }
+                    _ => ()
                 }
-                Event::Name { name } => {
-                    data.name = name;
-                }
-                Event::Description { description } => {
-                    data.description = description;
-                }
-                Event::Done => {
-                    state.output_ready(i);
-                }
-                _ => ()
+                return;
             }
         });
         self.outputs.push(OutputData {
-            output : output.clone(),
+            output,
+            xdg : xdg_out.into(),
             pos_x : 0,
             pos_y : 0,
             size_x : 0,

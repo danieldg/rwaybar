@@ -189,6 +189,7 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<String, Varian
                 }
             }
         });
+        tray.redraw.take().map(|notify| notify.notify_one());
     });
 }
 
