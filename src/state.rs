@@ -43,6 +43,7 @@ impl Bar {
         let ctx = Render {
             cairo : &ctx,
             font : &font,
+            align : Align::bar_default(),
             runtime,
         };
 
