@@ -10,6 +10,7 @@ use std::rc::Rc;
 use wayland_client::Attached;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_surface::WlSurface;
+use wayland_client::protocol::wl_callback::WlCallback;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client as layer_shell;
 
 use layer_shell::zwlr_layer_shell_v1::{ZwlrLayerShellV1, Layer};
@@ -27,6 +28,7 @@ pub struct Bar {
     width : i32,
     height : i32,
     dirty : bool,
+    throttle : Option<Attached<WlCallback>>,
     item : Item,
 }
 
@@ -106,6 +108,7 @@ pub struct State {
     pub bars : Vec<Bar>,
     config : JsonValue,
     pub runtime : Runtime,
+    need_update : bool,
     draw_waiting_on_shm : bool,
 }
 
@@ -129,6 +132,7 @@ impl State {
                 notify : Rc::new(tokio::sync::Notify::new()),
             },
             config,
+            need_update : true,
             draw_waiting_on_shm : false,
         };
 
@@ -168,19 +172,24 @@ impl State {
         tokio::task::spawn_local(async move {
             loop {
                 notify.notified().await;
-                state.borrow_mut().request_draw_internal();
+                state.borrow_mut().request_draw_internal(true);
             }
         });
 
-
         Ok(rv)
+    }
+
+    pub fn request_update(&mut self) {
+        self.need_update = true;
+        self.request_draw();
     }
 
     pub fn request_draw(&mut self) {
         self.runtime.notify.notify_one();
     }
 
-    fn request_draw_internal(&mut self) {
+    fn request_draw_internal(&mut self, force_update : bool) {
+        self.need_update |= force_update;
         if self.wayland.shm.is_used() {
             self.draw_waiting_on_shm = true;
         } else {
@@ -191,10 +200,24 @@ impl State {
 
     pub fn shm_ok_callback(&mut self) {
         if self.draw_waiting_on_shm {
-            dbg!();
             self.draw_waiting_on_shm = false;
             self.set_data();
             self.draw_now().expect("Render error");
+        }
+    }
+
+    fn set_data(&mut self) {
+        if !self.need_update {
+            return;
+        }
+        for (k, v) in &self.runtime.items {
+            v.data.update(k, &self.runtime);
+        }
+        self.need_update = false;
+
+        // TODO maybe don't refresh all bars all the time?  Needs real dirty tracking.
+        for bar in &mut self.bars {
+            bar.dirty = true;
         }
     }
 
@@ -202,7 +225,7 @@ impl State {
         let mut shm_size = 0;
         let shm_pos : Vec<_> = self.bars.iter().map(|bar| {
             let pos = shm_size;
-            let len = if bar.dirty {
+            let len = if bar.dirty && bar.throttle.is_none() {
                 let stride = cairo::Format::ARgb32.stride_for_width(bar.width as u32).unwrap();
                 (bar.height as usize) * (stride as usize)
             } else {
@@ -219,7 +242,7 @@ impl State {
         self.wayland.shm.resize(shm_size).expect("OOM");
 
         for (bar, (pos, len)) in self.bars.iter_mut().zip(shm_pos) {
-            if !bar.dirty {
+            if !bar.dirty || bar.throttle.is_some() {
                 continue;
             }
             let stride = cairo::Format::ARgb32.stride_for_width(bar.width as u32).unwrap();
@@ -238,7 +261,24 @@ impl State {
             let buf = self.wayland.shm.buffer(pos as i32, bar.width, bar.height, stride, smithay_client_toolkit::shm::Format::Argb8888);
             bar.surf.attach(Some(&buf), 0, 0);
             bar.surf.damage_buffer(0, 0, bar.width, bar.height);
+            let frame = bar.surf.frame();
+            let id = frame.as_ref().id();
+            frame.quick_assign(move |_frame, _event, mut data| {
+                let state : &mut State = data.get().unwrap();
+                for bar in &mut state.bars {
+                    let done = match bar.throttle.as_ref() {
+                        Some(cb) if !cb.as_ref().is_alive() => true,
+                        Some(cb) if cb.as_ref().id() == id => true,
+                        _ => false,
+                    };
+                    if done {
+                        bar.throttle.take();
+                    }
+                }
+                state.request_draw_internal(false);
+            });
             bar.surf.commit();
+            bar.throttle = Some(frame.into());
             bar.dirty = false;
         }
         self.wayland.display.flush()?;
@@ -327,17 +367,7 @@ impl State {
             height : 0,
             sink : EventSink::default(),
             dirty : false,
-        }
-    }
-
-    fn set_data(&mut self) {
-        for (k, v) in &self.runtime.items {
-            v.data.update(k, &self.runtime);
-        }
-
-        // TODO maybe don't refresh all bars all the time?  Needs real dirty tracking.
-        for bar in &mut self.bars {
-            bar.dirty = true;
+            throttle : None,
         }
     }
 }

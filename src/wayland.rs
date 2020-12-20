@@ -254,7 +254,7 @@ impl WaylandClient {
                             }
                             bar.sink.button(x,y,button_id, &mut state.runtime);
                         }
-                        state.request_draw();
+                        state.request_update();
                     }
                     Event::Axis { axis, value, .. } => {
                         dbg!(value);
@@ -272,7 +272,7 @@ impl WaylandClient {
                             }
                             bar.sink.button(x,y,button_id, &mut state.runtime);
                         }
-                        state.request_draw();
+                        state.request_update();
                     }
                     _ => ()
                 }
