@@ -106,6 +106,7 @@ pub struct State {
     pub bars : Vec<Bar>,
     config : JsonValue,
     pub runtime : Runtime,
+    draw_waiting_on_shm : bool,
 }
 
 impl State {
@@ -128,6 +129,7 @@ impl State {
                 notify : Rc::new(tokio::sync::Notify::new()),
             },
             config,
+            draw_waiting_on_shm : false,
         };
 
         state.runtime.items.insert("item".into(), Variable::new_current_item().into());
@@ -166,7 +168,7 @@ impl State {
         tokio::task::spawn_local(async move {
             loop {
                 notify.notified().await;
-                state.borrow_mut().tick();
+                state.borrow_mut().request_draw_internal();
             }
         });
 
@@ -176,6 +178,24 @@ impl State {
 
     pub fn request_draw(&mut self) {
         self.runtime.notify.notify_one();
+    }
+
+    fn request_draw_internal(&mut self) {
+        if self.wayland.shm.is_used() {
+            self.draw_waiting_on_shm = true;
+        } else {
+            self.set_data();
+            self.draw_now().expect("Render error");
+        }
+    }
+
+    pub fn shm_ok_callback(&mut self) {
+        if self.draw_waiting_on_shm {
+            dbg!();
+            self.draw_waiting_on_shm = false;
+            self.set_data();
+            self.draw_now().expect("Render error");
+        }
     }
 
     fn draw_now(&mut self) -> Result<(), Box<dyn Error>> {
@@ -319,10 +339,5 @@ impl State {
         for bar in &mut self.bars {
             bar.dirty = true;
         }
-    }
-
-    pub fn tick(&mut self) {
-        self.set_data();
-        self.draw_now().expect("Render error");
     }
 }

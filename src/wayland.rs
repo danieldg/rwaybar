@@ -162,7 +162,10 @@ impl WaylandClient {
             xdg_out : SimpleGlobal::new(),
         })?;
 
-        let shm = env.create_simple_pool(|_| ())?;
+        let shm = env.create_simple_pool(|mut data| {
+            let state : &mut State = data.get().unwrap();
+            state.shm_ok_callback();
+        })?;
 
         let cursor_shm = env.require_global();
         let mut cursor_theme = wayland_cursor::CursorTheme::load(32, &cursor_shm);
