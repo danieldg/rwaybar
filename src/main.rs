@@ -4,6 +4,7 @@ use tokio::io::unix::AsyncFd;
 
 mod data;
 mod dbus;
+mod icon;
 mod item;
 mod mpris;
 mod state;

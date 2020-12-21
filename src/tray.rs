@@ -1,6 +1,8 @@
 use crate::util::Cell;
 use crate::dbus::get as get_dbus;
-use crate::item::{Render,EventSink};
+use crate::data::Module;
+use crate::icon;
+use crate::item::{Item,Render,EventSink};
 use crate::state::NotifierList;
 use dbus::arg::RefArg;
 use dbus::arg::Variant;
@@ -14,14 +16,14 @@ use once_cell::unsync::OnceCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::time::Duration;
-use log::warn;
+use log::{debug,warn};
 
 thread_local! {
     static DATA : OnceCell<Tray> = Default::default();
 }
 
 #[derive(Debug,Default)]
-struct Item {
+struct TrayItem {
     owner : String,
     path : String,
     is_kde : bool,
@@ -35,7 +37,7 @@ struct Item {
 
 #[derive(Debug,Default)]
 struct Tray {
-    items : Cell<Vec<Item>>,
+    items : Cell<Vec<TrayItem>>,
     interested : Cell<NotifierList>,
 }
 
@@ -118,7 +120,7 @@ fn do_add_item(is_kde : bool, item : String) {
         notify_rule.sender = Some(owner.into());
         dbus.local.add_match_no_cb(&notify_rule.match_str()).await?;
 
-        let mut item = Item::default();
+        let mut item = TrayItem::default();
         item.owner = owner.into();
         item.path = path.into();
         item.is_kde = is_kde;
@@ -201,14 +203,9 @@ pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
             ctx.cairo.rel_move_to(spacing, 0.0);
             for item in items {
                 let x0 = ctx.cairo.get_current_point().0;
-                if true {
-                    // TODO icons are annoying
-                    let layout = pangocairo::create_layout(ctx.cairo).unwrap();
-                    layout.set_font_description(Some(ctx.font));
-                    layout.set_text(&item.title);
-                    let size = layout.get_size();
-                    pangocairo::show_layout(ctx.cairo, &layout);
-                    ctx.cairo.rel_move_to(pango::units_to_double(size.0), 0.0);
+                if icon::render(ctx, &item.icon).is_err() {
+                    let item : Item = Module::Value { value : Cell::new(item.title.clone()) }.into();
+                    item.render(ctx);
                 }
                 let x1 = ctx.cairo.get_current_point().0;
                 let mut es = EventSink::from_tray(item.owner.clone(), item.path.clone());
@@ -240,10 +237,11 @@ pub fn do_click(owner : &str, path : &str, how : u32) {
                     continue;
                 }
                 let sni_path = if item.is_kde { "org.kde.StatusNotifierItem" } else { "org.freedesktop.StatusNotifierItem" };
+                let id = item.id.clone();
                 tokio::task::spawn_local(async move {
                     let dbus = get_dbus();
                     let proxy = Proxy::new(&owner, &path, Duration::from_secs(10), &dbus.local);
-                    dbg!(method);
+                    debug!("Invoking {} on {}", method, id);
                     if how < 3 {
                         proxy.method_call(sni_path, method, (0i32,0i32)).await?;
                     } else {
