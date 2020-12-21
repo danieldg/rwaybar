@@ -1,4 +1,5 @@
 use crate::Variable as VariableTrait;
+use crate::state::Notifier;
 use crate::sway;
 use crate::tray;
 use crate::state::Runtime;
@@ -307,7 +308,7 @@ pub struct Variable {
     module : Module,
 }
 
-fn do_exec_json(fd : i32, name : String, value : Rc<Cell<JsonValue>>, redraw : Rc<tokio::sync::Notify>) {
+fn do_exec_json(fd : i32, name : String, value : Rc<Cell<JsonValue>>, redraw : Notifier) {
     tokio::task::spawn_local(async move {
         let afd = match AsyncFd::new(super::Fd(fd)) {
             Ok(fd) => fd,
@@ -362,7 +363,7 @@ fn do_exec_json(fd : i32, name : String, value : Rc<Cell<JsonValue>>, redraw : R
                         buffer.drain(..eol + 1);
                         let json = match json { Some(json) => json, None => continue };
                         value.set(json);
-                        redraw.notify_one();
+                        redraw.notify_data();
                     }
                 }
             }.await {
@@ -408,7 +409,7 @@ impl Variable {
                         stdin.set(Some(pipe_in));
                         value.set(JsonValue::Null);
 
-                        do_exec_json(fd, name.to_owned(), value.clone(), rt.notify.clone());
+                        do_exec_json(fd, name.to_owned(), value.clone(), rt.notify.unbound());
                     }
                 }
             }

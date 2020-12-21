@@ -1,6 +1,7 @@
 use crate::data::Cell;
 use crate::dbus::get as get_dbus;
 use crate::item::{Render,EventSink};
+use crate::state::NotifierList;
 use dbus::arg::RefArg;
 use dbus::arg::Variant;
 use dbus::channel::MatchingReceiver;
@@ -12,7 +13,6 @@ use dbus::nonblock::stdintf::org_freedesktop_dbus::RequestNameReply;
 use once_cell::unsync::OnceCell;
 use std::collections::HashMap;
 use std::error::Error;
-use std::rc::Rc;
 use std::time::Duration;
 use log::warn;
 
@@ -36,7 +36,7 @@ struct Item {
 #[derive(Debug,Default)]
 struct Tray {
     items : Cell<Vec<Item>>,
-    redraw : Cell<Option<Rc<tokio::sync::Notify>>>,
+    interested : Cell<NotifierList>,
 }
 
 fn init() -> Tray {
@@ -128,7 +128,7 @@ fn do_add_item(is_kde : bool, item : String) {
             tray.items.take_in(|items| {
                 items.push(item);
             });
-            tray.redraw.take().map(|notify| notify.notify_one());
+            tray.interested.take().notify_data();
         });
 
         let proxy = Proxy::new(owner, path, Duration::from_secs(10), &dbus.local);
@@ -151,7 +151,7 @@ fn do_del_item(item : String) {
         tray.items.take_in(|items| {
             items.retain(|item| item.owner != owner || item.path != path);
         });
-        tray.redraw.take().map(|notify| notify.notify_one());
+        tray.interested.take().notify_data();
     });
 }
 
@@ -189,14 +189,14 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<String, Varian
                 }
             }
         });
-        tray.redraw.take().map(|notify| notify.notify_one());
+        tray.interested.take().notify_data();
     });
 }
 
 pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
     DATA.with(|cell| {
         let tray = cell.get_or_init(init);
-        tray.redraw.set(Some(ctx.runtime.notify.clone()));
+        tray.interested.take_in(|interest| interest.add(&ctx.runtime));
         tray.items.take_in(|items| {
             ctx.cairo.rel_move_to(spacing, 0.0);
             for item in items {

@@ -203,12 +203,12 @@ impl Variable for Mode {
 
     fn init(&self, _name : &str, rt : &Runtime) {
         let value = self.value.clone();
-        let notify = rt.notify.clone();
+        let notify = rt.notify.unbound();
         SwaySocket::subscribe("mode", 0x80000002, Box::new(move |buf| {
             match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                 Ok(Ok(msg)) => {
                     msg["change"].as_str().map(|mode| value.set(mode.to_owned()));
-                    notify.notify_one();
+                    notify.notify_data();
                 }
                 _ => warn!("Ignoring invalid mode change message")
             }
@@ -218,12 +218,12 @@ impl Variable for Mode {
             }
         }));
         let value = self.value.clone();
-        let notify = rt.notify.clone();
+        let notify = rt.notify.unbound();
         SwaySocket::send(12, b"", move |buf| {
             match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                 Ok(Ok(msg)) => {
                     msg["name"].as_str().map(|mode| value.set(mode.to_owned()));
-                    notify.notify_one();
+                    notify.notify_data();
                 }
                 _ => warn!("Ignoring invalid get_binding_state reply")
             }
@@ -275,7 +275,7 @@ impl Variable for Workspace {
 
     fn init(&self, _name : &str, rt : &Runtime) {
         let value = self.value.clone();
-        let notify = rt.notify.clone();
+        let notify = rt.notify.unbound();
         SwaySocket::subscribe("workspace", 0x80000000, Box::new(move |buf| {
             match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                 Ok(Ok(msg)) => {
@@ -307,7 +307,7 @@ impl Variable for Workspace {
                             _ => {}
                         }
                     });
-                    notify.notify_one();
+                    notify.notify_data();
                 }
                 _ => warn!("Ignoring invalid workspace change message")
             }
@@ -318,7 +318,7 @@ impl Variable for Workspace {
         }));
 
         let value = self.value.clone();
-        let notify = rt.notify.clone();
+        let notify = rt.notify.unbound();
         SwaySocket::send(1, b"", move |buf| {
             match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                 Ok(Ok(msg)) => {
@@ -332,7 +332,7 @@ impl Variable for Workspace {
                         });
                     }
                     value.set(Some(data));
-                    notify.notify_one();
+                    notify.notify_data();
                 }
                 _ => warn!("Ignoring invalid get_workspaces reply")
             }

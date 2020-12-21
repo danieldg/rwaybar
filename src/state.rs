@@ -52,10 +52,57 @@ impl Bar {
     }
 }
 
+#[derive(Debug)]
+pub struct Notifier {
+    inner : Rc<NotifierInner>,
+}
+
+#[derive(Debug)]
+struct NotifierInner {
+    notify : tokio::sync::Notify,
+    data_update : Cell<bool>,
+}
+
+impl Notifier {
+    /// A notify instance that does not track interested bars
+    ///
+    /// This is useful if you can't rerun add on every read
+    pub fn unbound(&self) -> Self {
+        Notifier { inner : self.inner.clone() }
+    }
+
+    pub fn notify_data(&self) {
+        self.inner.data_update.set(true);
+        self.inner.notify.notify_one();
+    }
+
+    pub fn notify_draw_only(&self) {
+        self.inner.notify.notify_one();
+    }
+}
+
+#[derive(Debug,Default)]
+pub struct NotifierList(Option<Notifier>);
+
+impl NotifierList {
+    /// Add the currently-rendering bar to this list
+    ///
+    /// The next call to notify_data will redraw the bar that was rendering when this was called.
+    pub fn add(&mut self, rt : &Runtime) {
+        self.0 = Some(Notifier { inner : rt.notify.inner.clone() });
+    }
+
+    /// Notify the bars in the list, and then remove them until they  Future calls to notify_data
+    /// will do nothing until you add() bars again.
+    pub fn notify_data(&mut self) {
+        self.0.take().map(|n| n.notify_data());
+    }
+}
+
 /// Common state available during rendering operations
 pub struct Runtime {
     pub items : HashMap<String, Item>,
-    pub notify : Rc<tokio::sync::Notify>,
+    pub notify : Notifier,
     refresh : Rc<RefreshState>,
 }
 
@@ -108,7 +155,6 @@ pub struct State {
     pub bars : Vec<Bar>,
     config : JsonValue,
     pub runtime : Runtime,
-    need_update : bool,
     draw_waiting_on_shm : bool,
 }
 
@@ -123,16 +169,20 @@ impl State {
             (key, value)
         }).collect();
 
+        let notify_inner = Rc::new(NotifierInner {
+            notify : tokio::sync::Notify::new(),
+            data_update : Cell::new(true),
+        });
+
         let mut state = Self {
             wayland,
             bars : Vec::new(),
             runtime : Runtime {
                 items,
                 refresh : Default::default(),
-                notify : Rc::new(tokio::sync::Notify::new()),
+                notify : Notifier { inner : notify_inner.clone() },
             },
             config,
-            need_update : true,
             draw_waiting_on_shm : false,
         };
 
@@ -143,7 +193,7 @@ impl State {
         }
         state.set_data();
 
-        let notify = state.runtime.notify.clone();
+        let notify = state.runtime.notify.unbound();
         let refresh = state.runtime.refresh.clone();
         tokio::task::spawn_local(async move {
             loop {
@@ -156,7 +206,7 @@ impl State {
                         Either::Left(_) => {
                             log::debug!("wake_at triggered refresh");
                             refresh.time.set(None);
-                            notify.notify_one();
+                            notify.notify_data();
                         }
                         _ => {}
                     }
@@ -166,13 +216,12 @@ impl State {
             }
         });
 
-        let notify = state.runtime.notify.clone();
         let rv = Rc::new(RefCell::new(state));
         let state = rv.clone();
         tokio::task::spawn_local(async move {
             loop {
-                notify.notified().await;
-                state.borrow_mut().request_draw_internal(true);
+                notify_inner.notify.notified().await;
+                state.borrow_mut().request_draw_internal();
             }
         });
 
@@ -180,16 +229,14 @@ impl State {
     }
 
     pub fn request_update(&mut self) {
-        self.need_update = true;
-        self.request_draw();
+        self.runtime.notify.notify_data();
     }
 
     pub fn request_draw(&mut self) {
-        self.runtime.notify.notify_one();
+        self.runtime.notify.notify_draw_only();
     }
 
-    fn request_draw_internal(&mut self, force_update : bool) {
-        self.need_update |= force_update;
+    fn request_draw_internal(&mut self) {
         if self.wayland.shm.is_used() {
             self.draw_waiting_on_shm = true;
         } else {
@@ -207,18 +254,18 @@ impl State {
     }
 
     fn set_data(&mut self) {
-        if !self.need_update {
+        // Propagate the data_update field to all bar dirty fields
+        if !self.runtime.notify.inner.data_update.get() {
             return;
         }
         for (k, v) in &self.runtime.items {
             v.data.update(k, &self.runtime);
         }
-        self.need_update = false;
 
-        // TODO maybe don't refresh all bars all the time?  Needs real dirty tracking.
         for bar in &mut self.bars {
             bar.dirty = true;
         }
+        self.runtime.notify.inner.data_update.set(false);
     }
 
     fn draw_now(&mut self) -> Result<(), Box<dyn Error>> {
@@ -275,7 +322,7 @@ impl State {
                         bar.throttle.take();
                     }
                 }
-                state.request_draw_internal(false);
+                state.request_draw();
             });
             bar.surf.commit();
             bar.throttle = Some(frame.into());

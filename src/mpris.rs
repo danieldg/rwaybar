@@ -1,6 +1,6 @@
 use crate::data::Cell;
 use crate::dbus::get as get_dbus;
-use crate::state::Runtime;
+use crate::state::{Runtime,NotifierList};
 use dbus::channel::MatchingReceiver;
 use dbus::message::{MatchRule,Message};
 use dbus::nonblock::Proxy;
@@ -43,7 +43,7 @@ struct Player {
 #[derive(Debug,Default)]
 struct Inner {
     players : Vec<Player>,
-    redraw : Option<Rc<tokio::sync::Notify>>,
+    interested : NotifierList,
 }
 
 #[derive(Debug)]
@@ -75,7 +75,7 @@ async fn initial_query(target : Rc<MediaPlayer2>, name : String) -> Result<(), B
             playing,
             meta : Some(meta),
         });
-        inner.redraw.take().map(|n| n.notify_one());
+        inner.interested.notify_data();
     });
 
     Ok(())
@@ -169,13 +169,13 @@ impl MediaPlayer2 {
             if let Some(new) = new {
                 inner.players.push(new);
             }
-            inner.redraw.take().map(|n| n.notify_one());
+            inner.interested.notify_data();
         });
     }
 
     pub fn read_in<F : FnOnce(&str) -> R, R>(&self, _name : &str, key : &str, rt : &Runtime, f : F) -> R {
         self.0.take_in(|oi| {
-            oi.as_mut().map(|inner| inner.redraw = Some(rt.notify.clone()));
+            oi.as_mut().map(|inner| inner.interested.add(rt));
             let player;
             let field;
 
