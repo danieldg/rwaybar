@@ -31,7 +31,7 @@ pub trait Variable : std::fmt::Debug {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::new().default_filter_or("warn")).init();
 
     // Avoid producing zombies.  We don't need exit status, and can detect end-of-file on pipes to
     // handle any respawning required.

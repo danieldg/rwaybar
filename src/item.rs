@@ -1,7 +1,6 @@
-use crate::data::{Action,Variable};
+use crate::data::{Action,Module};
 use crate::state::Runtime;
 use crate::tray;
-use crate::util::toml_to_string;
 use log::{debug,warn,error};
 
 /// State available to an [Item] render function
@@ -10,6 +9,7 @@ pub struct Render<'a> {
     pub cairo : &'a cairo::Context,
     pub font : &'a pango::FontDescription,
     pub align : Align,
+    pub err_name : &'a str,
     pub runtime : &'a Runtime,
 }
 
@@ -87,8 +87,7 @@ impl Align {
 #[derive(Debug)]
 pub struct Item {
     config : Option<toml::Value>,
-    contents : Contents,
-    pub data : Variable,
+    pub data : Module,
     events : EventSink,
 }
 
@@ -226,201 +225,6 @@ impl Formatting {
     }
 }
 
-/// Type-specific part of an [Item]
-#[derive(Debug)]
-enum Contents {
-    Reference { name : String },
-    Text {
-        text : String,
-        markup : bool
-    },
-    Group {
-        items : Vec<Item>,
-        spacing : String,
-        // TODO crop ordering: allow specific items to be cropped first
-        // TODO use min-width to force earlier cropping
-    },
-    FocusList {
-        source : String,
-        // always two items: non-focused, focused
-        items : Box<[Item;2]>,
-        spacing : String,
-    },
-    Bar {
-        // always three items: left, center, right
-        items : Box<[Item;3]>,
-    },
-    Tray {
-        spacing : String,
-    },
-    Null,
-}
-impl Contents {
-    /// Render the block contents to the given context.
-    ///
-    /// Your item starts at the context's current point.  When you are done rendering, you should
-    /// adjust the point to be offset by the size of your rendered item.
-    ///
-    /// You may use the current clip area to determine sizes.  By default, the clip area is set to
-    /// the size of the entire bar; however, any max_width specifiers in a parent item will reduce
-    /// this.
-    ///
-    /// Note that the coordinates you use to render may not match the final coordinates in the
-    /// buffer; if your item is not left-aligned, it will likely be shifted right before the final
-    /// render.
-    fn render(&self, ctx : &Render, rv : &mut EventSink) {
-        match self {
-            Contents::Reference { name } => {
-                match ctx.runtime.items.get(name) {
-                    Some(item) => {
-                        rv.merge(item.render(ctx));
-                    }
-                    None => {
-                        error!("Unresolved reference to item {}", name);
-                    }
-                }
-            }
-            Contents::Text { text, markup } => {
-                let text = ctx.runtime.format(&text)
-                    .unwrap_or_else(|e| {
-                        warn!("Error formatting text: {}", e);
-                        "Error".into()
-                    });
-                let layout = pangocairo::create_layout(ctx.cairo).unwrap();
-                layout.set_font_description(Some(ctx.font));
-                if *markup {
-                    layout.set_markup(&text);
-                } else {
-                    layout.set_text(&text);
-                }
-
-                let size = layout.get_size();
-                let yoff = match ctx.align.vert {
-                    Some(f) => {
-                        let (_x0, clip_y0, _x1, clip_y1) = ctx.cairo.clip_extents();
-                        let extra = clip_y1 - clip_y0 - pango::units_to_double(size.1);
-                        if extra >= 0.0 {
-                            extra * f
-                        } else {
-                            debug!("Cannot align text '{}' which exceeds clip bounds", text);
-                            0.0
-                        }
-                    }
-                    _ => 0.0,
-                };
-                ctx.cairo.rel_move_to(0.0, yoff);
-                pangocairo::show_layout(ctx.cairo, &layout);
-                ctx.cairo.rel_move_to(pango::units_to_double(size.0), -yoff);
-            }
-            Contents::Group { items, spacing } => {
-                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                ctx.cairo.rel_move_to(spacing, 0.0);
-                for item in items {
-                    let x0 = ctx.cairo.get_current_point().0;
-                    let mut ev = item.render(ctx);
-                    let x1 = ctx.cairo.get_current_point().0;
-                    ev.offset_clamp(0.0, x0, x1);
-                    rv.merge(ev);
-                    ctx.cairo.rel_move_to(spacing, 0.0);
-                }
-            }
-            Contents::FocusList { source, items, spacing } => {
-                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                let source = match ctx.runtime.items.get(source) {
-                    Some(var) => var,
-                    None => return,
-                };
-                let item_var = ctx.runtime.items.get("item").unwrap();
-                ctx.cairo.rel_move_to(spacing, 0.0);
-                source.data.read_focus_list(|item, focus| {
-                    item_var.data.set_current_item(Some(item.to_owned()));
-                    let x0 = ctx.cairo.get_current_point().0;
-                    let mut ev = if focus {
-                        items[1].render(ctx)
-                    } else {
-                        items[0].render(ctx)
-                    };
-                    let x1 = ctx.cairo.get_current_point().0;
-                    ev.offset_clamp(0.0, x0, x1);
-                    for h in &mut ev.handlers {
-                        h.item = item.to_owned();
-                    }
-                    rv.merge(ev);
-                    ctx.cairo.rel_move_to(spacing, 0.0);
-                });
-                item_var.data.set_current_item(None);
-            }
-            Contents::Bar { items } => {
-                let start = ctx.cairo.get_current_point();
-                let (clip_x0, clip_y0, clip_x1, _y1) = ctx.cairo.clip_extents();
-                let width = clip_x1 - clip_x0;
-
-                let left = &items[0];
-                let center = &items[1];
-                let right = &items[2];
-
-                ctx.cairo.push_group();
-                let mut left_ev = left.render(&ctx);
-                let left_size = ctx.cairo.get_current_point();
-                let left = ctx.cairo.pop_group();
-                left_ev.offset_clamp(0.0, 0.0, left_size.0);
-                rv.merge(left_ev);
-
-                ctx.cairo.push_group();
-                ctx.cairo.move_to(start.0, start.1);
-                let mut cent_ev = center.render(&ctx);
-                let cent_size = ctx.cairo.get_current_point();
-                let cent = ctx.cairo.pop_group();
-
-                ctx.cairo.push_group();
-                ctx.cairo.move_to(start.0, start.1);
-                let mut right_ev = right.render(&ctx);
-                let right_size = ctx.cairo.get_current_point();
-                let right = ctx.cairo.pop_group();
-
-                ctx.cairo.set_source(&left);
-                ctx.cairo.paint();
-
-                let mut m = cairo::Matrix::identity();
-                m.x0 = right_size.0 - clip_x1;
-                right_ev.offset_clamp(-m.x0, -m.x0, clip_x1);
-                rv.merge(right_ev);
-                right.set_matrix(m);
-                ctx.cairo.set_source(&right);
-                ctx.cairo.paint();
-
-                let max_side = (width - cent_size.0) / 2.0;
-                let total_room = width - (left_size.0 + right_size.0 + cent_size.0);
-                if total_room < 0.0 {
-                    // TODO maybe we should have cropped it?
-                    return;
-                } else if left_size.0 > max_side {
-                    // left side is too long to properly center; put it just to the right of that
-                    m.x0 = -left_size.0;
-                } else if right_size.0 > max_side {
-                    // right side is too long to properly center; put it just to the left of that
-                    m.x0 = right_size.0 + cent_size.0 - clip_x1;
-                } else {
-                    // Actually center the center module
-                    m.x0 = -max_side;
-                }
-                cent.set_matrix(m);
-                cent_ev.offset_clamp(-m.x0, -m.x0, cent_size.0 - m.x0);
-                rv.merge(cent_ev);
-                ctx.cairo.set_source(&cent);
-                ctx.cairo.paint();
-
-                ctx.cairo.move_to(clip_x1, clip_y0);
-            }
-            Contents::Tray { spacing } => {
-                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                tray::show(ctx, rv, spacing);
-            }
-            Contents::Null => {}
-        }
-    }
-}
-
 /// A single click action associated with the area that activates it
 #[derive(Debug,Clone)]
 struct EventListener {
@@ -521,23 +325,11 @@ impl EventSink {
     }
 }
 
-impl From<Contents> for Item {
-    fn from(contents : Contents) -> Self {
+impl From<Module> for Item {
+    fn from(data : Module) -> Self {
         Self {
             config : None,
             events : EventSink::default(),
-            contents,
-            data : Variable::none(),
-        }
-    }
-}
-
-impl From<Variable> for Item {
-    fn from(data : Variable) -> Self {
-        Self {
-            config : None,
-            events : EventSink::default(),
-            contents : Contents::Null,
             data
         }
     }
@@ -548,8 +340,7 @@ impl Item {
         Self {
             config : None,
             events : EventSink::default(),
-            contents : Contents::Null,
-            data : Variable::none(),
+            data : Module::none(),
         }
     }
 
@@ -560,124 +351,39 @@ impl Item {
 
         Item {
             config : Some(cfg.clone()),
-            contents : Contents::Bar { items : Box::new([left, center, right]) },
+            data : Module::Bar { items : Box::new([left, center, right]) },
             events : EventSink::from_toml(cfg),
-            data : Variable::none(),
         }
     }
 
     pub fn from_toml_ref(value : &toml::Value) -> Self {
         if let Some(text) = value.as_str() {
             let name = text.to_owned();
-            return Contents::Reference { name }.into();
+            return Module::ItemReference { name }.into();
         }
 
-        if value.is_array() {
-            return Contents::Group {
-                items : value.as_array().unwrap().iter().map(Item::from_toml_ref).collect(),
+        if let Some(array) = value.as_array() {
+            return Module::Group {
+                items : array.iter().map(Item::from_toml_ref).collect(),
                 spacing : String::new(),
             }.into();
         }
 
-        Self::from_toml_i(value)
+        Self::from_item_list("<ref>", value)
     }
 
-    pub fn from_item_list(value : &toml::Value) -> Self {
-        if let Some(text) = value.as_str() {
-            let text = text.to_owned();
-            return Item {
-                config : None,
-                events : EventSink::default(),
-                contents : Contents::Text { text, markup : false },
-                data : Variable::from_toml(value),
-            };
+    pub fn from_item_list(key : &str, value : &toml::Value) -> Self {
+        let data = Module::from_toml(value);
+        if data.is_none() {
+            match value.get("type").and_then(|v| v.as_str()) {
+                Some(tipe) => error!("Unknown item type '{}' in '{}'", tipe, key),
+                None => error!("Type required for item '{}'", key),
+            }
         }
-
-        Self::from_toml_i(value)
-    }
-
-    fn from_toml_i(value : &toml::Value) -> Self {
-        match value.get("type").and_then(|v| v.as_str()) {
-            Some("group") => {
-                let spacing = toml_to_string(value.get("spacing")).unwrap_or_default();
-
-                let items = value.get("items").and_then(|v| v.as_array()).map(|a| a.iter().map(Item::from_toml_ref).collect()).unwrap_or_default();
-
-                Item {
-                    config : Some(value.clone()),
-                    contents : Contents::Group {
-                        items,
-                        spacing,
-                    },
-                    events : EventSink::from_toml(value),
-                    data : Variable::from_toml(value),
-                }
-            }
-            Some("focus-list") => {
-                let source = match value.get("source").and_then(|v| v.as_str()) {
-                    Some(s) => s.into(),
-                    None => {
-                        error!("A source is required for focus-list");
-                        return Contents::Null.into();
-                    }
-                };
-                let spacing = toml_to_string(value.get("spacing")).unwrap_or_default();
-                let item = value.get("item").map_or_else(Item::none, Item::from_toml_ref);
-                let fitem = value.get("focused-item").map_or_else(Item::none, Item::from_toml_ref);
-
-                let items = Box::new([item, fitem]);
-                Item {
-                    config : Some(value.clone()),
-                    contents : Contents::FocusList {
-                        source,
-                        items,
-                        spacing,
-                    },
-                    events : EventSink::from_toml(value),
-                    data : Variable::from_toml(value),
-                }
-            }
-            Some("tray") => {
-                let spacing = toml_to_string(value.get("spacing")).unwrap_or_default();
-                Item {
-                    config : Some(value.clone()),
-                    contents : Contents::Tray {
-                        spacing,
-                    },
-                    events : EventSink::from_toml(value),
-                    data : Variable::from_toml(value),
-                }
-            }
-            Some("text") |
-            None => {
-
-                let text = value.get("format").and_then(|v| v.as_str())
-                    .unwrap_or_else(|| {
-                        if value.get("value").is_none() {
-                            error!("Text items require a 'format' value");
-                        }
-                        ""
-                    }).to_owned();
-                let markup = value.get("markup").and_then(|v| v.as_bool()).unwrap_or(false);
-                Item {
-                    config : Some(value.clone()),
-                    contents : Contents::Text { text, markup },
-                    events : EventSink::from_toml(value),
-                    data : Variable::from_toml(value),
-                }
-            }
-            Some(tipe) => {
-                let data = Variable::from_toml(value);
-                if data.is_none() {
-                    error!("Unknown item type: {}", tipe);
-                }
-                Item {
-                    config : Some(value.clone()),
-                    contents : Contents::Null,
-                    events : EventSink::from_toml(value),
-                    data,
-                }
-            }
+        Item {
+            config : Some(value.clone()),
+            events : EventSink::from_toml(value),
+            data,
         }
     }
 
@@ -688,11 +394,11 @@ impl Item {
 
         let format = match format {
             None => {
-                self.contents.render(ctx, &mut rv);
+                self.render_inner(ctx, &mut rv);
                 return rv;
             }
             Some(f) if f.is_boring() => {
-                self.contents.render(ctx, &mut rv);
+                self.render_inner(ctx, &mut rv);
                 return rv;
             }
             Some(f) => f
@@ -741,6 +447,7 @@ impl Item {
                 cairo : &*ctx.cairo,
                 runtime : &*ctx.runtime,
                 align : ctx.align.merge(&format.align),
+                err_name: ctx.err_name,
                 font : &*ctx.font,
             };
 
@@ -748,7 +455,7 @@ impl Item {
                 desc = pango::FontDescription::from_string(&font);
                 child_ctx.font = &desc;
             }
-            self.contents.render(&child_ctx, &mut rv);
+            self.render_inner(&child_ctx, &mut rv);
         }
 
         let inner_end = ctx.cairo.get_current_point();
@@ -863,5 +570,175 @@ impl Item {
         ctx.cairo.move_to(outer_clip.2, outer_clip.1);
 
         rv
+    }
+
+    /// Render the block contents to the given context.
+    ///
+    /// Your item starts at the context's current point.  When you are done rendering, you should
+    /// adjust the point to be offset by the size of your rendered item.
+    ///
+    /// You may use the current clip area to determine sizes.  By default, the clip area is set to
+    /// the size of the entire bar; however, any max_width specifiers in a parent item will reduce
+    /// this.
+    ///
+    /// Note that the coordinates you use to render may not match the final coordinates in the
+    /// buffer; if your item is not left-aligned, it will likely be shifted right before the final
+    /// render.
+    fn render_inner(&self, ctx : &Render, rv : &mut EventSink) {
+        match &self.data {
+            Module::ItemReference { name } => {
+                match ctx.runtime.items.get(name) {
+                    Some(item) => {
+                        let ctx = Render {
+                            cairo : ctx.cairo,
+                            runtime : ctx.runtime,
+                            align : ctx.align,
+                            err_name: name,
+                            font : ctx.font,
+                        };
+                        rv.merge(item.render(&ctx));
+                    }
+                    None => {
+                        error!("Unresolved reference to item {}", name);
+                    }
+                }
+            }
+            Module::Group { items, spacing } => {
+                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                ctx.cairo.rel_move_to(spacing, 0.0);
+                for item in items {
+                    let x0 = ctx.cairo.get_current_point().0;
+                    let mut ev = item.render(ctx);
+                    let x1 = ctx.cairo.get_current_point().0;
+                    ev.offset_clamp(0.0, x0, x1);
+                    rv.merge(ev);
+                    ctx.cairo.rel_move_to(spacing, 0.0);
+                }
+            }
+            Module::FocusList { source, items, spacing } => {
+                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                let source = match ctx.runtime.items.get(source) {
+                    Some(var) => var,
+                    None => return,
+                };
+                let item_var = ctx.runtime.items.get("item").unwrap();
+                ctx.cairo.rel_move_to(spacing, 0.0);
+                source.data.read_focus_list(|item, focus| {
+                    item_var.data.set_current_item(Some(item.to_owned()));
+                    let x0 = ctx.cairo.get_current_point().0;
+                    let mut ev = if focus {
+                        items[1].render(ctx)
+                    } else {
+                        items[0].render(ctx)
+                    };
+                    let x1 = ctx.cairo.get_current_point().0;
+                    ev.offset_clamp(0.0, x0, x1);
+                    for h in &mut ev.handlers {
+                        h.item = item.to_owned();
+                    }
+                    rv.merge(ev);
+                    ctx.cairo.rel_move_to(spacing, 0.0);
+                });
+                item_var.data.set_current_item(None);
+            }
+            Module::Bar { items } => {
+                let start = ctx.cairo.get_current_point();
+                let (clip_x0, clip_y0, clip_x1, _y1) = ctx.cairo.clip_extents();
+                let width = clip_x1 - clip_x0;
+
+                let left = &items[0];
+                let center = &items[1];
+                let right = &items[2];
+
+                ctx.cairo.push_group();
+                let mut left_ev = left.render(&ctx);
+                let left_size = ctx.cairo.get_current_point();
+                let left = ctx.cairo.pop_group();
+                left_ev.offset_clamp(0.0, 0.0, left_size.0);
+                rv.merge(left_ev);
+
+                ctx.cairo.push_group();
+                ctx.cairo.move_to(start.0, start.1);
+                let mut cent_ev = center.render(&ctx);
+                let cent_size = ctx.cairo.get_current_point();
+                let cent = ctx.cairo.pop_group();
+
+                ctx.cairo.push_group();
+                ctx.cairo.move_to(start.0, start.1);
+                let mut right_ev = right.render(&ctx);
+                let right_size = ctx.cairo.get_current_point();
+                let right = ctx.cairo.pop_group();
+
+                ctx.cairo.set_source(&left);
+                ctx.cairo.paint();
+
+                let mut m = cairo::Matrix::identity();
+                m.x0 = right_size.0 - clip_x1;
+                right_ev.offset_clamp(-m.x0, -m.x0, clip_x1);
+                rv.merge(right_ev);
+                right.set_matrix(m);
+                ctx.cairo.set_source(&right);
+                ctx.cairo.paint();
+
+                let max_side = (width - cent_size.0) / 2.0;
+                let total_room = width - (left_size.0 + right_size.0 + cent_size.0);
+                if total_room < 0.0 {
+                    // TODO maybe we should have cropped it?
+                    return;
+                } else if left_size.0 > max_side {
+                    // left side is too long to properly center; put it just to the right of that
+                    m.x0 = -left_size.0;
+                } else if right_size.0 > max_side {
+                    // right side is too long to properly center; put it just to the left of that
+                    m.x0 = right_size.0 + cent_size.0 - clip_x1;
+                } else {
+                    // Actually center the center module
+                    m.x0 = -max_side;
+                }
+                cent.set_matrix(m);
+                cent_ev.offset_clamp(-m.x0, -m.x0, cent_size.0 - m.x0);
+                rv.merge(cent_ev);
+                ctx.cairo.set_source(&cent);
+                ctx.cairo.paint();
+
+                ctx.cairo.move_to(clip_x1, clip_y0);
+            }
+            Module::Tray { spacing } => {
+                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                tray::show(ctx, rv, spacing);
+            }
+            Module::None => {}
+
+            // All other modules are rendered as text
+            _ => {
+                let markup = self.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
+                let text = self.data.read_in(ctx.err_name, "", &ctx.runtime, |s| s.to_string());
+                let layout = pangocairo::create_layout(ctx.cairo).unwrap();
+                layout.set_font_description(Some(ctx.font));
+                if markup {
+                    layout.set_markup(&text);
+                } else {
+                    layout.set_text(&text);
+                }
+
+                let size = layout.get_size();
+                let yoff = match ctx.align.vert {
+                    Some(f) => {
+                        let (_x0, clip_y0, _x1, clip_y1) = ctx.cairo.clip_extents();
+                        let extra = clip_y1 - clip_y0 - pango::units_to_double(size.1);
+                        if extra >= 0.0 {
+                            extra * f
+                        } else {
+                            debug!("Cannot align text '{}' which exceeds clip bounds", text);
+                            0.0
+                        }
+                    }
+                    _ => 0.0,
+                };
+                ctx.cairo.rel_move_to(0.0, yoff);
+                pangocairo::show_layout(ctx.cairo, &layout);
+                ctx.cairo.rel_move_to(pango::units_to_double(size.0), -yoff);
+            }
+        }
     }
 }

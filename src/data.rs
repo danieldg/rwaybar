@@ -1,5 +1,6 @@
 use crate::Variable as VariableTrait;
 use crate::state::Notifier;
+use crate::item::Item;
 use crate::sway;
 use crate::tray;
 use crate::util::{Cell,Fd,toml_to_string,toml_to_f64};
@@ -16,9 +17,29 @@ use std::time::{Duration,Instant};
 use tokio::io::unix::AsyncFd;
 use libc;
 
-/// Type-specific part of a [Variable]
+/// Type-specific part of an [Item]
 #[derive(Debug)]
-enum Module {
+pub enum Module {
+    ItemReference { name : String },
+    Group {
+        items : Vec<Item>,
+        spacing : String,
+        // TODO crop ordering: allow specific items to be cropped first
+        // TODO use min-width to force earlier cropping
+    },
+    FocusList {
+        source : String,
+        // always two items: non-focused, focused
+        items : Box<[Item;2]>,
+        spacing : String,
+    },
+    Bar {
+        // always three items: left, center, right
+        items : Box<[Item;3]>,
+    },
+    Tray {
+        spacing : String,
+    },
     Value {
         value : Cell<String>,
     },
@@ -71,19 +92,13 @@ enum Module {
 }
 
 impl Module {
-    fn from_toml(value : &toml::Value) -> Self {
+    pub fn from_toml(value : &toml::Value) -> Self {
         match value.get("type").and_then(|v| v.as_str()) {
+            // keep values in alphabetical order
             Some("clock") => {
                 let format = value.get("format").and_then(|v| v.as_str()).unwrap_or("%H:%M").to_owned();
                 let zone = value.get("timezone").and_then(|v| v.as_str()).unwrap_or("").to_owned();
                 Module::Clock { format, zone, time : Cell::new(String::new()) }
-            }
-            Some("formatted") => {
-                let format = value.get("format").and_then(|v| v.as_str()).unwrap_or_else(|| {
-                    error!("Formatted variables require a format: {}", value);
-                    ""
-                }).to_owned();
-                Module::Formatted { format, looped : Cell::new(false) }
             }
             Some("eval") => {
                 let format = value.get("format").and_then(|v| v.as_str()).unwrap_or_else(|| {
@@ -91,6 +106,86 @@ impl Module {
                     ""
                 }).to_owned();
                 Module::Eval { format, looped : Cell::new(false) }
+            }
+            Some("exec-json") => {
+                let command = match value.get("command").and_then(|v| v.as_str()) {
+                    Some(cmd) => cmd.to_owned(),
+                    None => {
+                        error!("Comamnd to execute is required: {}", value);
+                        return Module::None;
+                    }
+                };
+                Module::ExecJson {
+                    command,
+                    stdin : Cell::new(None),
+                    value : Rc::new(Cell::new(JsonValue::Null)),
+                }
+            }
+            Some("focus-list") => {
+                let source = match value.get("source").and_then(|v| v.as_str()) {
+                    Some(s) => s.into(),
+                    None => {
+                        error!("A source is required for focus-list");
+                        return Module::None.into();
+                    }
+                };
+                let spacing = toml_to_string(value.get("spacing")).unwrap_or_default();
+                let item = value.get("item").map_or_else(Item::none, Item::from_toml_ref);
+                let fitem = value.get("focused-item").map_or_else(Item::none, Item::from_toml_ref);
+
+                let items = Box::new([item, fitem]);
+                Module::FocusList {
+                    source,
+                    items,
+                    spacing,
+                }
+            }
+            Some("formatted") | Some("text") => {
+                let format = value.get("format").and_then(|v| v.as_str()).unwrap_or_else(|| {
+                    error!("Formatted variables require a format: {}", value);
+                    ""
+                }).to_owned();
+                Module::Formatted { format, looped : Cell::new(false) }
+            }
+            Some("group") => {
+                let spacing = toml_to_string(value.get("spacing")).unwrap_or_default();
+                let items = value.get("items")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().map(Item::from_toml_ref).collect())
+                    .unwrap_or_default();
+
+                Module::Group {
+                    items,
+                    spacing,
+                }
+            }
+            Some("meter") => {
+                let min = toml_to_string(value.get("min")).unwrap_or_default();
+                let max = toml_to_string(value.get("max")).unwrap_or_default();
+                let src = value.get("src").and_then(|v| v.as_str()).unwrap_or_else(|| {
+                    error!("Meter requires a src expression");
+                    ""
+                }).to_owned();
+                let mut values = match Some(Some("")).into_iter()
+                        .chain(value.get("values").and_then(|v| v.as_array()).map(|v| v.iter().map(toml::Value::as_str)).into_iter().flatten())
+                        .chain(Some(Some("")))
+                        .map(|v| v.map(String::from))
+                        .collect::<Option<Box<[_]>>>()
+                    {
+                        Some(v) if v.len() > 2 => v,
+                        _ => {
+                            error!("Meter requires an array of string values");
+                            return Module::None;
+                        }
+                    };
+                let e = values.len() - 1;
+                values[0] = value.get("below").and_then(|v| v.as_str()).unwrap_or(&values[1]).to_owned();
+                values[e] = value.get("above").and_then(|v| v.as_str()).unwrap_or(&values[e - 1]).to_owned();
+                Module::Meter { min, max, src, values, looped : Cell::new(false) }
+            }
+            Some("mpris") => {
+                let mpris = MediaPlayer2::new();
+                Module::MediaPlayer2 { mpris }
             }
             Some("regex") => {
                 let text = value.get("text").and_then(|v| v.as_str()).unwrap_or_else(|| {
@@ -126,245 +221,43 @@ impl Module {
                     name, poll, last_read: Cell::default(), contents : Cell::default()
                 }
             }
-            Some("exec-json") => {
-                let command = match value.get("command").and_then(|v| v.as_str()) {
-                    Some(cmd) => cmd.to_owned(),
-                    None => {
-                        error!("Comamnd to execute is required: {}", value);
-                        return Module::None;
-                    }
-                };
-                Module::ExecJson {
-                    command,
-                    stdin : Cell::new(None),
-                    value : Rc::new(Cell::new(JsonValue::Null)),
-                }
-            }
-            Some("meter") => {
-                let min = toml_to_string(value.get("min")).unwrap_or_default();
-                let max = toml_to_string(value.get("max")).unwrap_or_default();
-                let src = value.get("src").and_then(|v| v.as_str()).unwrap_or_else(|| {
-                    error!("Meter requires a src expression");
-                    ""
-                }).to_owned();
-                let mut values = match Some(Some("")).into_iter()
-                        .chain(value.get("values").and_then(|v| v.as_array()).map(|v| v.iter().map(toml::Value::as_str)).into_iter().flatten())
-                        .chain(Some(Some("")))
-                        .map(|v| v.map(String::from))
-                        .collect::<Option<Box<[_]>>>()
-                    {
-                        Some(v) if v.len() > 2 => v,
-                        _ => {
-                            error!("Meter requires an array of string values");
-                            return Module::None;
-                        }
-                    };
-                let e = values.len() - 1;
-                values[0] = value.get("below").and_then(|v| v.as_str()).unwrap_or(&values[1]).to_owned();
-                values[e] = value.get("above").and_then(|v| v.as_str()).unwrap_or(&values[e - 1]).to_owned();
-                Module::Meter { min, max, src, values, looped : Cell::new(false) }
-            }
-            None if value.as_str().is_some() => {
-                let value = value.as_str().unwrap().into();
-                Module::Value { value : Cell::new(value) }
-            }
-            None if value.get("value").map_or(false, |v| v.is_str()) => {
-                let value = value["value"].as_str().unwrap().into();
-                Module::Value { value : Cell::new(value) }
-            }
-            Some("mpris") => {
-                let mpris = MediaPlayer2::new();
-                Module::MediaPlayer2 { mpris }
-            }
             Some("sway-mode") => {
                 sway::Mode::from_toml(value).map_or(Module::None, Module::SwayMode)
             }
             Some("sway-workspace") => {
                 sway::Workspace::from_toml(value).map_or(Module::None, Module::SwayWorkspace)
             }
-            _ => {
+            // "text" is an alias for "formatted"
+            Some("tray") => {
+                let spacing = toml_to_string(value.get("spacing")).unwrap_or_default();
+                Module::Tray {
+                    spacing,
+                }
+            }
+            Some(_) => {
                 Module::None
             }
-        }
-    }
-}
-
-/// Handler invoked by a click or touch event
-#[derive(Debug,Clone)]
-pub enum Action {
-    Exec { format : String },
-    Write { target : String, format : String },
-    List(Vec<Action>),
-    Tray { owner : String, path : String },
-    None,
-}
-
-impl Action {
-    pub fn from_toml(value : &toml::Value) -> Self {
-        if value.is_array() {
-            return Action::List(value.as_array().unwrap().iter().map(Action::from_toml).collect());
-        }
-        if let Some(dest) = value.get("write").and_then(|v| v.as_str()).or_else(|| value.get("send").and_then(|v| v.as_str())) {
-            let format = value.get("format").and_then(|v| v.as_str())
-                .or_else(|| value.get("msg").and_then(|v| v.as_str()))
-                .unwrap_or("").to_owned();
-            return Action::Write { target : dest.into(), format };
-        }
-        if let Some(cmd) = value.get("exec").and_then(|v| v.as_str()) {
-            return Action::Exec { format : cmd.into() };
-        }
-        error!("Unknown action: {}", value);
-        Action::None
-    }
-
-    pub fn from_tray(owner : String, path : String) -> Self {
-        Action::Tray { owner, path }
-    }
-
-    pub fn invoke(&self, runtime : &Runtime, how : u32) {
-        match self {
-            Action::List(actions) => {
-                for action in actions {
-                    action.invoke(runtime, how);
-                }
-            }
-            Action::Write { target, format } => {
-                let value = match runtime.format(&format) {
-                    Ok(value) => value,
-                    Err(e) => {
-                        error!("Error expanding format for command: {}", e);
-                        return;
-                    }
-                };
-
-                let (name, key) = match target.find('.') {
-                    Some(p) => (&target[..p], &target[p + 1..]),
-                    None => (&target[..], ""),
-                };
-
-                match runtime.items.get(name) {
-                    Some(item) => {
-                        item.data.write(name, key, value, &runtime);
-                    }
-                    None => error!("Could not find variable {}", target),
-                }
-            }
-            Action::Exec { format } => {
-                match runtime.format(&format) {
-                    Ok(cmd) => {
-                        info!("Executing '{}'", cmd);
-                        match Command::new("/bin/sh").arg("-c").arg(&cmd).spawn() {
-                            Ok(child) => drop(child),
-                            Err(e) => error!("Could not execute {}: {}", cmd, e),
-                        }
-                    }
-                    Err(e) => {
-                        error!("Error expanding format for command: {}", e);
-                    }
-                }
-            }
-            Action::Tray { owner, path } => {
-                tray::do_click(owner, path, how);
-            }
-            Action::None => { info!("Invoked a no-op"); }
-        }
-    }
-}
-
-/// A value or set of values usable in string expansions
-///
-/// The value of a variable may be the contents of a file or the output of a command; it may change
-/// while the bar is running.
-///
-/// Some types of variables allow an [Action] to write to the variable in response to clicks.
-#[derive(Debug)]
-pub struct Variable {
-    module : Module,
-}
-
-fn do_exec_json(fd : i32, name : String, value : Rc<Cell<JsonValue>>, redraw : Notifier) {
-    tokio::task::spawn_local(async move {
-        let afd = match AsyncFd::new(Fd(fd)) {
-            Ok(fd) => fd,
-            Err(_) => return,
-        };
-        let mut buffer : Vec<u8> = Vec::with_capacity(1024);
-
-        loop {
-            match async {
-                let mut rh = afd.readable().await?;
-                loop {
-                    if buffer.len() == buffer.capacity() {
-                        buffer.reserve(2048);
-                    }
-                    unsafe {
-                        let start = buffer.len();
-                        let max_len = buffer.capacity() - start;
-                        let rv = libc::read(fd, buffer.as_mut_ptr().offset(start as isize) as *mut _, max_len);
-                        match rv {
-                            0 => {
-                                libc::close(fd);
-                                return Ok(());
-                            }
-                            len if rv > 0 && rv <= max_len as _ => {
-                                buffer.set_len(start + len as usize);
-                            }
-                            _ => {
-                                let e = io::Error::last_os_error();
-                                match e.kind() {
-                                    io::ErrorKind::Interrupted => continue,
-                                    io::ErrorKind::WouldBlock => {
-                                        rh.clear_ready();
-                                        return Ok(());
-                                    }
-                                    _ => return Err(e),
-                                }
-                            }
-                        }
-                    }
-                    while let Some(eol) = buffer.iter().position(|&c| c == b'\n') {
-                        let mut json = None;
-                        match std::str::from_utf8(&buffer[..eol]) {
-                            Err(_) => info!("Ignoring bad UTF8 from '{}'", name),
-                            Ok(v) => {
-                                debug!("'{}': {}", name, v);
-                                match json::parse(v) {
-                                    Ok(v) => { json = Some(v); }
-                                    Err(e) => info!("Ignoring bad JSON from '{}': {}", name, e),
-                                }
-                            }
-                        }
-                        buffer.drain(..eol + 1);
-                        let json = match json { Some(json) => json, None => continue };
-                        value.set(json);
-                        redraw.notify_data();
-                    }
-                }
-            }.await {
-                Ok(()) => continue,
-                Err(e) => {
-                    warn!("Error reading from JSON child: {}", e);
-                    return;
+            None => {
+                if let Some(value) = value.as_str() {
+                    Module::Value { value : Cell::new(value.into()) }
+                } else if let Some(format) = value.get("format").and_then(|v| v.as_str()) {
+                    Module::Formatted { format : format.into(), looped : Cell::new(false) }
+                } else if let Some(value) = value.get("value").and_then(|v| v.as_str()) {
+                    Module::Value { value : Cell::new(value.into()) }
+                } else {
+                    Module::None
                 }
             }
         }
-    });
-}
-
-impl Variable {
-    /// Parse a variable from the JSON configuration
-    pub fn from_toml(value : &toml::Value) -> Self {
-        let module = Module::from_toml(value);
-        Variable { module }
     }
 
     pub fn is_none(&self) -> bool {
-        matches!(self.module, Module::None)
+        matches!(self, Module::None)
     }
 
     /// One-time setup, if needed
     pub fn init(&self, name : &str, rt : &Runtime) {
-        match &self.module {
+        match self {
             Module::ExecJson { command, stdin, value } => {
                 match Command::new("/bin/sh")
                     .arg("-c").arg(&command)
@@ -395,7 +288,7 @@ impl Variable {
 
     /// Periodic update (triggered by timer)
     pub fn update(&self, name : &str, rt : &Runtime) {
-        match &self.module {
+        match self {
             Module::Clock { format, zone, time } => {
                 let real_format = rt.format(&format).unwrap_or_else(|e| {
                     warn!("Error expanding '{}' format: {}", name, e);
@@ -469,13 +362,20 @@ impl Variable {
 
     /// Read the value of a variable
     ///
-    /// This is the only "mandatory" function for a Variable; it generally doesn't make sense to
-    /// have a variable that can't be read.
-    ///
     /// The provided closure should be passed the value of the variable.  This is done instead of
     /// returning the value to avoid unneeded string copies.
+    ///
+    /// Note: The name is a hint and should not be assumed to uniquely identify this module.
     pub fn read_in<F : FnOnce(&str) -> R, R>(&self, name : &str, key : &str, rt : &Runtime, f : F) -> R {
-        match &self.module {
+        match self {
+            Module::ItemReference { .. } |
+            Module::Group { .. } |
+            Module::FocusList { .. } |
+            Module::Bar { .. } |
+            Module::Tray { .. } => {
+                error!("Cannot use '{}' in a text expansion", name);
+                f("")
+            }
             Module::None => f(""),
             Module::Clock { time, .. } => time.take_in(|s| f(s)),
             Module::Value { value } => value.take_in(|s| f(s)),
@@ -575,7 +475,7 @@ impl Variable {
     /// Handle a write or send to the variable
     pub fn write(&self, name : &str, key : &str, value : String, rt : &Runtime) {
         debug!("Writing {} to {}.{}", value, name, key);
-        match &self.module {
+        match self {
             Module::Value { value : v } if key == "" => {
                 v.set(value);
             }
@@ -615,25 +515,176 @@ impl Variable {
     }
 
     pub fn none() -> Self {
-        Variable { module : Module::None }
+        Module::None
     }
 
     pub fn new_current_item() -> Self {
-        Variable { module : Module::Item { value : Cell::new(String::new()) } }
+        Module::Item { value : Cell::new(String::new()) }
     }
 
     pub fn read_focus_list<F : FnMut(&str, bool)>(&self, f : F) {
-        match &self.module {
+        match self {
             Module::SwayWorkspace(ws) => ws.read_focus_list(f),
             _ => ()
         }
     }
 
     pub fn set_current_item(&self, new : Option<String>) {
-        match &self.module {
+        match self {
             Module::Item { value } => value.set(new.unwrap_or_default()),
             _ => error!("set_current_item on non-Item"),
         }
     }
 
+}
+
+/// Handler invoked by a click or touch event
+#[derive(Debug,Clone)]
+pub enum Action {
+    Exec { format : String },
+    Write { target : String, format : String },
+    List(Vec<Action>),
+    Tray { owner : String, path : String },
+    None,
+}
+
+impl Action {
+    pub fn from_toml(value : &toml::Value) -> Self {
+        if let Some(array) = value.as_array() {
+            return Action::List(array.iter().map(Action::from_toml).collect());
+        }
+        if let Some(dest) = value.get("write").and_then(|v| v.as_str()).or_else(|| value.get("send").and_then(|v| v.as_str())) {
+            let format = value.get("format").and_then(|v| v.as_str())
+                .or_else(|| value.get("msg").and_then(|v| v.as_str()))
+                .unwrap_or("").to_owned();
+            return Action::Write { target : dest.into(), format };
+        }
+        if let Some(cmd) = value.get("exec").and_then(|v| v.as_str()) {
+            return Action::Exec { format : cmd.into() };
+        }
+        error!("Unknown action: {}", value);
+        Action::None
+    }
+
+    pub fn from_tray(owner : String, path : String) -> Self {
+        Action::Tray { owner, path }
+    }
+
+    pub fn invoke(&self, runtime : &Runtime, how : u32) {
+        match self {
+            Action::List(actions) => {
+                for action in actions {
+                    action.invoke(runtime, how);
+                }
+            }
+            Action::Write { target, format } => {
+                let value = match runtime.format(&format) {
+                    Ok(value) => value,
+                    Err(e) => {
+                        error!("Error expanding format for command: {}", e);
+                        return;
+                    }
+                };
+
+                let (name, key) = match target.find('.') {
+                    Some(p) => (&target[..p], &target[p + 1..]),
+                    None => (&target[..], ""),
+                };
+
+                match runtime.items.get(name) {
+                    Some(item) => {
+                        item.data.write(name, key, value, &runtime);
+                    }
+                    None => error!("Could not find variable {}", target),
+                }
+            }
+            Action::Exec { format } => {
+                match runtime.format(&format) {
+                    Ok(cmd) => {
+                        info!("Executing '{}'", cmd);
+                        match Command::new("/bin/sh").arg("-c").arg(&cmd).spawn() {
+                            Ok(child) => drop(child),
+                            Err(e) => error!("Could not execute {}: {}", cmd, e),
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error expanding format for command: {}", e);
+                    }
+                }
+            }
+            Action::Tray { owner, path } => {
+                tray::do_click(owner, path, how);
+            }
+            Action::None => { info!("Invoked a no-op"); }
+        }
+    }
+}
+
+fn do_exec_json(fd : i32, name : String, value : Rc<Cell<JsonValue>>, redraw : Notifier) {
+    tokio::task::spawn_local(async move {
+        let afd = match AsyncFd::new(Fd(fd)) {
+            Ok(fd) => fd,
+            Err(_) => return,
+        };
+        let mut buffer : Vec<u8> = Vec::with_capacity(1024);
+
+        loop {
+            match async {
+                let mut rh = afd.readable().await?;
+                loop {
+                    if buffer.len() == buffer.capacity() {
+                        buffer.reserve(2048);
+                    }
+                    unsafe {
+                        let start = buffer.len();
+                        let max_len = buffer.capacity() - start;
+                        let rv = libc::read(fd, buffer.as_mut_ptr().offset(start as isize) as *mut _, max_len);
+                        match rv {
+                            0 => {
+                                libc::close(fd);
+                                return Ok(());
+                            }
+                            len if rv > 0 && rv <= max_len as _ => {
+                                buffer.set_len(start + len as usize);
+                            }
+                            _ => {
+                                let e = io::Error::last_os_error();
+                                match e.kind() {
+                                    io::ErrorKind::Interrupted => continue,
+                                    io::ErrorKind::WouldBlock => {
+                                        rh.clear_ready();
+                                        return Ok(());
+                                    }
+                                    _ => return Err(e),
+                                }
+                            }
+                        }
+                    }
+                    while let Some(eol) = buffer.iter().position(|&c| c == b'\n') {
+                        let mut json = None;
+                        match std::str::from_utf8(&buffer[..eol]) {
+                            Err(_) => info!("Ignoring bad UTF8 from '{}'", name),
+                            Ok(v) => {
+                                debug!("'{}': {}", name, v);
+                                match json::parse(v) {
+                                    Ok(v) => { json = Some(v); }
+                                    Err(e) => info!("Ignoring bad JSON from '{}': {}", name, e),
+                                }
+                            }
+                        }
+                        buffer.drain(..eol + 1);
+                        let json = match json { Some(json) => json, None => continue };
+                        value.set(json);
+                        redraw.notify_data();
+                    }
+                }
+            }.await {
+                Ok(()) => continue,
+                Err(e) => {
+                    warn!("Error reading from JSON child: {}", e);
+                    return;
+                }
+            }
+        }
+    });
 }

@@ -16,7 +16,7 @@ use layer_shell::zwlr_layer_shell_v1::{ZwlrLayerShellV1, Layer};
 use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
 
 use crate::item::*;
-use crate::data::Variable;
+use crate::data::Module;
 use crate::wayland::WaylandClient;
 
 /// A single taskbar on a single output
@@ -44,6 +44,7 @@ impl Bar {
             cairo : &ctx,
             font : &font,
             align : Align::bar_default(),
+            err_name: "bar",
             runtime,
         };
 
@@ -168,14 +169,23 @@ impl State {
 
         let items = cfg.iter().filter_map(|(key, value)| {
             if key == "bar" {
-                bar_config.extend(value.as_array().unwrap().iter().cloned());
+                if let Some(bars) = value.as_array() {
+                    bar_config.extend(bars.iter().cloned());
+                } else {
+                    bar_config.push(value.clone());
+                }
                 None
             } else {
                 let key = key.to_owned();
-                let value = Item::from_item_list(value);
+                let value = Item::from_item_list(&key, value);
                 Some((key, value))
             }
         }).collect();
+
+        if bar_config.is_empty() {
+            error!("At least one [[bar]] section is required");
+            std::process::exit(1);
+        }
 
         let notify_inner = Rc::new(NotifierInner {
             notify : tokio::sync::Notify::new(),
@@ -194,7 +204,7 @@ impl State {
             draw_waiting_on_shm : false,
         };
 
-        state.runtime.items.insert("item".into(), Variable::new_current_item().into());
+        state.runtime.items.insert("item".into(), Module::new_current_item().into());
 
         for (k,v) in &state.runtime.items {
             v.data.init(k, &state.runtime);
