@@ -46,7 +46,7 @@ impl MultiGlobalHandler<WlOutput> for OutputHandler {
                     if let Some(state) = data.get::<State>() {
                         for (i, data) in state.wayland.outputs.iter().enumerate() {
                             if data.output == *output {
-                                // TODO state tracking, catch other causes of Done being sent?
+                                // TODO are there other causes of Done, like resolution change?
                                 state.output_ready(i);
                                 return;
                             }
@@ -286,7 +286,7 @@ impl WaylandClient {
                 drop(finger);
                 match event {
                     Event::Down { surface, x, y, .. } => {
-                        // TODO support gestures - wait for Up, detect Cancel
+                        // TODO support gestures?  Wait for Up, detect Cancel
                         for bar in &mut state.bars {
                             if surface == *bar.surf {
                                 bar.sink.button(x,y,0, &mut state.runtime);

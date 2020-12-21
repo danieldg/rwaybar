@@ -127,15 +127,15 @@ impl Module {
                     error!("Regex requires a text expression");
                     ""
                 }).to_owned();
-                let replace = value["replace"].as_str().unwrap_or_else(|| {
-                    error!("Regex requires an replace expression");
-                    ""
-                }).to_owned();
+                let replace = value["replace"].as_str().unwrap_or("").to_owned();
                 let regex = value["regex"].as_str().unwrap_or_else(|| {
                     error!("Regex requires a regex expression");
                     ""
                 }).to_owned();
-                match regex::Regex::new(&regex) {
+                match regex::RegexBuilder::new(&regex)
+                    .dot_matches_new_line(true)
+                    .build()
+                {
                     Ok(regex) => Module::Regex { regex, text, replace, looped : Cell::new(false) },
                     Err(e) => {
                         error!("Error compiling regex '{}': {}", regex, e);
@@ -479,10 +479,7 @@ impl Variable {
                 }
                 last_read.set(Some(now));
                 match std::fs::read_to_string(&name) {
-                    Ok(mut v) => {
-                        if v.ends_with('\n') {
-                            v.pop();
-                        }
+                    Ok(v) => {
                         contents.set(v);
                     }
                     Err(e) => {
@@ -528,8 +525,20 @@ impl Variable {
                 looped.set(true);
                 let text = rt.format_or(&text, &name);
                 looped.set(false);
-                let output = regex.replace_all(&text, replace.as_str());
-                f(&output)
+                if key == "" {
+                    let output = regex.replace_all(&text, replace.as_str());
+                    f(&output)
+                } else {
+                    if let Some(cap) = regex.captures(&text) {
+                        if let Ok(i) = key.parse() {
+                            f(cap.get(i).map_or("", |m| m.as_str()))
+                        } else {
+                            f(cap.name(key).map_or("", |m| m.as_str()))
+                        }
+                    } else {
+                        f("")
+                    }
+                }
             }
             Module::ExecJson { command, value, .. } => {
                 let v = value.replace(JsonValue::Null);
