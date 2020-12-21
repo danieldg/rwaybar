@@ -1,3 +1,7 @@
+use std::os::unix::io::RawFd;
+use std::os::unix::io::AsRawFd;
+use std::fmt;
+
 pub fn toml_to_string(value : Option<&toml::Value>) -> Option<String> {
     value.and_then(|value| {
         if let Some(v) = value.as_str() {
@@ -22,4 +26,56 @@ pub fn toml_to_f64(value : Option<&toml::Value>) -> Option<f64> {
             None
         }
     })
+}
+
+/// Wrapper around [std::cell::Cell] that implements [fmt::Debug] and has a few more useful utility
+/// funcitons.
+#[derive(Default)]
+pub struct Cell<T>(std::cell::Cell<T>);
+
+impl<T> Cell<T> {
+    pub fn new(t : T) -> Self {
+        Cell(std::cell::Cell::new(t))
+    }
+}
+
+impl<T : Default> Cell<T> {
+    pub fn take_in<F : FnOnce(&mut T) -> R, R>(&self, f : F) -> R {
+        let mut t = self.0.take();
+        let rv = f(&mut t);
+        self.0.set(t);
+        rv
+    }
+}
+
+impl<T> Cell<Option<T>> {
+    pub fn take_in_some<F : FnOnce(&mut T) -> R, R>(&self, f : F) -> Option<R> {
+        let mut t = self.0.take();
+        let rv = t.as_mut().map(f);
+        self.0.set(t);
+        rv
+    }
+}
+
+impl<T> std::ops::Deref for Cell<T> {
+    type Target = std::cell::Cell<T>;
+    fn deref(&self) -> &std::cell::Cell<T> {
+        &self.0
+    }
+}
+
+impl<T> fmt::Debug for Cell<T> {
+    fn fmt(&self, fmt : &mut fmt::Formatter) -> fmt::Result {
+        write!(fmt, "Cell")
+    }
+}
+
+/// A simple wrapper around [RawFd] that implements [AsRawFd].
+///
+/// Note: it does nothing on drop; the file descriptor lifetime must be managed elsewhere.
+pub struct Fd(pub RawFd);
+impl AsRawFd for Fd {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0
+    }
 }

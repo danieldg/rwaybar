@@ -2,12 +2,11 @@ use crate::Variable as VariableTrait;
 use crate::state::Notifier;
 use crate::sway;
 use crate::tray;
-use crate::util::{toml_to_string,toml_to_f64};
+use crate::util::{Cell,Fd,toml_to_string,toml_to_f64};
 use crate::state::Runtime;
 use crate::mpris::MediaPlayer2;
 use json::JsonValue;
 use log::{debug,info,warn,error};
-use std::fmt;
 use std::io;
 use std::io::Write;
 use std::os::unix::io::{AsRawFd,IntoRawFd};
@@ -16,47 +15,6 @@ use std::rc::Rc;
 use std::time::{Duration,Instant};
 use tokio::io::unix::AsyncFd;
 use libc;
-
-/// Wrapper around [std::cell::Cell] that implements [fmt::Debug].
-#[derive(Default)]
-pub struct Cell<T>(std::cell::Cell<T>);
-
-impl<T> Cell<T> {
-    pub fn new(t : T) -> Self {
-        Cell(std::cell::Cell::new(t))
-    }
-}
-
-impl<T : Default> Cell<T> {
-    pub fn take_in<F : FnOnce(&mut T) -> R, R>(&self, f : F) -> R {
-        let mut t = self.0.take();
-        let rv = f(&mut t);
-        self.0.set(t);
-        rv
-    }
-}
-
-impl<T> Cell<Option<T>> {
-    pub fn take_in_some<F : FnOnce(&mut T) -> R, R>(&self, f : F) -> Option<R> {
-        let mut t = self.0.take();
-        let rv = t.as_mut().map(f);
-        self.0.set(t);
-        rv
-    }
-}
-
-impl<T> std::ops::Deref for Cell<T> {
-    type Target = std::cell::Cell<T>;
-    fn deref(&self) -> &std::cell::Cell<T> {
-        &self.0
-    }
-}
-
-impl<T> fmt::Debug for Cell<T> {
-    fn fmt(&self, fmt : &mut fmt::Formatter) -> fmt::Result {
-        write!(fmt, "Cell")
-    }
-}
 
 /// Type-specific part of a [Variable]
 #[derive(Debug)]
@@ -326,7 +284,7 @@ pub struct Variable {
 
 fn do_exec_json(fd : i32, name : String, value : Rc<Cell<JsonValue>>, redraw : Notifier) {
     tokio::task::spawn_local(async move {
-        let afd = match AsyncFd::new(super::Fd(fd)) {
+        let afd = match AsyncFd::new(Fd(fd)) {
             Ok(fd) => fd,
             Err(_) => return,
         };

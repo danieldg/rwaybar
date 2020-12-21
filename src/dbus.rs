@@ -1,3 +1,4 @@
+use crate::util;
 use dbus::channel::{BusType,Channel};
 use dbus::nonblock::{LocalConnection,Process,NonblockReply};
 use futures_util::future::Either;
@@ -26,7 +27,7 @@ pub fn init() -> Result<(), Box<dyn Error>> {
     let mut channel = Channel::get_private(BusType::Session)?;
     channel.set_watch_enabled(true);
     let watch = channel.watch();
-    let afd = AsyncFd::new(super::Fd(watch.fd))?;
+    let afd = AsyncFd::new(util::Fd(watch.fd))?;
 
     let mut local = LocalConnection::from(channel);
     let wake = Notify::new();

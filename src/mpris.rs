@@ -1,6 +1,6 @@
-use crate::data::Cell;
 use crate::dbus::get as get_dbus;
 use crate::state::{Runtime,NotifierList};
+use crate::util::Cell;
 use dbus::channel::MatchingReceiver;
 use dbus::message::{MatchRule,Message};
 use dbus::nonblock::Proxy;

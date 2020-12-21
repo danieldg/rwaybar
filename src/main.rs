@@ -1,6 +1,5 @@
 use std::error::Error;
 use std::io;
-use std::os::unix::io::RawFd;
 use tokio::io::unix::AsyncFd;
 
 mod data;
@@ -31,13 +30,6 @@ pub trait Variable : std::fmt::Debug {
     }
 }
 
-struct Fd(RawFd);
-impl std::os::unix::io::AsRawFd for Fd {
-    fn as_raw_fd(&self) -> RawFd {
-        self.0
-    }
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
 
@@ -53,7 +45,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         dbus::init()?;
 
         let state = State::new(client)?;
-        let fd = AsyncFd::new(Fd(wl_queue.display().get_connection_fd()))?;
+        let fd = AsyncFd::new(util::Fd(wl_queue.display().get_connection_fd()))?;
 
         loop {
             if let Some(reader) = wl_queue.prepare_read() {

@@ -1,4 +1,4 @@
-use crate::data::Cell;
+use crate::util::Cell;
 use crate::dbus::get as get_dbus;
 use crate::item::{Render,EventSink};
 use crate::state::NotifierList;
