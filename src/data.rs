@@ -20,12 +20,29 @@ use libc;
 /// Type-specific part of an [Item]
 #[derive(Debug)]
 pub enum Module {
-    ItemReference { name : String },
-    Group {
-        items : Vec<Item>,
-        spacing : String,
-        // TODO crop ordering: allow specific items to be cropped first
-        // TODO use min-width to force earlier cropping
+    Bar {
+        // always three items: left, center, right
+        items : Box<[Item;3]>,
+    },
+    Clock {
+        format : String,
+        zone : String,
+        time : Cell<String>,
+    },
+    Disk {
+        path : String,
+        poll : f64,
+        last_read : Cell<Option<Instant>>,
+        contents : Cell<libc::statvfs>,
+    },
+    Eval {
+        format : String,
+        looped : Cell<bool>,
+    },
+    ExecJson {
+        command : String,
+        stdin : Cell<Option<ChildStdin>>,
+        value : Rc<Cell<JsonValue>>,
     },
     FocusList {
         source : String,
@@ -33,48 +50,22 @@ pub enum Module {
         items : Box<[Item;2]>,
         spacing : String,
     },
-    Bar {
-        // always three items: left, center, right
-        items : Box<[Item;3]>,
-    },
-    Tray {
-        spacing : String,
-    },
-    Value {
-        value : Cell<String>,
-    },
-    Item {
-        value : Cell<String>,
-    },
-    Clock {
-        format : String,
-        zone : String,
-        time : Cell<String>,
-    },
-    ReadFile {
-        name : String,
-        poll : f64,
-        last_read : Cell<Option<Instant>>,
-        contents : Cell<String>,
-    },
-    ExecJson {
-        command : String,
-        stdin : Cell<Option<ChildStdin>>,
-        value : Rc<Cell<JsonValue>>,
-    },
     Formatted {
         format : String,
         looped : Cell<bool>,
     },
-    Eval {
-        format : String,
-        looped : Cell<bool>,
+    Group {
+        items : Vec<Item>,
+        spacing : String,
+        // TODO crop ordering: allow specific items to be cropped first
+        // TODO use min-width to force earlier cropping
     },
-    Regex {
-        regex : regex::Regex,
-        text : String,
-        replace : String,
-        looped : Cell<bool>,
+    Item { // unique variant for the reserved "item" item
+        value : Cell<String>,
+    },
+    ItemReference { name : String },
+    MediaPlayer2 {
+        mpris : Rc<MediaPlayer2>,
     },
     Meter {
         min : String,
@@ -83,12 +74,27 @@ pub enum Module {
         values : Box<[String]>,
         looped : Cell<bool>,
     },
-    MediaPlayer2 {
-        mpris : Rc<MediaPlayer2>,
+    None,
+    ReadFile {
+        name : String,
+        poll : f64,
+        last_read : Cell<Option<Instant>>,
+        contents : Cell<String>,
+    },
+    Regex {
+        regex : regex::Regex,
+        text : String,
+        replace : String,
+        looped : Cell<bool>,
     },
     SwayMode(sway::Mode),
     SwayWorkspace(sway::Workspace),
-    None,
+    Tray {
+        spacing : String,
+    },
+    Value {
+        value : Cell<String>,
+    },
 }
 
 impl Module {
@@ -99,6 +105,12 @@ impl Module {
                 let format = value.get("format").and_then(|v| v.as_str()).unwrap_or("%H:%M").to_owned();
                 let zone = value.get("timezone").and_then(|v| v.as_str()).unwrap_or("").to_owned();
                 Module::Clock { format, zone, time : Cell::new(String::new()) }
+            }
+            Some("disk") => {
+                let path = value.get("path").and_then(|v| v.as_str()).unwrap_or("/").to_owned();
+                let poll = toml_to_f64(value.get("poll")).unwrap_or(60.0);
+                let v = unsafe { std::mem::zeroed() };
+                Module::Disk { path, poll, last_read: Cell::default(), contents : Cell::new(v) }
             }
             Some("eval") => {
                 let format = value.get("format").and_then(|v| v.as_str()).unwrap_or_else(|| {
@@ -286,6 +298,26 @@ impl Module {
         }
     }
 
+    fn should_read_now(poll : f64, last_read : &Cell<Option<Instant>>, rt : &Runtime) -> bool {
+        let now = Instant::now();
+        if poll > 0.0 {
+            let last = last_read.get();
+            if let Some(last) = last {
+                let next = last + Duration::from_secs_f64(poll);
+                let early = last + Duration::from_secs_f64(poll * 0.9);
+                if early > now {
+                    rt.set_wake_at(next);
+                    return false;
+                }
+            }
+            rt.set_wake_at(now + Duration::from_secs_f64(poll));
+        } else if last_read.get().is_some() {
+            return false;
+        }
+        last_read.set(Some(now));
+        true
+    }
+
     /// Periodic update (triggered by timer)
     pub fn update(&self, name : &str, rt : &Runtime) {
         match self {
@@ -328,23 +360,24 @@ impl Module {
                     }
                 }
             }
-            Module::ReadFile { name, poll, last_read, contents } => {
-                let now = Instant::now();
-                if *poll > 0.0 {
-                    let last = last_read.get();
-                    if let Some(last) = last {
-                        let next = last + Duration::from_secs_f64(*poll);
-                        let early = last + Duration::from_secs_f64(*poll * 0.9);
-                        if early > now {
-                            rt.set_wake_at(next);
-                            return;
-                        }
-                    }
-                    rt.set_wake_at(now + Duration::from_secs_f64(*poll));
-                } else if last_read.get().is_some() {
+            Module::Disk { path, poll, last_read, contents } => {
+                if !Self::should_read_now(*poll, last_read, rt) {
                     return;
                 }
-                last_read.set(Some(now));
+                let cstr = std::ffi::CString::new(path.as_bytes()).unwrap();
+                let rv = unsafe {
+                    libc::statvfs(cstr.as_ptr(), contents.as_ptr())
+                };
+                if rv != 0 {
+                    contents.set(unsafe { std::mem::zeroed() });
+                    warn!("Could not read disk at '{}': {}", path, std::io::Error::last_os_error());
+                }
+
+            }
+            Module::ReadFile { name, poll, last_read, contents } => {
+                if !Self::should_read_now(*poll, last_read, rt) {
+                    return;
+                }
                 match std::fs::read_to_string(&name) {
                     Ok(v) => {
                         contents.set(v);
@@ -378,6 +411,24 @@ impl Module {
             }
             Module::None => f(""),
             Module::Clock { time, .. } => time.take_in(|s| f(s)),
+            Module::Disk { contents, .. } => {
+                let vfs = contents.get();
+                match key {
+                    "size" => f(&format!("{}", vfs.f_frsize * vfs.f_blocks)),
+                    "free" => f(&format!("{}", vfs.f_bsize * vfs.f_bfree)),
+                    "avail" => f(&format!("{}", vfs.f_bsize * vfs.f_bavail)),
+                    "" | "percent-used" if vfs.f_frsize * vfs.f_blocks != 0 => {
+                        let size = (vfs.f_frsize * vfs.f_blocks) as f64;
+                        let free = (vfs.f_bsize * vfs.f_bfree) as f64;
+                        if key == "" {
+                            f(&format!("{:.0}%", 100.0 - 100.0 * free / size))
+                        } else {
+                            f(&format!("{:.0}", 100.0 - 100.0 * free / size))
+                        }
+                    }
+                    _ => f("")
+                }
+            }
             Module::Value { value } => value.take_in(|s| f(s)),
             Module::Item { value } => value.take_in(|s| f(s)),
             Module::ReadFile { contents, .. } if key == "raw" => contents.take_in(|s| f(s)),

@@ -6,6 +6,7 @@ A bar for Wayland (for wlroots compositors like sway) written in Rust.
 
 - Clock
 - Custom scripts
+- Disk (filesystem) free
 - File reader (for showing battery, temperature, load average, etc.)
 - MPRIS-compliant media player support
 - Sway (workspaces, binding mode)
@@ -22,6 +23,6 @@ A bar for Wayland (for wlroots compositors like sway) written in Rust.
 
 ```bash
 cargo build --release
-cp doc/rwaybar.json .
+cp doc/rwaybar.toml .
 ./target/release/rwaybar
 ```

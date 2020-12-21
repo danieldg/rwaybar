@@ -11,6 +11,7 @@ side = "top"
 [[bar]]
 name = "HDMI-A-1"
 left = "tvl"
+center = "clock"
 right = "tvr"
 size = 20
 
@@ -23,6 +24,8 @@ bg-alpha = 0.3
 items = ["clock", "mode", "workspaces"]
 
 [time_fmt]
+# type='value' is implied if the only key is 'value'
+# Value is not format-expanded, but its contents can be set by actions (see clock below)
 value = "%H:%M"
 
 [time]
@@ -127,7 +130,7 @@ poll = 20
 type = "eval"
 format = "{temp1_raw} / 1000"
 
-[hdd_icon]
+[hdd-icon]
 type = "meter"
 min = 20
 max = 50
@@ -136,8 +139,12 @@ below = "{temp1}°C"
 above = "<span color='red'>{temp1}°C</span>"
 values = ["", "", "", "", "", ""]
 
+[hdd-use]
+type = "disk"
+path = "/"
+
 [hdd]
-format = "🖴:{hdd_icon}"
+format = "<span font='Liberation Mono'>/</span>:{hdd-use}{hdd-icon}"
 markup = true
 
 
@@ -214,7 +221,7 @@ bg = "black"
 bg-alpha = 0.5
 spacing = 1.5
 alpha = 0.7
-items = ["clock", "mode", "workspaces"]
+items = ["mode", "workspaces"]
 
 [tvr]
 type = "group"
