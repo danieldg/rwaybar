@@ -97,8 +97,8 @@ enum Module {
         looped : Cell<bool>,
     },
     Meter {
-        min : f64,
-        max : f64,
+        min : String,
+        max : String,
         src : String,
         values : Box<[String]>,
         looped : Cell<bool>,
@@ -109,6 +109,16 @@ enum Module {
     SwayMode(sway::Mode),
     SwayWorkspace(sway::Workspace),
     None,
+}
+
+fn to_string_value(value : &JsonValue) -> Option<String> {
+    if let Some(v) = value.as_str() {
+        Some(v.to_owned())
+    } else if let Some(v) = value.as_f64() {
+        Some(format!("{}", v))
+    } else {
+        None
+    }
 }
 
 impl Module {
@@ -182,8 +192,8 @@ impl Module {
                 }
             }
             Some("meter") => {
-                let min = value["min"].as_f64().unwrap_or(0.0);
-                let max = value["max"].as_f64().unwrap_or(100.0);
+                let min = to_string_value(&value["min"]).unwrap_or_default();
+                let max = to_string_value(&value["max"]).unwrap_or_default();
                 let src = value["src"].as_str().unwrap_or_else(|| {
                     error!("Meter requires a src expression");
                     ""
@@ -584,12 +594,16 @@ impl Variable {
                 }
                 looped.set(true);
                 let value = rt.format_or(&src, &name);
+                let min = rt.format_or(&min, &name);
+                let max = rt.format_or(&max, &name);
                 let value = value.parse::<f64>().unwrap_or(0.0);
+                let min = min.parse::<f64>().unwrap_or(0.0);
+                let max = max.parse::<f64>().unwrap_or(100.0);
                 let steps = values.len() - 2;
-                let step = (*max - *min) / (steps as f64);
-                let expr = if value < *min {
+                let step = (max - min) / (steps as f64);
+                let expr = if value < min {
                     &values[0]
-                } else if value > *max {
+                } else if value > max {
                     &values[values.len() - 1]
                 } else {
                     let i = (value - min) / step;
