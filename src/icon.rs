@@ -10,6 +10,10 @@ thread_local! {
 }
 
 fn open_icon(name : &str, target_size : f64) -> io::Result<PathBuf> {
+    if name.contains('/') {
+        return Ok(PathBuf::from(name.to_owned()));
+    }
+
     let base = "/usr/share/icons";
     let theme = "hicolor";
 

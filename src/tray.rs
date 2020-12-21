@@ -32,6 +32,7 @@ struct TrayItem {
     title : String,
     status : String,
     icon : String,
+    icon_path : String,
     menu : String,
 }
 
@@ -185,6 +186,7 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<String, Varian
                         "Title" => value.as_str().map(|v| item.title = v.into()),
                         "Status" => value.as_str().map(|v| item.status = v.into()),
                         "IconName" => value.as_str().map(|v| item.icon = v.into()),
+                        "IconThemePath" => value.as_str().map(|v| item.icon_path = v.into()),
                         "Menu" => value.as_str().map(|v| item.menu = v.into()),
                         _ => None
                     };
@@ -203,7 +205,23 @@ pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
             ctx.cairo.rel_move_to(spacing, 0.0);
             for item in items {
                 let x0 = ctx.cairo.get_current_point().0;
-                if icon::render(ctx, &item.icon).is_err() {
+                let mut done = false;
+                if !done && item.icon_path != "" {
+                    let icon = format!("{}/{}.svg", item.icon_path, item.icon);
+                    if icon::render(ctx, &icon).is_ok() {
+                        done = true;
+                    }
+                }
+                if !done && item.icon_path != "" {
+                    let icon = format!("{}/{}.png", item.icon_path, item.icon);
+                    if icon::render(ctx, &icon).is_ok() {
+                        done = true;
+                    }
+                }
+                if !done && icon::render(ctx, &item.icon).is_ok() {
+                    done = true;
+                }
+                if !done {
                     let item : Item = Module::Value { value : Cell::new(item.title.clone()) }.into();
                     item.render(ctx);
                 }
