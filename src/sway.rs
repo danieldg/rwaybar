@@ -197,7 +197,7 @@ pub struct Mode {
 }
 
 impl Variable for Mode {
-    fn from_json(_config : &json::JsonValue) -> Option<Self> {
+    fn from_toml(_config : &toml::Value) -> Option<Self> {
         Some(Mode::default())
     }
 
@@ -269,7 +269,7 @@ impl Workspace {
 }
 
 impl Variable for Workspace {
-    fn from_json(_config : &json::JsonValue) -> Option<Self> {
+    fn from_toml(_config : &toml::Value) -> Option<Self> {
         Some(Workspace::default())
     }
 

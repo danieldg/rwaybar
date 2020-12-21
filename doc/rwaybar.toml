@@ -1,0 +1,225 @@
+# Bars are defined as an array, so you can have more than one
+[[bar]]
+name = "DP-1"
+left = "dpl"
+right = "dpr"
+size = 40
+font = "Roboto 18"
+align = "south"
+side = "top"
+
+[[bar]]
+name = "HDMI-A-1"
+left = "tvl"
+right = "tvr"
+size = 20
+
+# Everything else is defined in its own section and addressed by name elsewhere.
+[dpl]
+type = "group"
+fg = "white"
+bg = "black"
+bg-alpha = 0.3
+items = ["clock", "mode", "workspaces"]
+
+[time_fmt]
+value = "%H:%M"
+
+[time]
+type = "clock"
+format = "{time_fmt}"
+
+[clock]
+type = "text"
+format = "{time}"
+font = "Liberation Sans 26"
+margin = "0 10"
+on-click = { "exec" = "gnome-calendar" }
+on-click-middle = { "write" = "time_fmt", "format" = "%H:%M" }
+on-click-right = { "write" = "time_fmt", "format" = "%H:%M:%S" }
+markup = true
+
+[sway-mode]
+type = "sway-mode"
+
+[mode]
+format = "{sway-mode}"
+margin = "3"
+bg = "red"
+
+[sway-workspace]
+type = "sway-workspace"
+
+[workspaces]
+type = "focus-list"
+source = "sway-workspace"
+
+# Instead of writing "workspaces.item = 'an_item'", we can use a sub-key like this:
+# (note you can't address such sub-keys from other items)
+[workspaces.item]
+format = " {item} "
+margin = "0 1 0 1"
+padding = "0 0 5 0"
+border = "3 0 0 0"
+border-alpha = 0
+on-click = { "send" = "sway-workspace.switch", "format" = "{item}" }
+
+workspaces.focused-item]
+format = " {item} "
+margin = "0 1 0 1"
+padding = "0 0 5 0"
+border = "3 0 0 0"
+bg = "#197d9b"
+bg-alpha = 0.8
+
+# The right side of the bar on DP-1
+[dpr]
+type = "group"
+fg = "white"
+bg = "black"
+bg-alpha = 0.3
+spacing = 15
+padding = "0 0 4 0"
+margin = "0 0 0 -10"
+items = ["playing", "tray", "weather", "hdd", "bat", "cpu"]
+
+[music]
+type = "mpris"
+# The mpris module doesn't take any options.  It exposes the properties that
+# your media player sets; try the values listed at
+# http://www.freedesktop.org/wiki/Specifications/mpris-spec/metadata
+# or look at what shows up in 'dbus-monitor' after a track change.
+
+# The mpris module also supports actions (shown below)
+
+[playing]
+format = "{music.title}"
+# If you only want to interface with a specific media player, use:
+# format = "{music.audacious.title}" and send = "music.audacious"
+font = "Liberation Sans 12"
+align = "center"
+on-click = { "send" = "music", "format" = "Next" }
+on-click-right = { "send" = "music", "format" = "Previous" }
+on-click-middle = { "send" = "music", "format" = "PlayPause" }
+on-click-backward = { "send" = "music", "format" = "Raise" }
+
+[tray]
+type = "tray"
+font = "Liberation Sans 12"
+fg = "green"
+
+[weather-cmd]
+type = "exec-json"
+command = "/home/daniel/bin/weather-widget"
+# This script outputs lines like '{"text": "Clear 16°"}'
+
+[weather]
+format = "{weather-cmd.text}"
+markup = true
+
+
+[temp1_raw]
+type = "read-file"
+file = "/sys/class/hwmon/hwmon1/temp1_input"
+poll = 20
+
+[temp1]
+type = "eval"
+format = "{temp1_raw} / 1000"
+
+[hdd_icon]
+type = "meter"
+min = 20
+max = 50
+src = "{temp1}"
+below = "{temp1}°C"
+above = "<span color='red'>{temp1}°C</span>"
+values = ["", "", "", "", "", ""]
+
+[hdd]
+format = "🖴:{hdd_icon}"
+markup = true
+
+
+[bat-charge]
+type = "read-file"
+file = "/sys/class/power_supply/BAT1/charge_now"
+poll = 20
+
+[bat-full]
+type = "read-file"
+file = "/sys/class/power_supply/BAT1/charge_full"
+poll = 20
+
+[bat_icon]
+type = "meter"
+min = 0
+max = "{bat-full}"
+src = "{bat-charge}"
+values = ["", "", "", "", ""]
+
+[bat]
+format = "{bat-charge} mAh {bat_icon}"
+
+[temp3_raw]
+type = "read-file"
+file = "/sys/class/hwmon/hwmon3/temp1_input"
+poll = 20
+
+[cpu_temp]
+type = "eval"
+format = "{temp3_raw} / 1000"
+
+[cpu_icon]
+type = "meter"
+min = 20
+max = 60
+src = "{cpu_temp}"
+below = "{cpu_temp}°C"
+above = "{cpu_temp}°C"
+values = ["", "", "", "", "", ""]
+
+[psi-cpu-file]
+type = "read-file"
+file = "/proc/pressure/cpu"
+poll = 5
+
+[psi-io-file]
+type = "read-file"
+file = "/proc/pressure/io"
+poll = 5
+
+[psi-memory-file]
+type = "read-file"
+file = "/proc/pressure/memory"
+poll = 5
+
+[psi-cpu-10]
+type = "regex"
+text = "{psi-cpu-file}"
+regex = 'some avg10=(\S+)'
+
+[psi-io-10]
+type = "regex"
+text = "{psi-io-file}"
+regex = 'some avg10=(\S+)'
+
+[cpu]
+format = "{psi-cpu-10.1} {psi-io-10.1} {cpu_icon}"
+
+[tvl]
+type = "group"
+fg = "white"
+bg = "black"
+bg-alpha = 0.5
+spacing = 1.5
+alpha = 0.7
+items = ["clock", "mode", "workspaces"]
+
+[tvr]
+type = "group"
+fg = "white"
+bg = "black"
+bg-alpha = "0.4"
+spacing = 15
+items = ["playing", "tray", "weather" ]

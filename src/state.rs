@@ -1,6 +1,5 @@
 use futures_util::future::select;
 use futures_util::pin_mut;
-use json::JsonValue;
 use log::{info,warn,error};
 use std::cell::{Cell,RefCell};
 use std::collections::HashMap;
@@ -153,20 +152,29 @@ impl Runtime {
 pub struct State {
     pub wayland : WaylandClient,
     pub bars : Vec<Bar>,
-    config : JsonValue,
+    bar_config : Vec<toml::Value>,
     pub runtime : Runtime,
     draw_waiting_on_shm : bool,
 }
 
 impl State {
     pub fn new(wayland : WaylandClient) -> Result<Rc<RefCell<Self>>, Box<dyn Error>> {
-        let cfg = std::fs::read_to_string("rwaybar.json")?;
-        let config = json::parse(&cfg)?;
+        let cfg = std::fs::read_to_string("rwaybar.toml")?;
+        let config : toml::Value = toml::from_str(&cfg)?;
 
-        let items = config["items"].entries().map(|(key, value)| {
-            let key = key.to_owned();
-            let value = Item::from_item_list(value);
-            (key, value)
+        let cfg = config.as_table().unwrap();
+
+        let mut bar_config = Vec::new();
+
+        let items = cfg.iter().filter_map(|(key, value)| {
+            if key == "bar" {
+                bar_config.extend(value.as_array().unwrap().iter().cloned());
+                None
+            } else {
+                let key = key.to_owned();
+                let value = Item::from_item_list(value);
+                Some((key, value))
+            }
         }).collect();
 
         let notify_inner = Rc::new(NotifierInner {
@@ -182,7 +190,7 @@ impl State {
                 refresh : Default::default(),
                 notify : Notifier { inner : notify_inner.clone() },
             },
-            config,
+            bar_config,
             draw_waiting_on_shm : false,
         };
 
@@ -336,7 +344,7 @@ impl State {
         let data = &self.wayland.outputs[i];
         info!("Output[{}] name='{}' description='{}' at {},{} {}x{}",
             i, data.name, data.description, data.pos_x, data.pos_y, data.size_x, data.size_y);
-        for cfg in self.config["bars"].members() {
+        for cfg in &self.bar_config {
             if let Some(name) = cfg["name"].as_str() {
                 if name != &data.name {
                     continue;
@@ -348,12 +356,12 @@ impl State {
         }
     }
 
-    fn new_bar(&self, output : &WlOutput, cfg : &JsonValue) -> Bar {
+    fn new_bar(&self, output : &WlOutput, cfg : &toml::Value) -> Bar {
         let ls : Attached<ZwlrLayerShellV1> = self.wayland.env.require_global();
         let surf : Attached<_> = self.wayland.env.create_surface();
         let ls_surf = ls.get_layer_surface(&surf, Some(output), Layer::Top, "bar".to_owned());
 
-        let size = cfg["size"].as_u32().unwrap_or(20);
+        let size = cfg.get("size").and_then(|v| v.as_integer()).unwrap_or(20) as u32;
 
         match cfg["side"].as_str() {
             Some("top") => {

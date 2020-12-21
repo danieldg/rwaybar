@@ -182,7 +182,8 @@ impl MediaPlayer2 {
             if let Some(dot) = key.find('.') {
                 let name = &key[..dot];
                 field = &key[dot + 1..];
-                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| p.name == name));
+                let skip = "org.mpris.MediaPlayer2.".len();
+                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &p.name[skip..] == name));
             } else {
                 field = key;
                 // Prefer playing players, then paused, then any
@@ -205,13 +206,13 @@ impl MediaPlayer2 {
                             None => f(""),
                         }
                     }
-                    _ if key.contains(':') => {
-                        f(player.meta.as_ref().and_then(|md| md.get(key)).and_then(|v| v.as_str()).unwrap_or(""))
+                    _ if field.contains(':') => {
+                        f(player.meta.as_ref().and_then(|md| md.get(field)).and_then(|v| v.as_str()).unwrap_or(""))
                     }
                     // See http://www.freedesktop.org/wiki/Specifications/mpris-spec/metadata for
                     // a list of valid names
                     _ => {
-                        let xeasm = format!("xesam:{}", key);
+                        let xeasm = format!("xesam:{}", field);
                         let mut tmp = String::new();
                         let value = player.meta.as_ref()
                             .and_then(|md| md.get(&xeasm))
@@ -243,7 +244,8 @@ impl MediaPlayer2 {
             let player;
 
             if !key.is_empty() {
-                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| p.name == key));
+                let skip = "org.mpris.MediaPlayer2.".len();
+                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &p.name[skip..] == key));
             } else {
                 // Prefer playing players, then paused, then any
                 player = oi.as_ref()

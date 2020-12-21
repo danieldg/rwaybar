@@ -2,6 +2,7 @@ use crate::Variable as VariableTrait;
 use crate::state::Notifier;
 use crate::sway;
 use crate::tray;
+use crate::util::{toml_to_string,toml_to_f64};
 use crate::state::Runtime;
 use crate::mpris::MediaPlayer2;
 use json::JsonValue;
@@ -111,45 +112,35 @@ enum Module {
     None,
 }
 
-fn to_string_value(value : &JsonValue) -> Option<String> {
-    if let Some(v) = value.as_str() {
-        Some(v.to_owned())
-    } else if let Some(v) = value.as_f64() {
-        Some(format!("{}", v))
-    } else {
-        None
-    }
-}
-
 impl Module {
-    fn from_json(value : &JsonValue) -> Self {
-        match value["type"].as_str() {
+    fn from_toml(value : &toml::Value) -> Self {
+        match value.get("type").and_then(|v| v.as_str()) {
             Some("clock") => {
-                let format = value["format"].as_str().unwrap_or("%H:%M").to_owned();
-                let zone = value["timezone"].as_str().unwrap_or("").to_owned();
+                let format = value.get("format").and_then(|v| v.as_str()).unwrap_or("%H:%M").to_owned();
+                let zone = value.get("timezone").and_then(|v| v.as_str()).unwrap_or("").to_owned();
                 Module::Clock { format, zone, time : Cell::new(String::new()) }
             }
             Some("formatted") => {
-                let format = value["format"].as_str().unwrap_or_else(|| {
+                let format = value.get("format").and_then(|v| v.as_str()).unwrap_or_else(|| {
                     error!("Formatted variables require a format: {}", value);
                     ""
                 }).to_owned();
                 Module::Formatted { format, looped : Cell::new(false) }
             }
             Some("eval") => {
-                let format = value["format"].as_str().unwrap_or_else(|| {
+                let format = value.get("format").and_then(|v| v.as_str()).unwrap_or_else(|| {
                     error!("Eval variables require a format: {}", value);
                     ""
                 }).to_owned();
                 Module::Eval { format, looped : Cell::new(false) }
             }
             Some("regex") => {
-                let text = value["text"].as_str().unwrap_or_else(|| {
+                let text = value.get("text").and_then(|v| v.as_str()).unwrap_or_else(|| {
                     error!("Regex requires a text expression");
                     ""
                 }).to_owned();
-                let replace = value["replace"].as_str().unwrap_or("").to_owned();
-                let regex = value["regex"].as_str().unwrap_or_else(|| {
+                let replace = value.get("replace").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                let regex = value.get("regex").and_then(|v| v.as_str()).unwrap_or_else(|| {
                     error!("Regex requires a regex expression");
                     ""
                 }).to_owned();
@@ -165,20 +156,20 @@ impl Module {
                 }
             }
             Some("read-file") => {
-                let name = match value["file"].as_str() {
+                let name = match value.get("file").and_then(|v| v.as_str()) {
                     Some(name) => name.to_owned(),
                     None => {
                         error!("Read-file requires a file name: {}", value);
                         return Module::None;
                     }
                 };
-                let poll = value["poll"].as_f64().unwrap_or(60.0);
+                let poll = toml_to_f64(value.get("poll")).unwrap_or(60.0);
                 Module::ReadFile {
                     name, poll, last_read: Cell::default(), contents : Cell::default()
                 }
             }
             Some("exec-json") => {
-                let command = match value["command"].as_str() {
+                let command = match value.get("command").and_then(|v| v.as_str()) {
                     Some(cmd) => cmd.to_owned(),
                     None => {
                         error!("Comamnd to execute is required: {}", value);
@@ -192,14 +183,14 @@ impl Module {
                 }
             }
             Some("meter") => {
-                let min = to_string_value(&value["min"]).unwrap_or_default();
-                let max = to_string_value(&value["max"]).unwrap_or_default();
-                let src = value["src"].as_str().unwrap_or_else(|| {
+                let min = toml_to_string(value.get("min")).unwrap_or_default();
+                let max = toml_to_string(value.get("max")).unwrap_or_default();
+                let src = value.get("src").and_then(|v| v.as_str()).unwrap_or_else(|| {
                     error!("Meter requires a src expression");
                     ""
                 }).to_owned();
                 let mut values = match Some(Some("")).into_iter()
-                        .chain(value["values"].members().map(JsonValue::as_str))
+                        .chain(value.get("values").and_then(|v| v.as_array()).map(|v| v.iter().map(toml::Value::as_str)).into_iter().flatten())
                         .chain(Some(Some("")))
                         .map(|v| v.map(String::from))
                         .collect::<Option<Box<[_]>>>()
@@ -211,12 +202,16 @@ impl Module {
                         }
                     };
                 let e = values.len() - 1;
-                values[0] = value["below"].as_str().unwrap_or(&values[1]).to_owned();
-                values[e] = value["above"].as_str().unwrap_or(&values[e - 1]).to_owned();
+                values[0] = value.get("below").and_then(|v| v.as_str()).unwrap_or(&values[1]).to_owned();
+                values[e] = value.get("above").and_then(|v| v.as_str()).unwrap_or(&values[e - 1]).to_owned();
                 Module::Meter { min, max, src, values, looped : Cell::new(false) }
             }
             None if value.as_str().is_some() => {
                 let value = value.as_str().unwrap().into();
+                Module::Value { value : Cell::new(value) }
+            }
+            None if value.get("value").map_or(false, |v| v.is_str()) => {
+                let value = value["value"].as_str().unwrap().into();
                 Module::Value { value : Cell::new(value) }
             }
             Some("mpris") => {
@@ -224,10 +219,10 @@ impl Module {
                 Module::MediaPlayer2 { mpris }
             }
             Some("sway-mode") => {
-                sway::Mode::from_json(value).map_or(Module::None, Module::SwayMode)
+                sway::Mode::from_toml(value).map_or(Module::None, Module::SwayMode)
             }
             Some("sway-workspace") => {
-                sway::Workspace::from_json(value).map_or(Module::None, Module::SwayWorkspace)
+                sway::Workspace::from_toml(value).map_or(Module::None, Module::SwayWorkspace)
             }
             _ => {
                 Module::None
@@ -247,17 +242,17 @@ pub enum Action {
 }
 
 impl Action {
-    pub fn from_json(value : &JsonValue) -> Self {
+    pub fn from_toml(value : &toml::Value) -> Self {
         if value.is_array() {
-            return Action::List(value.members().map(Action::from_json).collect());
+            return Action::List(value.as_array().unwrap().iter().map(Action::from_toml).collect());
         }
-        if let Some(dest) = value["write"].as_str().or_else(|| value["send"].as_str()) {
-            let format = value["format"].as_str()
-                .or_else(|| value["msg"].as_str())
+        if let Some(dest) = value.get("write").and_then(|v| v.as_str()).or_else(|| value.get("send").and_then(|v| v.as_str())) {
+            let format = value.get("format").and_then(|v| v.as_str())
+                .or_else(|| value.get("msg").and_then(|v| v.as_str()))
                 .unwrap_or("").to_owned();
             return Action::Write { target : dest.into(), format };
         }
-        if let Some(cmd) = value["exec"].as_str() {
+        if let Some(cmd) = value.get("exec").and_then(|v| v.as_str()) {
             return Action::Exec { format : cmd.into() };
         }
         error!("Unknown action: {}", value);
@@ -400,8 +395,8 @@ fn do_exec_json(fd : i32, name : String, value : Rc<Cell<JsonValue>>, redraw : N
 
 impl Variable {
     /// Parse a variable from the JSON configuration
-    pub fn from_json(value : &JsonValue) -> Self {
-        let module = Module::from_json(value);
+    pub fn from_toml(value : &toml::Value) -> Self {
+        let module = Module::from_toml(value);
         Variable { module }
     }
 

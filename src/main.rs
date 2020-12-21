@@ -10,13 +10,14 @@ mod mpris;
 mod state;
 mod sway;
 mod tray;
+mod util;
 mod wayland;
 
 use state::State;
 use wayland::WaylandClient;
 
 pub trait Variable : std::fmt::Debug {
-    fn from_json(config : &json::JsonValue) -> Option<Self>
+    fn from_toml(config : &toml::Value) -> Option<Self>
         where Self : Sized;
     fn init(&self, name : &str, rt : &state::Runtime) {
         let _ = (name, rt);

@@ -1,7 +1,7 @@
-use json::JsonValue;
 use crate::data::{Action,Variable};
 use crate::state::Runtime;
 use crate::tray;
+use crate::util::toml_to_string;
 use log::{debug,warn,error};
 
 /// State available to an [Item] render function
@@ -86,7 +86,7 @@ impl Align {
 /// A visible item in a bar
 #[derive(Debug)]
 pub struct Item {
-    fmt_config : json::object::Object,
+    config : Option<toml::Value>,
     contents : Contents,
     pub data : Variable,
     events : EventSink,
@@ -109,36 +109,24 @@ struct Formatting {
 }
 
 impl Formatting {
-    fn filter_json(value : &JsonValue) -> json::object::Object {
-        let mut rv = json::object::Object::new();
-        if let JsonValue::Object(src) = value {
-            for key in &["font", "min-width", "max-width", "align", "halign", "valign", "margin", "padding", "alpha", "bg", "bg-alpha", "fg", "fg-alpha", "border", "border-color", "border-alpha"] {
-                if let Some(v) = src.get(key) {
-                    rv.insert(key, v.clone());
-                }
-            }
-        }
-        rv
-    }
-
-    fn expand(obj : &json::object::Object, runtime : &Runtime) -> Self {
+    fn expand(config : &toml::Value, runtime : &Runtime) -> Self {
         let get = |key| {
-            obj.get(key).and_then(|v| match v.as_str() {
+            config.get(key).and_then(|v| match v.as_str() {
                 Some(fmt) => runtime.format(&fmt).or_else(|e| {
                     warn!("Error expanding '{}' when rendering: {}", fmt, e);
                     Err(())
                 }).ok(),
-                None => Some(v.dump())
+                None => Some(v.to_string())
             })
         };
 
         let get_f64 = |key| {
-            obj.get(key).and_then(|v| match v.as_str() {
+            config.get(key).and_then(|v| match v.as_str() {
                 Some(fmt) => runtime.format(&fmt).or_else(|e| {
                     warn!("Error expanding '{}' when rendering: {}", fmt, e);
                     Err(())
                 }).ok().and_then(|v| v.parse().ok()),
-                None => v.as_f64(),
+                None => v.as_float().or_else(|| v.as_integer().map(|i| i as f64)),
             })
         };
         let mut align = Align {
@@ -248,7 +236,7 @@ enum Contents {
     },
     Group {
         items : Vec<Item>,
-        spacing : f64,
+        spacing : String,
         // TODO crop ordering: allow specific items to be cropped first
         // TODO use min-width to force earlier cropping
     },
@@ -256,14 +244,14 @@ enum Contents {
         source : String,
         // always two items: non-focused, focused
         items : Box<[Item;2]>,
-        spacing : f64,
+        spacing : String,
     },
     Bar {
         // always three items: left, center, right
         items : Box<[Item;3]>,
     },
     Tray {
-        spacing : f64,
+        spacing : String,
     },
     Null,
 }
@@ -325,23 +313,25 @@ impl Contents {
                 ctx.cairo.rel_move_to(pango::units_to_double(size.0), -yoff);
             }
             Contents::Group { items, spacing } => {
-                ctx.cairo.rel_move_to(*spacing, 0.0);
+                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                ctx.cairo.rel_move_to(spacing, 0.0);
                 for item in items {
                     let x0 = ctx.cairo.get_current_point().0;
                     let mut ev = item.render(ctx);
                     let x1 = ctx.cairo.get_current_point().0;
                     ev.offset_clamp(0.0, x0, x1);
                     rv.merge(ev);
-                    ctx.cairo.rel_move_to(*spacing, 0.0);
+                    ctx.cairo.rel_move_to(spacing, 0.0);
                 }
             }
             Contents::FocusList { source, items, spacing } => {
+                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
                 let source = match ctx.runtime.items.get(source) {
                     Some(var) => var,
                     None => return,
                 };
                 let item_var = ctx.runtime.items.get("item").unwrap();
-                ctx.cairo.rel_move_to(*spacing, 0.0);
+                ctx.cairo.rel_move_to(spacing, 0.0);
                 source.data.read_focus_list(|item, focus| {
                     item_var.data.set_current_item(Some(item.to_owned()));
                     let x0 = ctx.cairo.get_current_point().0;
@@ -356,7 +346,7 @@ impl Contents {
                         h.item = item.to_owned();
                     }
                     rv.merge(ev);
-                    ctx.cairo.rel_move_to(*spacing, 0.0);
+                    ctx.cairo.rel_move_to(spacing, 0.0);
                 });
                 item_var.data.set_current_item(None);
             }
@@ -423,7 +413,8 @@ impl Contents {
                 ctx.cairo.move_to(clip_x1, clip_y0);
             }
             Contents::Tray { spacing } => {
-                tray::show(ctx, rv, *spacing);
+                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                tray::show(ctx, rv, spacing);
             }
             Contents::Null => {}
         }
@@ -447,35 +438,34 @@ pub struct EventSink {
 }
 
 impl EventSink {
-    fn from_json(value : &JsonValue) -> Self {
+    fn from_toml(value : &toml::Value) -> Self {
         let mut sink = EventSink::default();
-        sink.add_click(&value["on-click"], 1 << 0);
-        sink.add_click(&value["on-click-right"], 1 << 1);
-        sink.add_click(&value["on-click-middle"], 1 << 2);
-        sink.add_click(&value["on-click-back"], 1 << 3);
-        sink.add_click(&value["on-click-backward"], 1 << 3);
-        sink.add_click(&value["on-click-forward"], 1 << 4);
-        sink.add_click(&value["on-scroll-up"], 1 << 5);
-        sink.add_click(&value["on-scroll-down"], 1 << 6);
-        sink.add_click(&value["on-vscroll"], 3 << 5);
-        sink.add_click(&value["on-scroll-left"], 1 << 7);
-        sink.add_click(&value["on-scroll-right"], 1 << 8);
-        sink.add_click(&value["on-hscroll"], 3 << 7);
-        sink.add_click(&value["on-scroll"], 15 << 5);
+        sink.add_click(value.get("on-click"), 1 << 0);
+        sink.add_click(value.get("on-click-right"), 1 << 1);
+        sink.add_click(value.get("on-click-middle"), 1 << 2);
+        sink.add_click(value.get("on-click-back"), 1 << 3);
+        sink.add_click(value.get("on-click-backward"), 1 << 3);
+        sink.add_click(value.get("on-click-forward"), 1 << 4);
+        sink.add_click(value.get("on-scroll-up"), 1 << 5);
+        sink.add_click(value.get("on-scroll-down"), 1 << 6);
+        sink.add_click(value.get("on-vscroll"), 3 << 5);
+        sink.add_click(value.get("on-scroll-left"), 1 << 7);
+        sink.add_click(value.get("on-scroll-right"), 1 << 8);
+        sink.add_click(value.get("on-hscroll"), 3 << 7);
+        sink.add_click(value.get("on-scroll"), 15 << 5);
         sink
     }
 
-    fn add_click(&mut self, value : &JsonValue, buttons : u32) {
-        if value.is_null() {
-            return;
+    fn add_click(&mut self, value : Option<&toml::Value>, buttons : u32) {
+        if let Some(value) = value {
+            self.handlers.push(EventListener {
+                x_min : 0.0,
+                x_max : 1e20,
+                buttons,
+                item : String::new(),
+                target : Action::from_toml(value)
+            })
         }
-        self.handlers.push(EventListener {
-            x_min : 0.0,
-            x_max : 1e20,
-            buttons,
-            item : String::new(),
-            target : Action::from_json(value)
-        })
     }
 
     pub fn from_tray(owner : String, path : String) -> Self {
@@ -534,7 +524,7 @@ impl EventSink {
 impl From<Contents> for Item {
     fn from(contents : Contents) -> Self {
         Self {
-            fmt_config : json::object::Object::new(),
+            config : None,
             events : EventSink::default(),
             contents,
             data : Variable::none(),
@@ -545,7 +535,7 @@ impl From<Contents> for Item {
 impl From<Variable> for Item {
     fn from(data : Variable) -> Self {
         Self {
-            fmt_config : json::object::Object::new(),
+            config : None,
             events : EventSink::default(),
             contents : Contents::Null,
             data
@@ -554,137 +544,137 @@ impl From<Variable> for Item {
 }
 
 impl Item {
-    pub fn new_bar(cfg : &JsonValue) -> Self {
-        let left = Item::from_json_ref(&cfg["left"]);
-        let right = Item::from_json_ref(&cfg["right"]);
-        let center = Item::from_json_ref(&cfg["center"]);
-
-        Item {
-            fmt_config : Formatting::filter_json(cfg),
-            contents : Contents::Bar { items : Box::new([left, center, right]) },
-            events : EventSink::from_json(cfg),
+    pub fn none() -> Self {
+        Self {
+            config : None,
+            events : EventSink::default(),
+            contents : Contents::Null,
             data : Variable::none(),
         }
     }
 
-    pub fn from_json_ref(value : &JsonValue) -> Self {
+    pub fn new_bar(cfg : &toml::Value) -> Self {
+        let left = cfg.get("left").map_or_else(Item::none, Item::from_toml_ref);
+        let right = cfg.get("right").map_or_else(Item::none, Item::from_toml_ref);
+        let center = cfg.get("center").map_or_else(Item::none, Item::from_toml_ref);
+
+        Item {
+            config : Some(cfg.clone()),
+            contents : Contents::Bar { items : Box::new([left, center, right]) },
+            events : EventSink::from_toml(cfg),
+            data : Variable::none(),
+        }
+    }
+
+    pub fn from_toml_ref(value : &toml::Value) -> Self {
         if let Some(text) = value.as_str() {
             let name = text.to_owned();
             return Contents::Reference { name }.into();
         }
 
-        if value.is_null() {
-            return Contents::Null.into();
-        }
-
         if value.is_array() {
             return Contents::Group {
-                items : value.members().map(Item::from_json_ref).collect(),
-                spacing : 0.0
+                items : value.as_array().unwrap().iter().map(Item::from_toml_ref).collect(),
+                spacing : String::new(),
             }.into();
         }
 
-        Self::from_json_i(value)
+        Self::from_toml_i(value)
     }
 
-    pub fn from_item_list(value : &JsonValue) -> Self {
+    pub fn from_item_list(value : &toml::Value) -> Self {
         if let Some(text) = value.as_str() {
             let text = text.to_owned();
             return Item {
-                fmt_config : json::object::Object::new(),
+                config : None,
                 events : EventSink::default(),
                 contents : Contents::Text { text, markup : false },
-                data : Variable::from_json(value),
+                data : Variable::from_toml(value),
             };
         }
 
-        Self::from_json_i(value)
+        Self::from_toml_i(value)
     }
 
-    fn from_json_i(value : &JsonValue) -> Self {
-        if !value.is_object() {
-            error!("Items must be JSON objects: {}", value);
-            return Contents::Null.into();
-        }
-        match value["type"].as_str() {
+    fn from_toml_i(value : &toml::Value) -> Self {
+        match value.get("type").and_then(|v| v.as_str()) {
             Some("group") => {
-                let spacing = value["spacing"].as_f64().unwrap_or(0.0);
+                let spacing = toml_to_string(value.get("spacing")).unwrap_or_default();
 
-                let items = value["items"].members().map(Item::from_json_ref).collect();
+                let items = value.get("items").and_then(|v| v.as_array()).map(|a| a.iter().map(Item::from_toml_ref).collect()).unwrap_or_default();
 
                 Item {
-                    fmt_config : Formatting::filter_json(value),
+                    config : Some(value.clone()),
                     contents : Contents::Group {
                         items,
                         spacing,
                     },
-                    events : EventSink::from_json(value),
-                    data : Variable::from_json(value),
+                    events : EventSink::from_toml(value),
+                    data : Variable::from_toml(value),
                 }
             }
             Some("focus-list") => {
-                let source = match value["source"].as_str() {
+                let source = match value.get("source").and_then(|v| v.as_str()) {
                     Some(s) => s.into(),
                     None => {
                         error!("A source is required for focus-list");
                         return Contents::Null.into();
                     }
                 };
-                let spacing = value["spacing"].as_f64().unwrap_or(0.0);
-                let item = Item::from_json_ref(&value["item"]);
-                let fitem = if value["focused-item"].is_null() {
-                    Item::from_json_ref(&value["item"])
-                } else {
-                    Item::from_json_ref(&value["focused-item"])
-                };
+                let spacing = toml_to_string(value.get("spacing")).unwrap_or_default();
+                let item = value.get("item").map_or_else(Item::none, Item::from_toml_ref);
+                let fitem = value.get("focused-item").map_or_else(Item::none, Item::from_toml_ref);
 
                 let items = Box::new([item, fitem]);
                 Item {
-                    fmt_config : Formatting::filter_json(value),
+                    config : Some(value.clone()),
                     contents : Contents::FocusList {
                         source,
                         items,
                         spacing,
                     },
-                    events : EventSink::from_json(value),
-                    data : Variable::from_json(value),
+                    events : EventSink::from_toml(value),
+                    data : Variable::from_toml(value),
                 }
             }
             Some("tray") => {
-                let spacing = value["spacing"].as_f64().unwrap_or(0.0);
+                let spacing = toml_to_string(value.get("spacing")).unwrap_or_default();
                 Item {
-                    fmt_config : Formatting::filter_json(value),
+                    config : Some(value.clone()),
                     contents : Contents::Tray {
                         spacing,
                     },
-                    events : EventSink::from_json(value),
-                    data : Variable::from_json(value),
+                    events : EventSink::from_toml(value),
+                    data : Variable::from_toml(value),
                 }
             }
             Some("text") |
             None => {
-                let text = value["format"].as_str()
+
+                let text = value.get("format").and_then(|v| v.as_str())
                     .unwrap_or_else(|| {
-                        error!("Text items require a 'format' value");
+                        if value.get("value").is_none() {
+                            error!("Text items require a 'format' value");
+                        }
                         ""
                     }).to_owned();
-                let markup = value["markup"].as_bool().unwrap_or(false);
+                let markup = value.get("markup").and_then(|v| v.as_bool()).unwrap_or(false);
                 Item {
-                    fmt_config : Formatting::filter_json(value),
+                    config : Some(value.clone()),
                     contents : Contents::Text { text, markup },
-                    events : EventSink::from_json(value),
-                    data : Variable::from_json(value),
+                    events : EventSink::from_toml(value),
+                    data : Variable::from_toml(value),
                 }
             }
             Some(tipe) => {
-                let data = Variable::from_json(value);
+                let data = Variable::from_toml(value);
                 if data.is_none() {
                     error!("Unknown item type: {}", tipe);
                 }
                 Item {
-                    fmt_config : Formatting::filter_json(value),
+                    config : Some(value.clone()),
                     contents : Contents::Null,
-                    events : EventSink::from_json(value),
+                    events : EventSink::from_toml(value),
                     data,
                 }
             }
@@ -694,12 +684,19 @@ impl Item {
     pub fn render(&self, ctx : &Render) -> EventSink {
         let mut rv = self.events.clone();
 
-        let format = Formatting::expand(&self.fmt_config, ctx.runtime);
+        let format = self.config.as_ref().map(|cfg| Formatting::expand(cfg, ctx.runtime));
 
-        if format.is_boring() {
-            self.contents.render(ctx, &mut rv);
-            return rv;
-        }
+        let format = match format {
+            None => {
+                self.contents.render(ctx, &mut rv);
+                return rv;
+            }
+            Some(f) if f.is_boring() => {
+                self.contents.render(ctx, &mut rv);
+                return rv;
+            }
+            Some(f) => f
+        };
 
         let mut outer_clip = ctx.cairo.clip_extents();
         let start_pos = ctx.cairo.get_current_point();

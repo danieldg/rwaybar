@@ -15,6 +15,7 @@ log = ""
 once_cell = ""
 strfmt = ""
 tokio = { version = "0.3", features = ['rt', 'net', 'sync', 'io-util', 'time'] }
+toml = ""
 
 # GUI
 cairo-rs = { version = "", features = ['png'] }
@@ -31,5 +32,5 @@ chrono = ""
 chrono-tz = ""
 dbus = { version = "", features = ['futures'] }
 eval = ""
-gdk-pixbuf = ""
+#gdk-pixbuf = ""
 regex = ""
