@@ -86,6 +86,10 @@ enum Module {
         format : String,
         looped : Cell<bool>,
     },
+    Eval {
+        format : String,
+        looped : Cell<bool>,
+    },
     Regex {
         regex : regex::Regex,
         text : String,
@@ -122,6 +126,13 @@ impl Module {
                 }).to_owned();
                 Module::Formatted { format, looped : Cell::new(false) }
             }
+            Some("eval") => {
+                let format = value["format"].as_str().unwrap_or_else(|| {
+                    error!("Eval variables require a format: {}", value);
+                    ""
+                }).to_owned();
+                Module::Eval { format, looped : Cell::new(false) }
+            }
             Some("regex") => {
                 let text = value["text"].as_str().unwrap_or_else(|| {
                     error!("Regex requires a text expression");
@@ -147,7 +158,7 @@ impl Module {
                 let name = match value["file"].as_str() {
                     Some(name) => name.to_owned(),
                     None => {
-                        error!("Formatted variables require a format: {}", value);
+                        error!("Read-file requires a file name: {}", value);
                         return Module::None;
                     }
                 };
@@ -506,7 +517,8 @@ impl Variable {
             Module::Clock { time, .. } => time.take_in(|s| f(s)),
             Module::Value { value } => value.take_in(|s| f(s)),
             Module::Item { value } => value.take_in(|s| f(s)),
-            Module::ReadFile { contents, .. } => contents.take_in(|s| f(s)),
+            Module::ReadFile { contents, .. } if key == "raw" => contents.take_in(|s| f(s)),
+            Module::ReadFile { contents, .. } => contents.take_in(|s| f(s.trim())),
             Module::Formatted { format, looped } => {
                 if looped.get() {
                     error!("Recursion detected when expanding {}", name);
@@ -516,6 +528,22 @@ impl Variable {
                 let value = rt.format_or(&format, &name);
                 looped.set(false);
                 f(&value)
+            }
+            Module::Eval { format, looped } => {
+                if looped.get() {
+                    error!("Recursion detected when expanding {}", name);
+                    return f("");
+                }
+                looped.set(true);
+                let value = rt.format_or(&format, &name);
+                looped.set(false);
+                match eval::eval(&value) {
+                    Ok(v) => f(&format!("{}", v)),
+                    Err(e) => {
+                        warn!("Eval error: {}", e);
+                        f("")
+                    }
+                }
             }
             Module::Regex { regex, text, replace, looped } => {
                 if looped.get() {

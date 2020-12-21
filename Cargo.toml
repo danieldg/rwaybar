@@ -30,5 +30,6 @@ wayland-protocols = ""
 chrono = ""
 chrono-tz = ""
 dbus = { version = "", features = ['futures'] }
+eval = ""
 gdk-pixbuf = ""
 regex = ""
