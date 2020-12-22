@@ -234,7 +234,7 @@ impl WaylandClient {
                             over = None;
                         }
                         for bar in &mut state.bars {
-                            bar.popup.take();
+                            bar.popup = None;
                         }
                     }
                     Event::Button {

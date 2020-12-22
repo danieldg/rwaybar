@@ -67,6 +67,7 @@ impl Bar {
                     font : &font,
                     align : Align::bar_default(),
                     err_name: "bar",
+                    text_stroke : None,
                     runtime,
                 };
 

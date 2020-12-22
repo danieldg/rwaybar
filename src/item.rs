@@ -8,6 +8,7 @@ use log::{debug,warn,error};
 pub struct Render<'a> {
     pub cairo : &'a cairo::Context,
     pub font : &'a pango::FontDescription,
+    pub text_stroke : Option<(u16, u16, u16, u16)>,
     pub align : Align,
     pub err_name : &'a str,
     pub runtime : &'a Runtime,
@@ -94,9 +95,10 @@ pub struct Item {
 /// Formatting information (colors, width, etc) for an [Item]
 #[derive(Debug,Clone,Default,PartialEq)]
 struct Formatting {
-    font : Option<String>,
+    font : Option<pango::FontDescription>,
     fg_rgba : Option<(u16, u16, u16, u16)>,
     bg_rgba : Option<(u16, u16, u16, u16)>,
+    stroke_rgba : Option<(u16, u16, u16, u16)>,
     border : Option<(f64, f64, f64, f64)>,
     border_rgba : Option<(u16, u16, u16, u16)>,
     min_width : Option<Width>,
@@ -134,7 +136,8 @@ impl Formatting {
         };
         align.from_name(get("align"));
 
-        let font = get("font");
+        let font = get("font").map(|font| pango::FontDescription::from_string(&font));
+        let stroke_rgba = Formatting::parse_rgba(get("text-outline"), get_f64("text-outline-alpha"));
         let min_width = get("min-width").and_then(Width::from_str);
         let max_width = get("max-width").and_then(Width::from_str);
         let alpha = get_f64("alpha").map(|f| {
@@ -153,6 +156,7 @@ impl Formatting {
             font,
             fg_rgba,
             bg_rgba,
+            stroke_rgba,
             border,
             border_rgba,
             min_width,
@@ -220,8 +224,24 @@ impl Formatting {
         Some(rv)
     }
 
-    fn is_boring(&self) -> bool {
-        *self == Self::default()
+    fn is_boring(&mut self) -> bool {
+        // this might be more efficient if we enumerated all fields
+        let mut b = Self::default();
+        b.align = self.align;
+        b.stroke_rgba = self.stroke_rgba;
+        let font = self.font.take();
+        let rv = *self == b;
+        self.font = font;
+        rv
+    }
+
+    fn setup_ctx<'a, 'p : 'a>(&'a self, ctx : &Render<'p>) -> Render<'a> {
+        Render {
+            align : ctx.align.merge(&self.align),
+            font : self.font.as_ref().unwrap_or(ctx.font),
+            text_stroke : self.stroke_rgba.or(ctx.text_stroke),
+            ..*ctx
+        }
     }
 }
 
@@ -413,22 +433,23 @@ impl Item {
         }
     }
 
-    pub fn render(&self, ctx : &Render) -> EventSink {
+    pub fn render(&self, parent_ctx : &Render) -> EventSink {
         let mut rv = self.events.clone();
 
-        let format = self.config.as_ref().map(|cfg| Formatting::expand(cfg, ctx.runtime));
+        let format;
 
-        let format = match format {
-            None => {
-                self.render_inner(ctx, &mut rv);
+        if let Some(mut f) = self.config.as_ref().map(|cfg| Formatting::expand(cfg, &parent_ctx.runtime)) {
+            if f.is_boring() {
+                let ctx = f.setup_ctx(parent_ctx);
+                self.render_inner(&ctx, &mut rv);
                 return rv;
             }
-            Some(f) if f.is_boring() => {
-                self.render_inner(ctx, &mut rv);
-                return rv;
-            }
-            Some(f) => f
-        };
+            format = f;
+        } else {
+            self.render_inner(parent_ctx, &mut rv);
+            return rv;
+        }
+        let ctx = format.setup_ctx(parent_ctx);
 
         let mut outer_clip = ctx.cairo.clip_extents();
         let start_pos = ctx.cairo.get_current_point();
@@ -467,22 +488,7 @@ impl Item {
             ctx.cairo.set_source_rgba(rgba.0 as f64 / 65535.0, rgba.1 as f64 / 65535.0, rgba.2 as f64 / 65535.0, rgba.3 as f64 / 65535.0);
         }
 
-        {
-            let desc;
-            let mut child_ctx = Render {
-                cairo : &*ctx.cairo,
-                runtime : &*ctx.runtime,
-                align : ctx.align.merge(&format.align),
-                err_name: ctx.err_name,
-                font : &*ctx.font,
-            };
-
-            if let Some(font) = format.font {
-                desc = pango::FontDescription::from_string(&font);
-                child_ctx.font = &desc;
-            }
-            self.render_inner(&child_ctx, &mut rv);
-        }
+        self.render_inner(&ctx, &mut rv);
 
         let inner_end = ctx.cairo.get_current_point();
         let group = ctx.cairo.pop_group();
@@ -616,11 +622,8 @@ impl Item {
                 match ctx.runtime.items.get(name) {
                     Some(item) => {
                         let ctx = Render {
-                            cairo : ctx.cairo,
-                            runtime : ctx.runtime,
-                            align : ctx.align,
                             err_name: name,
-                            font : ctx.font,
+                            ..*ctx
                         };
                         rv.merge(item.render(&ctx));
                     }
@@ -763,9 +766,18 @@ impl Item {
                 };
                 let start_pos = ctx.cairo.get_current_point();
                 ctx.cairo.rel_move_to(0.0, yoff);
-                pangocairo::show_layout(ctx.cairo, &layout);
+                pangocairo::layout_path(ctx.cairo, &layout);
+
+                if let Some(rgba) = ctx.text_stroke {
+                    ctx.cairo.save();
+                    ctx.cairo.set_source_rgba(rgba.0 as f64 / 65535.0, rgba.1 as f64 / 65535.0, rgba.2 as f64 / 65535.0, rgba.3 as f64 / 65535.0);
+                    ctx.cairo.stroke_preserve();
+                    ctx.cairo.restore();
+                }
+
+                ctx.cairo.fill();
                 let width = pango::units_to_double(size.0);
-                ctx.cairo.rel_move_to(width, -yoff);
+                ctx.cairo.move_to(start_pos.0 + width, start_pos.1);
                 rv.hovers.push((start_pos.0, start_pos.0 + width, tooltip));
             }
         }
