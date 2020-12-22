@@ -778,7 +778,9 @@ impl Item {
                 ctx.cairo.fill();
                 let width = pango::units_to_double(size.0);
                 ctx.cairo.move_to(start_pos.0 + width, start_pos.1);
-                rv.hovers.push((start_pos.0, start_pos.0 + width, tooltip));
+                if !tooltip.is_empty() {
+                    rv.hovers.push((start_pos.0, start_pos.0 + width, tooltip));
+                }
             }
         }
     }

@@ -52,6 +52,7 @@ pub enum Module {
     },
     Formatted {
         format : String,
+        tooltip : String,
         looped : Cell<bool>,
     },
     Group {
@@ -157,7 +158,8 @@ impl Module {
                     error!("Formatted variables require a format: {}", value);
                     ""
                 }).to_owned();
-                Module::Formatted { format, looped : Cell::new(false) }
+                let tooltip = value.get("tooltip").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                Module::Formatted { format, tooltip, looped : Cell::new(false) }
             }
             Some("group") => {
                 let spacing = toml_to_string(value.get("spacing")).unwrap_or_default();
@@ -253,7 +255,8 @@ impl Module {
                 if let Some(value) = value.as_str() {
                     Module::Value { value : Cell::new(value.into()) }
                 } else if let Some(format) = value.get("format").and_then(|v| v.as_str()) {
-                    Module::Formatted { format : format.into(), looped : Cell::new(false) }
+                    let tooltip = value.get("tooltip").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                    Module::Formatted { format : format.into(), tooltip, looped : Cell::new(false) }
                 } else if let Some(value) = value.get("value").and_then(|v| v.as_str()) {
                     Module::Value { value : Cell::new(value.into()) }
                 } else {
@@ -433,13 +436,16 @@ impl Module {
             Module::Item { value } => value.take_in(|s| f(s)),
             Module::ReadFile { contents, .. } if key == "raw" => contents.take_in(|s| f(s)),
             Module::ReadFile { contents, .. } => contents.take_in(|s| f(s.trim())),
-            Module::Formatted { format, looped } => {
+            Module::Formatted { format, tooltip, looped } => {
                 if looped.get() {
                     error!("Recursion detected when expanding {}", name);
                     return f("");
                 }
                 looped.set(true);
-                let value = rt.format_or(&format, &name);
+                let value = match key {
+                    "tooltip" => rt.format_or(&tooltip, &name),
+                    _ => rt.format_or(&format, &name),
+                };
                 looped.set(false);
                 f(&value)
             }

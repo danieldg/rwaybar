@@ -32,15 +32,35 @@ value = "%H:%M"
 type = "clock"
 format = "{time_fmt}"
 
+[time-et]
+type = "clock"
+format = "%H:%M"
+timezone = "America/New_York"
+
+[time-ct]
+type = "clock"
+format = "%H:%M"
+timezone = "America/Chicago"
+
+[time-pt]
+type = "clock"
+format = "%H:%M"
+timezone = "America/Los_Angeles"
+
+[time-utc]
+type = "clock"
+format = "%H:%M"
+timezone = "UTC"
+
 [clock]
 type = "text"
 format = "{time}"
+tooltip = "{time-et} Eastern\n{time-ct} Central\n{time-pt} Pacific\n{time-utc} UTC"
 font = "Liberation Sans 26"
 margin = "0 10"
 on-click = { "exec" = "gnome-calendar" }
 on-click-middle = { "write" = "time_fmt", "format" = "%H:%M" }
 on-click-right = { "write" = "time_fmt", "format" = "%H:%M:%S" }
-markup = true
 
 [sway-mode]
 type = "sway-mode"
