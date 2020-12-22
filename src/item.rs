@@ -360,9 +360,13 @@ impl EventSink {
         }
     }
 
-    pub fn get_hover(&self, x : f64, y : f64) -> Option<(f64, f64, &PopupDesc)> {
+    pub fn add_hover(&mut self, min : f64, max : f64, desc : PopupDesc) {
+        self.hovers.push((min, max, desc));
+    }
+
+    pub fn get_hover(&mut self, x : f64, y : f64) -> Option<(f64, f64, &mut PopupDesc)> {
         let _ = y;
-        for &(min, max, ref text) in &self.hovers {
+        for &mut (min, max, ref mut text) in &mut self.hovers {
             if x >= min && x <= max {
                 return Some((min, max, text));
             }
@@ -791,11 +795,12 @@ impl Item {
 
 #[derive(Debug,Clone)]
 pub enum PopupDesc {
-    Text { value : String, markup : bool }
+    Text { value : String, markup : bool },
+    Tray(tray::TrayPopup),
 }
 
 impl PopupDesc {
-    pub fn get_size(&self) -> (i32, i32) {
+    pub fn get_size(&mut self) -> (i32, i32) {
         match self {
             PopupDesc::Text { value, markup } => {
                 let tmp = cairo::RecordingSurface::create(cairo::Content::ColorAlpha, None).unwrap();
@@ -809,9 +814,10 @@ impl PopupDesc {
                 let size = layout.get_size();
                 (pango::units_to_double(size.0) as i32 + 4, pango::units_to_double(size.1) as i32 + 4)
             }
+            PopupDesc::Tray(tray) => tray.get_size(),
         }
     }
-    pub fn render(&self, ctx : &cairo::Context) {
+    pub fn render(&mut self, ctx : &cairo::Context, runtime : &Runtime) -> (i32, i32) {
         match self {
             PopupDesc::Text { value, markup } => {
                 ctx.move_to(2.0, 2.0);
@@ -822,15 +828,18 @@ impl PopupDesc {
                     layout.set_text(value);
                 }
                 pangocairo::show_layout(&ctx, &layout);
+                let size = layout.get_size();
+                (pango::units_to_double(size.0) as i32 + 4, pango::units_to_double(size.1) as i32 + 4)
             }
+            PopupDesc::Tray(tray) => tray.render(ctx, runtime),
         }
     }
 
-    pub fn button(&self, x : f64, y : f64, button : u32, runtime : &mut Runtime) {
-        let _ = (x,y,button,runtime);
+    pub fn button(&mut self, x : f64, y : f64, button : u32, runtime : &mut Runtime) {
         match self {
             PopupDesc::Text { .. } => {
             }
+            PopupDesc::Tray(tray) => tray.button(x, y, button, runtime),
         }
     }
 }

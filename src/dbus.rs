@@ -1,4 +1,5 @@
 use crate::util;
+use dbus::arg::{RefArg,Variant};
 use dbus::channel::{BusType,Channel};
 use dbus::nonblock::{LocalConnection,Process,NonblockReply};
 use futures_util::future::Either;
@@ -6,6 +7,7 @@ use futures_util::future::select;
 use futures_util::pin_mut;
 use log::error;
 use once_cell::unsync::OnceCell;
+use std::collections::HashMap;
 use std::error::Error;
 use std::io;
 use std::rc::Rc;
@@ -105,4 +107,28 @@ pub fn get() -> impl std::ops::Deref<Target=ConnState> {
         }
     }
     V(SOCK.with(|cell| cell.clone()))
+}
+
+pub fn read_hash_map(value : &impl RefArg) -> Option<HashMap<String, Variant<Box<dyn RefArg>>>> {
+    if let Some(iter) = value.as_iter() {
+        let mut map = HashMap::new();
+        let mut k = None;
+        for i in iter {
+            match k.take() {
+                None => {
+                    k = i.as_str().map(String::from);
+                    if k.is_none() {
+                        return None;
+                    }
+                }
+                Some(k) => {
+                    map.insert(k, Variant(i.box_clone()));
+                }
+            }
+        }
+        if k.is_none() {
+            return Some(map);
+        }
+    }
+    None
 }

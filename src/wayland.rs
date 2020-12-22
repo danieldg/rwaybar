@@ -15,6 +15,7 @@ use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1;
 use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_v1::ZxdgOutputV1;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1;
+use wayland_protocols::wlr::unstable::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 use wayland_protocols::xdg_shell::client::xdg_popup::XdgPopup;
 use wayland_protocols::xdg_shell::client::xdg_surface::XdgSurface;
 use wayland_protocols::xdg_shell::client::xdg_wm_base::XdgWmBase;
@@ -379,6 +380,10 @@ impl WaylandClient {
     }
 
     pub fn new_popup(&self, bar : &Bar, anchor : (i32, i32, i32, i32), size : (i32, i32)) -> Popup {
+        self.new_popup_on(&bar.ls_surf, !bar.anchor_top, anchor, size)
+    }
+
+    fn new_popup_on(&self, ls_surf : &ZwlrLayerSurfaceV1, prefer_top : bool, anchor : (i32, i32, i32, i32), size : (i32, i32)) -> Popup {
         use wayland_protocols::xdg_shell::client::xdg_positioner::{Anchor,Gravity};
         let surf = self.env.create_surface();
         let wmb : Attached<XdgWmBase> = self.env.require_global();
@@ -386,12 +391,12 @@ impl WaylandClient {
         pos.set_size(size.0, size.1);
         pos.set_anchor_rect(anchor.0, anchor.1, anchor.2, anchor.3);
         pos.set_offset(0, 0);
-        if bar.anchor_top {
-            pos.set_anchor(Anchor::Bottom);
-            pos.set_gravity(Gravity::Bottom);
-        } else {
+        if prefer_top {
             pos.set_anchor(Anchor::Top);
             pos.set_gravity(Gravity::Top);
+        } else {
+            pos.set_anchor(Anchor::Bottom);
+            pos.set_gravity(Gravity::Bottom);
         }
         pos.set_constraint_adjustment(0xF); // allow moving but not resizing
 
@@ -434,7 +439,7 @@ impl WaylandClient {
             }
         });
 
-        bar.ls_surf.get_popup(&as_popup);
+        ls_surf.get_popup(&as_popup);
         as_xdg.set_window_geometry(0, 0, size.0, size.1);
         surf.commit();
         Popup {
@@ -443,7 +448,36 @@ impl WaylandClient {
             as_popup : as_popup.into(),
             anchor,
             size,
+            prefer_top,
             waiting_on_configure : true,
+        }
+    }
+
+    pub fn resize_popup(&self, ls_surf : &ZwlrLayerSurfaceV1, popup : &mut Popup, size : (i32, i32)) {
+        if popup.as_popup.as_ref().version() >= wayland_protocols::xdg_shell::client::xdg_popup::REQ_REPOSITION_SINCE {
+            use wayland_protocols::xdg_shell::client::xdg_positioner::{Anchor,Gravity};
+            popup.as_xdg.set_window_geometry(0, 0, size.0, size.1);
+            let wmb : Attached<XdgWmBase> = self.env.require_global();
+            let pos = wmb.create_positioner();
+            pos.set_size(size.0, size.1);
+            pos.set_anchor_rect(popup.anchor.0, popup.anchor.1, popup.anchor.2, popup.anchor.3);
+            pos.set_offset(0, 0);
+            if popup.prefer_top {
+                pos.set_anchor(Anchor::Top);
+                pos.set_gravity(Gravity::Top);
+            } else {
+                pos.set_anchor(Anchor::Bottom);
+                pos.set_gravity(Gravity::Bottom);
+            }
+            pos.set_constraint_adjustment(0xF); // allow moving but not resizing
+            popup.as_popup.reposition(&pos, 0);
+            popup.size = size;
+        } else {
+            // can't resize; emulate by destroying and re-creating.
+            popup.as_popup.destroy();
+            popup.as_xdg.destroy();
+            popup.surf.destroy();
+            *popup = self.new_popup_on(ls_surf, popup.prefer_top, popup.anchor, size);
         }
     }
 }
@@ -455,6 +489,7 @@ pub struct Popup {
     pub anchor : (i32, i32, i32, i32),
     pub size : (i32, i32),
     pub waiting_on_configure : bool,
+    pub prefer_top : bool,
 }
 
 impl Drop for Popup {

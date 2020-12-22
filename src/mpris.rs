@@ -1,4 +1,5 @@
 use crate::dbus::get as get_dbus;
+use crate::dbus as dbus_util;
 use crate::state::{Runtime,NotifierList};
 use crate::util::Cell;
 use dbus::channel::MatchingReceiver;
@@ -146,22 +147,7 @@ impl MediaPlayer2 {
                         });
                     }
                     "Metadata" => {
-                        if let Some(iter) = value.0.as_iter() {
-                            let mut map = HashMap::new();
-                            let mut k = None;
-                            for i in iter {
-                                match k.take() {
-                                    None => {
-                                        k = i.as_str().map(String::from);
-                                    }
-                                    Some(k) => {
-                                        map.insert(k, Variant(i.box_clone()));
-                                    }
-                                }
-                            }
-                            assert!(k.is_none());
-                            player.meta = Some(map);
-                        }
+                        player.meta = dbus_util::read_hash_map(&value.0);
                     }
                     _ => ()
                 }

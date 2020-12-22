@@ -1,9 +1,10 @@
 use crate::util::Cell;
 use crate::dbus::get as get_dbus;
+use crate::dbus as dbus_util;
 use crate::data::Module;
 use crate::icon;
-use crate::item::{Item,Render,EventSink};
-use crate::state::NotifierList;
+use crate::item::{Item,Render,EventSink,PopupDesc};
+use crate::state::{Runtime,NotifierList};
 use dbus::arg::RefArg;
 use dbus::arg::Variant;
 use dbus::channel::MatchingReceiver;
@@ -15,7 +16,8 @@ use dbus::nonblock::stdintf::org_freedesktop_dbus::RequestNameReply;
 use once_cell::unsync::OnceCell;
 use std::collections::HashMap;
 use std::error::Error;
-use std::time::Duration;
+use std::rc::Rc;
+use std::time::{SystemTime,Duration,UNIX_EPOCH};
 use log::{debug,warn};
 
 thread_local! {
@@ -27,13 +29,14 @@ struct TrayItem {
     owner : String,
     path : String,
     is_kde : bool,
-    category : String,
+
     id : String,
     title : String,
     status : String,
     icon : String,
     icon_path : String,
-    menu : String,
+    menu_path : String,
+    menu : Rc<Cell<Option<TrayPopupMenu>>>,
 }
 
 #[derive(Debug,Default)]
@@ -181,13 +184,11 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<String, Varian
 
                 for (key, value) in props {
                     match key.as_str() {
-                        "Category" => value.as_str().map(|v| item.category = v.into()),
                         "Id" => value.as_str().map(|v| item.id = v.into()),
                         "Title" => value.as_str().map(|v| item.title = v.into()),
-                        "Status" => value.as_str().map(|v| item.status = v.into()),
                         "IconName" => value.as_str().map(|v| item.icon = v.into()),
                         "IconThemePath" => value.as_str().map(|v| item.icon_path = v.into()),
-                        "Menu" => value.as_str().map(|v| item.menu = v.into()),
+                        "Menu" => value.as_str().map(|v| item.menu_path = v.into()),
                         _ => None
                     };
                 }
@@ -195,6 +196,155 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<String, Varian
         });
         tray.interested.take().notify_data();
     });
+}
+
+#[derive(Clone,Debug)]
+pub struct TrayPopup {
+    owner : String,
+    menu_path : String,
+    title : String,
+    menu : Rc<Cell<Option<TrayPopupMenu>>>,
+    rendered_ids : Vec<(f64, f64, i32)>,
+}
+
+#[derive(Debug,Default)]
+struct TrayPopupMenu {
+    items : Vec<MenuItem>,
+    interested : NotifierList,
+}
+
+#[derive(Debug,Default)]
+struct MenuItem {
+    id : i32,
+    is_sep : bool,
+    label : String,
+}
+
+impl TrayPopup {
+    pub fn get_size(&self) -> (i32, i32) {
+        let tmp = cairo::RecordingSurface::create(cairo::Content::ColorAlpha, None).unwrap();
+        let ctx = cairo::Context::new(&tmp);
+        let layout = pangocairo::create_layout(&ctx).unwrap();
+        layout.set_text(&self.title);
+        let psize = layout.get_size();
+        let mut size = (pango::units_to_double(psize.0), pango::units_to_double(psize.1));
+        self.menu.take_in_some(|menu| {
+            if !menu.items.is_empty() {
+                size.1 += 9.0;
+            }
+            for item in &menu.items {
+                if item.is_sep {
+                    size.1 += 9.0;
+                } else {
+                    let layout = pangocairo::create_layout(&ctx).unwrap();
+                    layout.set_text(&item.label);
+                    let tsize = layout.get_size();
+                    size.0 = f64::max(size.0, pango::units_to_double(tsize.0));
+                    size.1 += pango::units_to_double(tsize.1) + 5.0;
+                }
+            }
+        }).unwrap_or_else(|| {
+            let menu = self.menu.clone();
+            let owner = self.owner.clone();
+            let menu_path = self.menu_path.clone();
+            menu.set(Some(TrayPopupMenu::default()));
+            tokio::task::spawn_local(async move {
+                let dbus = get_dbus();
+                let proxy = Proxy::new(owner, menu_path, Duration::from_secs(10), &dbus.local);
+                let _ : (bool,) = proxy.method_call("com.canonical.dbusmenu", "AboutToShow", (0i32,)).await?;
+
+                let (_rev, (_id, _props, contents)) : (u32, (i32, HashMap<String, Variant<Box<dyn RefArg>>>, Vec<Variant<Box<dyn RefArg>>>))
+                    = proxy.method_call("com.canonical.dbusmenu", "GetLayout", (0i32, -1i32, &["type", "label"] as &[&str])).await?;
+
+                menu.take_in_some(|menu| {
+                    for Variant(v) in contents {
+                        let mut item = MenuItem::default();
+                        let iter = match v.as_iter() { Some(i) => i, None => continue };
+                        for (i, value) in iter.enumerate() {
+                            match i {
+                                0 => { value.as_i64().map(|id| item.id = id as i32); }
+                                1 => {
+                                    let props = dbus_util::read_hash_map(&value);
+                                    let props = match props { Some(i) => i, None => continue };
+                                    props.get("label").and_then(|v| v.as_str())
+                                        .map(|label| item.label = label.to_owned());
+                                    props.get("type").and_then(|v| v.as_str())
+                                        .map(|v| match v {
+                                            "separator" => item.is_sep = true,
+                                            _ => {}
+                                        });
+                                }
+                                _ => break,
+                            }
+                        }
+                        menu.items.push(item);
+                    }
+                    menu.interested.notify_data();
+                });
+
+                Ok::<(), Box<dyn Error>>(())
+            });
+        });
+        (size.0 as i32 + 4, size.1 as i32 + 4)
+    }
+
+    pub fn render(&mut self, ctx : &cairo::Context, runtime : &Runtime) -> (i32, i32) {
+        let clip = ctx.clip_extents(); 
+        ctx.move_to(2.0, 2.0);
+        let layout = pangocairo::create_layout(&ctx).unwrap();
+        layout.set_text(&self.title);
+        let psize = layout.get_size();
+        pangocairo::show_layout(&ctx, &layout);
+        let mut pos = 2.0 + pango::units_to_double(psize.1);
+        let rendered_ids = &mut self.rendered_ids;
+        self.menu.take_in_some(|menu| {
+            menu.interested.add(runtime);
+            if !menu.items.is_empty() {
+                ctx.move_to(0.0, pos + 4.0);
+                ctx.line_to(clip.2, pos + 4.0);
+                ctx.stroke();
+                pos += 9.0;
+            }
+            for item in &menu.items {
+                if item.is_sep {
+                    ctx.move_to(5.0, pos + 4.0);
+                    ctx.line_to(clip.2 - 5.0, pos + 4.0);
+                    ctx.stroke();
+                    pos += 9.0;
+                } else {
+                    ctx.move_to(2.0, pos);
+                    let layout = pangocairo::create_layout(&ctx).unwrap();
+                    layout.set_text(&item.label);
+                    let tsize = layout.get_size();
+                    pangocairo::show_layout(&ctx, &layout);
+                    let end = pos + pango::units_to_double(tsize.1);
+                    rendered_ids.push((pos, end, item.id));
+                    pos = end + 5.0;
+                }
+            }
+        });
+        // This is required because pango won't report render cropping due to widths being short
+        self.get_size()
+    }
+
+    pub fn button(&mut self, x : f64, y : f64, button : u32, _runtime : &mut Runtime) {
+        let _ = (x, button);
+        for &(min, max, id) in &self.rendered_ids {
+            let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+            if y < min || y > max {
+                continue;
+            }
+            dbg!();
+            let owner = self.owner.clone();
+            let menu_path = self.menu_path.clone();
+            tokio::task::spawn_local(async move {
+                let dbus = get_dbus();
+                let proxy = Proxy::new(owner, menu_path, Duration::from_secs(10), &dbus.local);
+                dbg!(proxy.method_call("com.canonical.dbusmenu", "Event", (id, "clicked", Variant(0i32), ts as u32)).await)?;
+                Ok::<(), Box<dyn Error>>(())
+            });
+        }
+    }
 }
 
 pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
@@ -228,6 +378,13 @@ pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
                 let x1 = ctx.cairo.get_current_point().0;
                 let mut es = EventSink::from_tray(item.owner.clone(), item.path.clone());
                 es.offset_clamp(0.0, x0, x1);
+                es.add_hover(x0, x1, PopupDesc::Tray(TrayPopup {
+                    owner : item.owner.clone(),
+                    title : item.title.clone(),
+                    menu_path : item.menu_path.clone(),
+                    menu : item.menu.clone(),
+                    rendered_ids : Vec::new(),
+                }));
                 ev.merge(es);
                 ctx.cairo.rel_move_to(spacing, 0.0);
             }

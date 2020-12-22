@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::time::Instant;
 use std::rc::Rc;
-use smithay_client_toolkit::shm::MemPool;
 use wayland_client::Attached;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -98,7 +97,7 @@ impl Bar {
             self.throttle = Some(frame.into());
             self.dirty = false;
         }
-        if let Some(popup) = &self.popup {
+        if let Some(popup) = &mut self.popup {
             if popup.vanish.map_or(false, |vanish| vanish < Instant::now()) {
                 self.popup = None;
                 return;
@@ -107,15 +106,18 @@ impl Bar {
                 return;
             }
             if let Some((_,_,desc)) = self.sink.get_hover(self.popup_x, 0.0) {
-                target.with_surface(popup.wl.size, &popup.wl.surf, |surf| {
+                let new_size = target.with_surface(popup.wl.size, &popup.wl.surf, |surf| {
                     let ctx = cairo::Context::new(&surf);
                     ctx.set_operator(cairo::Operator::Source);
                     ctx.paint();
                     ctx.set_operator(cairo::Operator::Over);
                     ctx.set_source_rgb(1.0, 1.0, 1.0);
-                    desc.render(&ctx);
+                    desc.render(&ctx, runtime)
                 });
                 popup.wl.surf.commit();
+                if new_size.0 > popup.wl.size.0 || new_size.1 > popup.wl.size.1 {
+                    target.wayland.resize_popup(&self.ls_surf, &mut popup.wl, new_size);
+                }
             } else {
                 // contents vanished, dismiss the popup
                 self.popup = None;
@@ -167,19 +169,19 @@ impl Bar {
 }
 
 struct RenderTarget<'a> {
-    shm : &'a mut MemPool,
+    wayland : &'a mut WaylandClient,
     pos : usize,
 }
 impl<'a> RenderTarget<'a> {
-    fn new(shm : &'a mut MemPool, len : usize) -> Self {
-        shm.resize(len).expect("OOM");
-        RenderTarget { shm, pos : 0 }
+    fn new(wayland : &'a mut WaylandClient, len : usize) -> Self {
+        wayland.shm.resize(len).expect("OOM");
+        RenderTarget { wayland, pos : 0 }
     }
 
     fn with_surface<F : FnOnce(&cairo::ImageSurface) -> R, R>(&mut self, size : (i32, i32), target : &WlSurface, cb : F) -> R {
         let stride = cairo::Format::ARgb32.stride_for_width(size.0 as u32).unwrap();
         let len = (size.1 as usize) * (stride as usize);
-        let buf : &mut [u8] = &mut self.shm.mmap().as_mut()[self.pos..][..len];
+        let buf : &mut [u8] = &mut self.wayland.shm.mmap().as_mut()[self.pos..][..len];
         let rv;
 
         unsafe {
@@ -194,7 +196,7 @@ impl<'a> RenderTarget<'a> {
             drop(surf);
         }
 
-        let buf = self.shm.buffer(self.pos as i32, size.0, size.1, stride, smithay_client_toolkit::shm::Format::Argb8888);
+        let buf = self.wayland.shm.buffer(self.pos as i32, size.0, size.1, stride, smithay_client_toolkit::shm::Format::Argb8888);
         target.attach(Some(&buf), 0, 0);
         target.damage_buffer(0, 0, size.0, size.1);
         self.pos += len;
@@ -446,7 +448,7 @@ impl State {
             return Ok(());
         }
 
-        let mut target = RenderTarget::new(&mut self.wayland.shm, shm_size);
+        let mut target = RenderTarget::new(&mut self.wayland, shm_size);
 
         for bar in &mut self.bars {
             bar.render_with(&self.runtime, &mut target);
