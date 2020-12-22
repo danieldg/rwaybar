@@ -5,8 +5,7 @@ use crate::data::Module;
 use crate::icon;
 use crate::item::{Item,Render,EventSink,PopupDesc};
 use crate::state::{Runtime,NotifierList};
-use dbus::arg::RefArg;
-use dbus::arg::Variant;
+use dbus::arg::{ArgType,RefArg,Variant};
 use dbus::channel::MatchingReceiver;
 use dbus::message::{MatchRule,Message};
 use dbus::nonblock::Proxy;
@@ -216,8 +215,95 @@ struct TrayPopupMenu {
 #[derive(Debug,Default)]
 struct MenuItem {
     id : i32,
+    depth : u32,
     is_sep : bool,
     label : String,
+}
+
+impl TrayPopupMenu {
+    fn add_items<I>(&mut self, iter : &mut I, depth : u32)
+        where I : Iterator, I::Item : RefArg
+    {
+        let mut item = MenuItem::default();
+        for v in iter {
+            dbg!(&v);
+            let mut iter = match v.as_iter() { Some(i) => i, None => continue };
+            if v.arg_type() == ArgType::Variant {
+                self.add_items(&mut iter, depth);
+                continue;
+            }
+            for (i, value) in iter.enumerate() {
+                match i {
+                    0 => { value.as_i64().map(|id| item.id = id as i32); }
+                    1 => {
+                        let props = dbus_util::read_hash_map(&value);
+                        let props = match props { Some(i) => i, None => continue };
+                        props.get("label").and_then(|v| v.as_str())
+                            .map(|label| item.label = label.to_owned());
+                        props.get("type").and_then(|v| v.as_str())
+                            .map(|v| match v {
+                                "separator" => item.is_sep = true,
+                                _ => {}
+                            });
+                        item.depth = depth;
+                        self.items.push(item);
+                        item = MenuItem::default();
+                    }
+                    2 => {
+                        dbg!(value);
+                        match value.as_iter() {
+                            Some(mut i) => self.add_items(&mut i, depth + 1),
+                            None => {}
+                        }
+                    }
+                    _ => break,
+                }
+            }
+        }
+    }
+}
+
+async fn refresh_menu(menu : Rc<Cell<Option<TrayPopupMenu>>>, owner : String, menu_path : String) -> Result<(), Box<dyn Error>> {
+    let dbus = get_dbus();
+    let proxy = Proxy::new(&owner, &menu_path, Duration::from_secs(10), &dbus.local);
+    let _ : (bool,) = proxy.method_call("com.canonical.dbusmenu", "AboutToShow", (0i32,)).await?;
+
+    let mut rule = MatchRule::new_signal("com.canonical.dbusmenu", "ItemsPropertiesUpdated");
+    rule.path = Some(menu_path.clone().into());
+    rule.sender = Some(owner.clone().into());
+    dbus.local.add_match_no_cb(&rule.match_str()).await?;
+
+    rule.member = Some("LayoutUpdated".into());
+    dbus.local.add_match_no_cb(&rule.match_str()).await?;
+
+    rule.member = None;
+
+    let weak = Rc::downgrade(&menu);
+    let owner = owner.clone();
+    let menu_path = menu_path.clone();
+    dbus.local.start_receive(rule, Box::new(move |_msg, _local| {
+        if let Some(menu) = weak.upgrade() {
+            let owner = owner.clone();
+            let menu_path = menu_path.clone();
+            tokio::task::spawn_local(refresh_menu(menu, owner, menu_path));
+        }
+        // we will re-register this callback
+        false
+    }));
+
+    // ? MatchRule::new_signal("com.canonical.dbusmenu", "ItemActivationRequested");
+
+    let (_rev, (_id, _props, contents)) : (u32, (i32, HashMap<String, Variant<Box<dyn RefArg>>>, Vec<Variant<Box<dyn RefArg>>>))
+        = proxy.method_call("com.canonical.dbusmenu", "GetLayout", (0i32, -1i32, &["type", "label"] as &[&str])).await?;
+
+    menu.take_in_some(|menu| {
+        menu.items.clear();
+        menu.add_items(&mut contents.into_iter(), 0);
+        dbg!(&menu.items);
+        menu.interested.notify_data();
+    });
+
+    Ok(())
 }
 
 impl TrayPopup {
@@ -233,57 +319,23 @@ impl TrayPopup {
                 size.1 += 9.0;
             }
             for item in &menu.items {
+                let indent = item.depth as f64 * 20.0;
                 if item.is_sep {
                     size.1 += 9.0;
                 } else {
                     let layout = pangocairo::create_layout(&ctx).unwrap();
                     layout.set_text(&item.label);
                     let tsize = layout.get_size();
-                    size.0 = f64::max(size.0, pango::units_to_double(tsize.0));
+                    size.0 = f64::max(size.0, indent + pango::units_to_double(tsize.0));
                     size.1 += pango::units_to_double(tsize.1) + 5.0;
                 }
             }
         }).unwrap_or_else(|| {
             let menu = self.menu.clone();
+            menu.set(Some(TrayPopupMenu::default()));
             let owner = self.owner.clone();
             let menu_path = self.menu_path.clone();
-            menu.set(Some(TrayPopupMenu::default()));
-            tokio::task::spawn_local(async move {
-                let dbus = get_dbus();
-                let proxy = Proxy::new(owner, menu_path, Duration::from_secs(10), &dbus.local);
-                let _ : (bool,) = proxy.method_call("com.canonical.dbusmenu", "AboutToShow", (0i32,)).await?;
-
-                let (_rev, (_id, _props, contents)) : (u32, (i32, HashMap<String, Variant<Box<dyn RefArg>>>, Vec<Variant<Box<dyn RefArg>>>))
-                    = proxy.method_call("com.canonical.dbusmenu", "GetLayout", (0i32, -1i32, &["type", "label"] as &[&str])).await?;
-
-                menu.take_in_some(|menu| {
-                    for Variant(v) in contents {
-                        let mut item = MenuItem::default();
-                        let iter = match v.as_iter() { Some(i) => i, None => continue };
-                        for (i, value) in iter.enumerate() {
-                            match i {
-                                0 => { value.as_i64().map(|id| item.id = id as i32); }
-                                1 => {
-                                    let props = dbus_util::read_hash_map(&value);
-                                    let props = match props { Some(i) => i, None => continue };
-                                    props.get("label").and_then(|v| v.as_str())
-                                        .map(|label| item.label = label.to_owned());
-                                    props.get("type").and_then(|v| v.as_str())
-                                        .map(|v| match v {
-                                            "separator" => item.is_sep = true,
-                                            _ => {}
-                                        });
-                                }
-                                _ => break,
-                            }
-                        }
-                        menu.items.push(item);
-                    }
-                    menu.interested.notify_data();
-                });
-
-                Ok::<(), Box<dyn Error>>(())
-            });
+            tokio::task::spawn_local(refresh_menu(menu, owner, menu_path));
         });
         (size.0 as i32 + 4, size.1 as i32 + 4)
     }
@@ -306,13 +358,14 @@ impl TrayPopup {
                 pos += 9.0;
             }
             for item in &menu.items {
+                let indent = item.depth as f64 * 20.0;
                 if item.is_sep {
-                    ctx.move_to(5.0, pos + 4.0);
+                    ctx.move_to(indent + 5.0, pos + 4.0);
                     ctx.line_to(clip.2 - 5.0, pos + 4.0);
                     ctx.stroke();
                     pos += 9.0;
                 } else {
-                    ctx.move_to(2.0, pos);
+                    ctx.move_to(indent + 2.0, pos);
                     let layout = pangocairo::create_layout(&ctx).unwrap();
                     layout.set_text(&item.label);
                     let tsize = layout.get_size();
