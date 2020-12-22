@@ -259,7 +259,7 @@ struct EventListener {
 #[derive(Debug,Default,Clone)]
 pub struct EventSink {
     handlers : Vec<EventListener>,
-    hovers : Vec<(f64, f64, String)>,
+    hovers : Vec<(f64, f64, PopupDesc)>,
 }
 
 impl EventSink {
@@ -360,7 +360,7 @@ impl EventSink {
         }
     }
 
-    pub fn get_hover(&self, x : f64, y : f64) -> Option<(f64, f64, &str)> {
+    pub fn get_hover(&self, x : f64, y : f64) -> Option<(f64, f64, &PopupDesc)> {
         let _ = y;
         for &(min, max, ref text) in &self.hovers {
             if x >= min && x <= max {
@@ -779,8 +779,57 @@ impl Item {
                 let width = pango::units_to_double(size.0);
                 ctx.cairo.move_to(start_pos.0 + width, start_pos.1);
                 if !tooltip.is_empty() {
-                    rv.hovers.push((start_pos.0, start_pos.0 + width, tooltip));
+                    rv.hovers.push((start_pos.0, start_pos.0 + width, PopupDesc::Text {
+                        value : tooltip,
+                        markup,
+                    }));
                 }
+            }
+        }
+    }
+}
+
+#[derive(Debug,Clone)]
+pub enum PopupDesc {
+    Text { value : String, markup : bool }
+}
+
+impl PopupDesc {
+    pub fn get_size(&self) -> (i32, i32) {
+        match self {
+            PopupDesc::Text { value, markup } => {
+                let tmp = cairo::RecordingSurface::create(cairo::Content::ColorAlpha, None).unwrap();
+                let ctx = cairo::Context::new(&tmp);
+                let layout = pangocairo::create_layout(&ctx).unwrap();
+                if *markup {
+                    layout.set_markup(value);
+                } else {
+                    layout.set_text(value);
+                }
+                let size = layout.get_size();
+                (pango::units_to_double(size.0) as i32 + 4, pango::units_to_double(size.1) as i32 + 4)
+            }
+        }
+    }
+    pub fn render(&self, ctx : &cairo::Context) {
+        match self {
+            PopupDesc::Text { value, markup } => {
+                ctx.move_to(2.0, 2.0);
+                let layout = pangocairo::create_layout(&ctx).unwrap();
+                if *markup {
+                    layout.set_markup(value);
+                } else {
+                    layout.set_text(value);
+                }
+                pangocairo::show_layout(&ctx, &layout);
+            }
+        }
+    }
+
+    pub fn button(&self, x : f64, y : f64, button : u32, runtime : &mut Runtime) {
+        let _ = (x,y,button,runtime);
+        match self {
+            PopupDesc::Text { .. } => {
             }
         }
     }

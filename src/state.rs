@@ -20,11 +20,16 @@ use crate::item::*;
 use crate::data::Module;
 use crate::wayland::{Popup,WaylandClient};
 
+pub struct BarPopup {
+    pub wl : Popup,
+    vanish : Option<Instant>,
+}
+
 /// A single taskbar on a single output
 pub struct Bar {
     pub surf : Attached<WlSurface>,
     pub ls_surf : Attached<ZwlrLayerSurfaceV1>,
-    pub popup : Option<Popup>,
+    pub popup : Option<BarPopup>,
     pub sink : EventSink,
     pub anchor_top : bool,
     popup_x : f64,
@@ -43,9 +48,9 @@ impl Bar {
             rv += (self.height as usize) * (stride as usize);
         }
         if let Some(popup) = &self.popup {
-            if !popup.waiting_on_configure {
-                let stride = cairo::Format::ARgb32.stride_for_width(popup.size.0 as u32).unwrap();
-                rv += (popup.size.1 as usize) * (stride as usize);
+            if !popup.wl.waiting_on_configure {
+                let stride = cairo::Format::ARgb32.stride_for_width(popup.wl.size.0 as u32).unwrap();
+                rv += (popup.wl.size.1 as usize) * (stride as usize);
             }
         }
         rv
@@ -93,50 +98,70 @@ impl Bar {
             self.throttle = Some(frame.into());
             self.dirty = false;
         }
-        if let Some(popup @ Popup { waiting_on_configure : false, ..}) = &self.popup {
-            if let Some((_,_,text)) = self.sink.get_hover(self.popup_x, 0.0) {
-                target.with_surface(popup.size, &popup.surf, |surf| {
+        if let Some(popup) = &self.popup {
+            if popup.vanish.map_or(false, |vanish| vanish < Instant::now()) {
+                self.popup = None;
+                return;
+            }
+            if popup.wl.waiting_on_configure {
+                return;
+            }
+            if let Some((_,_,desc)) = self.sink.get_hover(self.popup_x, 0.0) {
+                target.with_surface(popup.wl.size, &popup.wl.surf, |surf| {
                     let ctx = cairo::Context::new(&surf);
                     ctx.set_operator(cairo::Operator::Source);
                     ctx.paint();
                     ctx.set_operator(cairo::Operator::Over);
                     ctx.set_source_rgb(1.0, 1.0, 1.0);
-                    ctx.move_to(2.0, 2.0);
-                    let layout = pangocairo::create_layout(&ctx).unwrap();
-                    layout.set_text(&text);
-                    pangocairo::show_layout(&ctx, &layout);
+                    desc.render(&ctx);
                 });
-                popup.surf.commit();
+                popup.wl.surf.commit();
             } else {
                 // contents vanished, dismiss the popup
                 self.popup = None;
             }
         }
-
     }
 
-    pub fn hover(&mut self, x : f64, y : f64, wayland : &WaylandClient, _runtime : &mut Runtime) {
+    pub fn hover(&mut self, x : f64, y : f64, wayland : &WaylandClient, _runtime : &Runtime) {
         self.popup_x = x;
         if let Some(popup) = &self.popup {
-            if x > popup.anchor.0 as f64 && x < (popup.anchor.0 + popup.anchor.2) as f64 {
+            if x > popup.wl.anchor.0 as f64 && x < (popup.wl.anchor.0 + popup.wl.anchor.2) as f64 {
                 return;
             } else {
                 self.popup = None;
             }
         }
-        if let Some((min_x, max_x, text)) = self.sink.get_hover(x, y) {
+        if let Some((min_x, max_x, desc)) = self.sink.get_hover(x, y) {
             let anchor = (min_x as i32, 0, (max_x - min_x) as i32, self.height);
-            let (w,h) = {
-                let tmp = cairo::RecordingSurface::create(cairo::Content::ColorAlpha, None).unwrap();
-                let ctx = cairo::Context::new(&tmp);
-                let layout = pangocairo::create_layout(&ctx).unwrap();
-                layout.set_text(text);
-                let size = layout.get_size();
-                (pango::units_to_double(size.0) as i32 + 4, pango::units_to_double(size.1) as i32 + 4)
-            };
+            let size = desc.get_size();
 
-            let popup = wayland.new_popup(self, anchor, (w, h));
+            let popup = BarPopup {
+                wl : wayland.new_popup(self, anchor, size),
+                vanish : None,
+            };
             self.popup = Some(popup);
+        }
+    }
+
+    pub fn no_hover(&mut self, runtime : &mut Runtime) {
+        if let Some(popup) = &mut self.popup {
+            let vanish = Instant::now() + std::time::Duration::from_millis(100);
+            popup.vanish = Some(vanish);
+            runtime.set_wake_at(vanish);
+        }
+    }
+
+    pub fn hover_popup(&mut self, x : f64, y : f64, _wayland : &WaylandClient, _runtime : &Runtime) {
+        if let Some(popup) = &mut self.popup {
+            popup.vanish = None;
+            let _ = (x, y);
+        }
+    }
+
+    pub fn popup_button(&mut self, x : f64, y : f64, button : u32, runtime : &mut Runtime) {
+        if let Some((_,_,desc)) = self.sink.get_hover(self.popup_x, 0.0) {
+            desc.button(x, y, button, runtime);
         }
     }
 }

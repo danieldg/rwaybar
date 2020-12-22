@@ -230,11 +230,19 @@ impl WaylandClient {
                         y = surface_y;
                     }
                     Event::Leave { surface, .. } => {
-                        if Some(surface.as_ref().id()) == over {
+                        let id = surface.as_ref().id();
+                        if Some(id) == over {
                             over = None;
                         }
                         for bar in &mut state.bars {
-                            bar.popup = None;
+                            if bar.surf.as_ref().id() == id {
+                                bar.no_hover(&mut state.runtime);
+                            }
+                            if let Some(popup) = &bar.popup {
+                                if popup.wl.surf.as_ref().id() == id {
+                                    bar.no_hover(&mut state.runtime);
+                                }
+                            }
                         }
                     }
                     Event::Button {
@@ -253,10 +261,12 @@ impl WaylandClient {
                             }
                         };
                         for bar in &mut state.bars {
-                            if Some(bar.surf.as_ref().id()) != over {
-                                continue;
+                            if Some(bar.surf.as_ref().id()) == over {
+                                bar.sink.button(x,y,button_id, &mut state.runtime);
                             }
-                            bar.sink.button(x,y,button_id, &mut state.runtime);
+                            if bar.popup.as_ref().map(|p| p.wl.surf.as_ref().id()) == over {
+                                bar.popup_button(x,y,button_id, &mut state.runtime);
+                            }
                         }
                         state.request_update();
                         return;
@@ -272,10 +282,12 @@ impl WaylandClient {
                             _ => return,
                         };
                         for bar in &mut state.bars {
-                            if Some(bar.surf.as_ref().id()) != over {
-                                continue;
+                            if Some(bar.surf.as_ref().id()) == over {
+                                bar.sink.button(x,y,button_id, &mut state.runtime);
                             }
-                            bar.sink.button(x,y,button_id, &mut state.runtime);
+                            if bar.popup.as_ref().map(|p| p.wl.surf.as_ref().id()) == over {
+                                bar.popup_button(x,y,button_id, &mut state.runtime);
+                            }
                         }
                         state.request_update();
                         return;
@@ -286,10 +298,14 @@ impl WaylandClient {
                 }
                 if let Some(id) = over {
                     for bar in &mut state.bars {
-                        if bar.surf.as_ref().id() != id {
-                            continue;
+                        if bar.surf.as_ref().id() == id {
+                            bar.hover(x,y, &state.wayland, &mut state.runtime);
                         }
-                        bar.hover(x,y, &state.wayland, &mut state.runtime);
+                        if let Some(popup) = &bar.popup {
+                            if popup.wl.surf.as_ref().id() == id {
+                                bar.hover_popup(x, y, &state.wayland, &mut state.runtime);
+                            }
+                        }
                     }
                 }
             });
@@ -388,8 +404,8 @@ impl WaylandClient {
                     as_xdg.ack_configure(serial);
                     for bar in &mut state.bars {
                         if let Some(popup) = &mut bar.popup {
-                            if popup.as_xdg == *as_xdg {
-                                popup.waiting_on_configure = false;
+                            if popup.wl.as_xdg == *as_xdg {
+                                popup.wl.waiting_on_configure = false;
                             }
                         }
                     }
@@ -409,7 +425,7 @@ impl WaylandClient {
                 }
                 Event::PopupDone => {
                     for bar in &mut state.bars {
-                        if bar.popup.as_ref().map_or(false, |popup| popup.as_popup == *as_popup) {
+                        if bar.popup.as_ref().map_or(false, |popup| popup.wl.as_popup == *as_popup) {
                             bar.popup = None;
                         }
                     }
