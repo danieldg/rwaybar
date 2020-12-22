@@ -15,12 +15,13 @@ use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1;
 use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_v1::ZxdgOutputV1;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1;
-use wayland_protocols::wlr::unstable::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
+use wayland_protocols::xdg_shell::client::xdg_popup::XdgPopup;
+use wayland_protocols::xdg_shell::client::xdg_surface::XdgSurface;
 use wayland_protocols::xdg_shell::client::xdg_wm_base::XdgWmBase;
 
 use std::error::Error;
 
-use crate::state::State;
+use crate::state::{Bar,State};
 
 /// Helper for populating [OutputData]
 #[derive(Debug,Default)]
@@ -89,10 +90,10 @@ pub struct Globals {
     sctk_compositor: SimpleGlobal<WlCompositor>,
     sctk_shm: smithay_client_toolkit::shm::ShmHandler,
     sctk_seats: smithay_client_toolkit::seat::SeatHandler,
+    sctk_shell: smithay_client_toolkit::shell::ShellHandler,
     outputs: OutputHandler,
 
     layer_shell : SimpleGlobal<ZwlrLayerShellV1>,
-    xdg_wm : SimpleGlobal<XdgWmBase>,
     xdg_out : SimpleGlobal<ZxdgOutputManagerV1>,
 }
 
@@ -113,7 +114,7 @@ environment!(Globals,
         WlShm => sctk_shm,
 
         ZwlrLayerShellV1 => layer_shell,
-        XdgWmBase => xdg_wm,
+        XdgWmBase => sctk_shell,
         ZxdgOutputManagerV1 => xdg_out,
     ],
     multis = [
@@ -156,9 +157,9 @@ impl WaylandClient {
             sctk_compositor: SimpleGlobal::new(),
             sctk_shm: smithay_client_toolkit::shm::ShmHandler::new(),
             sctk_seats : smithay_client_toolkit::seat::SeatHandler::new(),
+            sctk_shell : smithay_client_toolkit::shell::ShellHandler::new(),
             outputs: OutputHandler::default(),
             layer_shell : SimpleGlobal::new(),
-            xdg_wm : SimpleGlobal::new(),
             xdg_out : SimpleGlobal::new(),
         })?;
 
@@ -232,6 +233,9 @@ impl WaylandClient {
                         if Some(surface.as_ref().id()) == over {
                             over = None;
                         }
+                        for bar in &mut state.bars {
+                            bar.popup.take();
+                        }
                     }
                     Event::Button {
                         button, state : ButtonState::Pressed, ..
@@ -255,6 +259,7 @@ impl WaylandClient {
                             bar.sink.button(x,y,button_id, &mut state.runtime);
                         }
                         state.request_update();
+                        return;
                     }
                     Event::Axis { axis, value, .. } => {
                         dbg!(value);
@@ -273,8 +278,19 @@ impl WaylandClient {
                             bar.sink.button(x,y,button_id, &mut state.runtime);
                         }
                         state.request_update();
+                        return;
                     }
-                    _ => ()
+                    _ => {
+                        return;
+                    }
+                }
+                if let Some(id) = over {
+                    for bar in &mut state.bars {
+                        if bar.surf.as_ref().id() != id {
+                            continue;
+                        }
+                        bar.hover(x,y, &state.wayland, &mut state.runtime);
+                    }
                 }
             });
         }
@@ -346,27 +362,89 @@ impl WaylandClient {
         });
     }
 
-    #[allow(dead_code)] // TODO wire up
-    pub fn create_popup(&self, parent : &ZwlrLayerSurfaceV1) -> Attached<WlSurface> {
+    pub fn new_popup(&self, bar : &Bar, anchor : (i32, i32, i32, i32), size : (i32, i32)) -> Popup {
+        use wayland_protocols::xdg_shell::client::xdg_positioner::{Anchor,Gravity};
         let surf = self.env.create_surface();
         let wmb : Attached<XdgWmBase> = self.env.require_global();
         let pos = wmb.create_positioner();
-/* TODO
-        pos.set_size(232, 87)
-        pos.set_anchor_rect(3614, -4, 122, 56) // gtk adds 4 pixels padding to the object
-        pos.set_offset(0, 0)
-        pos.set_anchor(2)
-        pos.set_gravity(2)
-        pos.set_constraint_adjustment(9)
-*/
-        let xdg_surf = wmb.get_xdg_surface(&surf);
-        let popup = xdg_surf.get_popup(None, &pos);
-        parent.get_popup(&popup);
-        xdg_surf.set_window_geometry(0, 0, 100, 100);
+        pos.set_size(size.0, size.1);
+        pos.set_anchor_rect(anchor.0, anchor.1, anchor.2, anchor.3);
+        pos.set_offset(0, 0);
+        if bar.anchor_top {
+            pos.set_anchor(Anchor::Bottom);
+            pos.set_gravity(Gravity::Bottom);
+        } else {
+            pos.set_anchor(Anchor::Top);
+            pos.set_gravity(Gravity::Top);
+        }
+        pos.set_constraint_adjustment(0xF); // allow moving but not resizing
+
+        let as_xdg = wmb.get_xdg_surface(&surf);
+        as_xdg.quick_assign(move |as_xdg, event, mut data| {
+            use wayland_protocols::xdg_shell::client::xdg_surface::Event;
+            let state : &mut State = data.get().unwrap();
+            match event {
+                Event::Configure { serial } => {
+                    as_xdg.ack_configure(serial);
+                    for bar in &mut state.bars {
+                        if let Some(popup) = &mut bar.popup {
+                            if popup.as_xdg == *as_xdg {
+                                popup.waiting_on_configure = false;
+                            }
+                        }
+                    }
+                    state.request_draw();
+                }
+                _ => {}
+            }
+        });
+
+        let as_popup = as_xdg.get_popup(None, &pos);
+        as_popup.quick_assign(move |as_popup, event, mut data| {
+            use wayland_protocols::xdg_shell::client::xdg_popup::Event;
+            let state : &mut State = data.get().unwrap();
+            match event {
+                Event::Configure { .. } => {
+                    // no-op as we didn't allow changing w/h and we don't care about x/y
+                }
+                Event::PopupDone => {
+                    for bar in &mut state.bars {
+                        if bar.popup.as_ref().map_or(false, |popup| popup.as_popup == *as_popup) {
+                            bar.popup = None;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        });
+
+        bar.ls_surf.get_popup(&as_popup);
+        as_xdg.set_window_geometry(0, 0, size.0, size.1);
         surf.commit();
-        // TODO handle Configure on popup
-        // TODO handle Configure on surface by ACKing
-        // TODO actually draw something
-        surf
+        Popup {
+            surf,
+            as_xdg : as_xdg.into(),
+            as_popup : as_popup.into(),
+            anchor,
+            size,
+            waiting_on_configure : true,
+        }
+    }
+}
+
+pub struct Popup {
+    pub surf : Attached<WlSurface>,
+    pub as_xdg : Attached<XdgSurface>,
+    pub as_popup : Attached<XdgPopup>,
+    pub anchor : (i32, i32, i32, i32),
+    pub size : (i32, i32),
+    pub waiting_on_configure : bool,
+}
+
+impl Drop for Popup {
+    fn drop(&mut self) {
+        self.as_popup.destroy();
+        self.as_xdg.destroy();
+        self.surf.destroy();
     }
 }

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::time::Instant;
 use std::rc::Rc;
+use smithay_client_toolkit::shm::MemPool;
 use wayland_client::Attached;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -17,13 +18,16 @@ use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
 
 use crate::item::*;
 use crate::data::Module;
-use crate::wayland::WaylandClient;
+use crate::wayland::{Popup,WaylandClient};
 
 /// A single taskbar on a single output
 pub struct Bar {
     pub surf : Attached<WlSurface>,
     pub ls_surf : Attached<ZwlrLayerSurfaceV1>,
+    pub popup : Option<Popup>,
     pub sink : EventSink,
+    pub anchor_top : bool,
+    popup_x : f64,
     width : i32,
     height : i32,
     dirty : bool,
@@ -32,23 +36,143 @@ pub struct Bar {
 }
 
 impl Bar {
-    fn render(&mut self, surf : &cairo::ImageSurface, runtime : &Runtime) {
-        let ctx = cairo::Context::new(surf);
-        let font = pango::FontDescription::new();
-        ctx.set_operator(cairo::Operator::Clear);
-        ctx.paint();
-        ctx.set_operator(cairo::Operator::Over);
-        ctx.move_to(0.0, 0.0);
+    fn get_render_size(&self) -> usize {
+        let mut rv = 0;
+        if self.dirty && self.throttle.is_none() {
+            let stride = cairo::Format::ARgb32.stride_for_width(self.width as u32).unwrap();
+            rv += (self.height as usize) * (stride as usize);
+        }
+        if let Some(popup) = &self.popup {
+            if !popup.waiting_on_configure {
+                let stride = cairo::Format::ARgb32.stride_for_width(popup.size.0 as u32).unwrap();
+                rv += (popup.size.1 as usize) * (stride as usize);
+            }
+        }
+        rv
+    }
 
-        let ctx = Render {
-            cairo : &ctx,
-            font : &font,
-            align : Align::bar_default(),
-            err_name: "bar",
-            runtime,
-        };
+    fn render_with(&mut self, runtime : &Runtime, target : &mut RenderTarget) {
+        let item = &self.item;
+        if self.dirty && self.throttle.is_none() {
+            self.sink = target.with_surface((self.width, self.height), &self.surf, |surf| {
+                let ctx = cairo::Context::new(surf);
+                let font = pango::FontDescription::new();
+                ctx.set_operator(cairo::Operator::Clear);
+                ctx.paint();
+                ctx.set_operator(cairo::Operator::Over);
+                ctx.move_to(0.0, 0.0);
 
-        self.sink = self.item.render(&ctx);
+                let ctx = Render {
+                    cairo : &ctx,
+                    font : &font,
+                    align : Align::bar_default(),
+                    err_name: "bar",
+                    runtime,
+                };
+
+                item.render(&ctx)
+            });
+            let frame = self.surf.frame();
+            let id = frame.as_ref().id();
+            frame.quick_assign(move |_frame, _event, mut data| {
+                let state : &mut State = data.get().unwrap();
+                for bar in &mut state.bars {
+                    let done = match bar.throttle.as_ref() {
+                        Some(cb) if !cb.as_ref().is_alive() => true,
+                        Some(cb) if cb.as_ref().id() == id => true,
+                        _ => false,
+                    };
+                    if done {
+                        bar.throttle.take();
+                    }
+                }
+                state.request_draw();
+            });
+            self.surf.commit();
+            self.throttle = Some(frame.into());
+            self.dirty = false;
+        }
+        if let Some(popup @ Popup { waiting_on_configure : false, ..}) = &self.popup {
+            if let Some((_,_,text)) = self.sink.get_hover(self.popup_x, 0.0) {
+                target.with_surface(popup.size, &popup.surf, |surf| {
+                    let ctx = cairo::Context::new(&surf);
+                    ctx.set_operator(cairo::Operator::Source);
+                    ctx.paint();
+                    ctx.set_operator(cairo::Operator::Over);
+                    ctx.set_source_rgb(1.0, 1.0, 1.0);
+                    ctx.move_to(2.0, 2.0);
+                    let layout = pangocairo::create_layout(&ctx).unwrap();
+                    layout.set_text(&text);
+                    pangocairo::show_layout(&ctx, &layout);
+                });
+                popup.surf.commit();
+            } else {
+                // contents vanished, dismiss the popup
+                self.popup = None;
+            }
+        }
+
+    }
+
+    pub fn hover(&mut self, x : f64, y : f64, wayland : &WaylandClient, _runtime : &mut Runtime) {
+        self.popup_x = x;
+        if let Some(popup) = &self.popup {
+            if x > popup.anchor.0 as f64 && x < (popup.anchor.0 + popup.anchor.2) as f64 {
+                return;
+            } else {
+                self.popup = None;
+            }
+        }
+        if let Some((min_x, max_x, text)) = self.sink.get_hover(x, y) {
+            let anchor = (min_x as i32, 0, (max_x - min_x) as i32, self.height);
+            let (w,h) = {
+                let tmp = cairo::RecordingSurface::create(cairo::Content::ColorAlpha, None).unwrap();
+                let ctx = cairo::Context::new(&tmp);
+                let layout = pangocairo::create_layout(&ctx).unwrap();
+                layout.set_text(text);
+                let size = layout.get_size();
+                (pango::units_to_double(size.0) as i32 + 4, pango::units_to_double(size.1) as i32 + 4)
+            };
+
+            let popup = wayland.new_popup(self, anchor, (w, h));
+            self.popup = Some(popup);
+        }
+    }
+}
+
+struct RenderTarget<'a> {
+    shm : &'a mut MemPool,
+    pos : usize,
+}
+impl<'a> RenderTarget<'a> {
+    fn new(shm : &'a mut MemPool, len : usize) -> Self {
+        shm.resize(len).expect("OOM");
+        RenderTarget { shm, pos : 0 }
+    }
+
+    fn with_surface<F : FnOnce(&cairo::ImageSurface) -> R, R>(&mut self, size : (i32, i32), target : &WlSurface, cb : F) -> R {
+        let stride = cairo::Format::ARgb32.stride_for_width(size.0 as u32).unwrap();
+        let len = (size.1 as usize) * (stride as usize);
+        let buf : &mut [u8] = &mut self.shm.mmap().as_mut()[self.pos..][..len];
+        let rv;
+
+        unsafe {
+            // cairo::ImageSurface::create_for_data requires a 'static type, so give it that
+            // (this could be done safely by having RenderTarget take ownership of the MemPool and impl'ing AsMut)
+            let buf : &'static mut [u8] = &mut *(buf as *mut [u8]);
+            let surf = cairo::ImageSurface::create_for_data(buf, cairo::Format::ARgb32, size.0, size.1, stride).unwrap();
+            // safety: ImageSurface never gives out direct access to D
+            rv = cb(&surf);
+            // safety: we must finish the cairo surface to end the 'static borrow
+            surf.finish();
+            drop(surf);
+        }
+
+        let buf = self.shm.buffer(self.pos as i32, size.0, size.1, stride, smithay_client_toolkit::shm::Format::Argb8888);
+        target.attach(Some(&buf), 0, 0);
+        target.damage_buffer(0, 0, size.0, size.1);
+        self.pos += len;
+        rv
     }
 }
 
@@ -288,63 +412,18 @@ impl State {
 
     fn draw_now(&mut self) -> Result<(), Box<dyn Error>> {
         let mut shm_size = 0;
-        let shm_pos : Vec<_> = self.bars.iter().map(|bar| {
-            let pos = shm_size;
-            let len = if bar.dirty && bar.throttle.is_none() {
-                let stride = cairo::Format::ARgb32.stride_for_width(bar.width as u32).unwrap();
-                (bar.height as usize) * (stride as usize)
-            } else {
-                0
-            };
-            shm_size += len;
-            (pos, len)
-        }).collect();
+        for bar in &self.bars {
+            shm_size += bar.get_render_size();
+        }
 
         if shm_size == 0 {
             return Ok(());
         }
 
-        self.wayland.shm.resize(shm_size).expect("OOM");
+        let mut target = RenderTarget::new(&mut self.wayland.shm, shm_size);
 
-        for (bar, (pos, len)) in self.bars.iter_mut().zip(shm_pos) {
-            if !bar.dirty || bar.throttle.is_some() {
-                continue;
-            }
-            let stride = cairo::Format::ARgb32.stride_for_width(bar.width as u32).unwrap();
-            let buf : &mut [u8] = &mut self.wayland.shm.mmap().as_mut()[pos..][..len];
-            unsafe {
-                // cairo::ImageSurface::create_for_data requires a 'static type, so give it that
-                // (this could be done safely by using a wrapper object and mem::replace on the shm object)
-                let buf : &'static mut [u8] = &mut *(buf as *mut [u8]);
-                let surf = cairo::ImageSurface::create_for_data(buf, cairo::Format::ARgb32, bar.width, bar.height, stride)?;
-                // safety: ImageSurface never gives out direct access to D
-                bar.render(&surf, &self.runtime);
-                // safety: we must finish the cairo surface to end the 'static borrow
-                surf.finish();
-                drop(surf);
-            }
-            let buf = self.wayland.shm.buffer(pos as i32, bar.width, bar.height, stride, smithay_client_toolkit::shm::Format::Argb8888);
-            bar.surf.attach(Some(&buf), 0, 0);
-            bar.surf.damage_buffer(0, 0, bar.width, bar.height);
-            let frame = bar.surf.frame();
-            let id = frame.as_ref().id();
-            frame.quick_assign(move |_frame, _event, mut data| {
-                let state : &mut State = data.get().unwrap();
-                for bar in &mut state.bars {
-                    let done = match bar.throttle.as_ref() {
-                        Some(cb) if !cb.as_ref().is_alive() => true,
-                        Some(cb) if cb.as_ref().id() == id => true,
-                        _ => false,
-                    };
-                    if done {
-                        bar.throttle.take();
-                    }
-                }
-                state.request_draw();
-            });
-            bar.surf.commit();
-            bar.throttle = Some(frame.into());
-            bar.dirty = false;
+        for bar in &mut self.bars {
+            bar.render_with(&self.runtime, &mut target);
         }
         self.wayland.display.flush()?;
         Ok(())
@@ -372,20 +451,25 @@ impl State {
         let ls_surf = ls.get_layer_surface(&surf, Some(output), Layer::Top, "bar".to_owned());
 
         let size = cfg.get("size").and_then(|v| v.as_integer()).unwrap_or(20) as u32;
+        
+        let anchor_top;
 
         match cfg["side"].as_str() {
             Some("top") => {
                 ls_surf.set_size(0, size);
                 ls_surf.set_anchor(Anchor::Top | Anchor::Left | Anchor::Right);
+                anchor_top = true;
             }
             None | Some("bottom") => {
                 ls_surf.set_size(0, size);
                 ls_surf.set_anchor(Anchor::Bottom | Anchor::Left | Anchor::Right);
+                anchor_top = false;
             }
             Some(side) => {
                 error!("Unknown side '{}', defaulting to bottom", side);
                 ls_surf.set_size(0, size);
                 ls_surf.set_anchor(Anchor::Bottom | Anchor::Left | Anchor::Right);
+                anchor_top = false;
             }
         }
         ls_surf.set_exclusive_zone(size as i32);
@@ -430,9 +514,12 @@ impl State {
             item : Item::new_bar(cfg),
             width : 0,
             height : 0,
+            popup_x : 0.0,
+            anchor_top,
             sink : EventSink::default(),
             dirty : false,
             throttle : None,
+            popup : None,
         }
     }
 }

@@ -238,7 +238,8 @@ struct EventListener {
 /// A list of [EventListener]s
 #[derive(Debug,Default,Clone)]
 pub struct EventSink {
-    handlers : Vec<EventListener>
+    handlers : Vec<EventListener>,
+    hovers : Vec<(f64, f64, String)>,
 }
 
 impl EventSink {
@@ -286,6 +287,7 @@ impl EventSink {
 
     pub fn merge(&mut self, sink : Self) {
         self.handlers.extend(sink.handlers);
+        self.hovers.extend(sink.hovers);
     }
 
     pub fn offset_clamp(&mut self, offset : f64, min : f64, max : f64) {
@@ -301,6 +303,20 @@ impl EventSink {
                 h.x_max = min;
             } else if h.x_max > max {
                 h.x_max = max;
+            }
+        }
+        for (x_min, x_max, _) in &mut self.hovers {
+            *x_min += offset;
+            *x_max += offset;
+            if *x_min < min {
+                *x_min = min;
+            } else if *x_min > max {
+                *x_min = max;
+            }
+            if *x_max < min {
+                *x_max = min;
+            } else if *x_max > max {
+                *x_max = max;
             }
         }
     }
@@ -322,6 +338,16 @@ impl EventSink {
                 runtime.items.get("item").unwrap().data.set_current_item(None);
             }
         }
+    }
+
+    pub fn get_hover(&self, x : f64, y : f64) -> Option<(f64, f64, &str)> {
+        let _ = y;
+        for &(min, max, ref text) in &self.hovers {
+            if x >= min && x <= max {
+                return Some((min, max, text));
+            }
+        }
+        None
     }
 }
 
@@ -712,7 +738,8 @@ impl Item {
             // All other modules are rendered as text
             _ => {
                 let markup = self.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
-                let text = self.data.read_in(ctx.err_name, "", &ctx.runtime, |s| s.to_string());
+                let text = self.data.read_in(ctx.err_name, "text", &ctx.runtime, |s| s.to_string());
+                let tooltip = self.data.read_in(ctx.err_name, "tooltip", &ctx.runtime, |s| s.to_string());
                 let layout = pangocairo::create_layout(ctx.cairo).unwrap();
                 layout.set_font_description(Some(ctx.font));
                 if markup {
@@ -720,7 +747,6 @@ impl Item {
                 } else {
                     layout.set_text(&text);
                 }
-
                 let size = layout.get_size();
                 let yoff = match ctx.align.vert {
                     Some(f) => {
@@ -735,9 +761,12 @@ impl Item {
                     }
                     _ => 0.0,
                 };
+                let start_pos = ctx.cairo.get_current_point();
                 ctx.cairo.rel_move_to(0.0, yoff);
                 pangocairo::show_layout(ctx.cairo, &layout);
-                ctx.cairo.rel_move_to(pango::units_to_double(size.0), -yoff);
+                let width = pango::units_to_double(size.0);
+                ctx.cairo.rel_move_to(width, -yoff);
+                rv.hovers.push((start_pos.0, start_pos.0 + width, tooltip));
             }
         }
     }
