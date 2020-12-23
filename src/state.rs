@@ -462,7 +462,7 @@ impl State {
         info!("Output[{}] name='{}' description='{}' at {},{} {}x{}",
             i, data.name, data.description, data.pos_x, data.pos_y, data.size_x, data.size_y);
         for cfg in &self.bar_config {
-            if let Some(name) = cfg["name"].as_str() {
+            if let Some(name) = cfg.get("name").and_then(|v| v.as_str()) {
                 if name != &data.name {
                     continue;
                 }
@@ -482,7 +482,7 @@ impl State {
         
         let anchor_top;
 
-        match cfg["side"].as_str() {
+        match cfg.get("side").and_then(|v| v.as_str()) {
             Some("top") => {
                 ls_surf.set_size(0, size);
                 ls_surf.set_anchor(Anchor::Top | Anchor::Left | Anchor::Right);
