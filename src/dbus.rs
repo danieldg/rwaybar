@@ -1,11 +1,13 @@
 use crate::util;
 use dbus::arg::{RefArg,Variant};
-use dbus::channel::{BusType,Channel};
+use dbus::channel::{BusType,Channel,MatchingReceiver};
+use dbus::message::{MatchRule,Message};
 use dbus::nonblock::{LocalConnection,Process,NonblockReply};
+use dbus::nonblock::stdintf::org_freedesktop_dbus::PropertiesPropertiesChanged;
 use futures_util::future::Either;
 use futures_util::future::select;
 use futures_util::pin_mut;
-use log::error;
+use log::{warn,error};
 use once_cell::unsync::OnceCell;
 use std::collections::HashMap;
 use std::error::Error;
@@ -15,11 +17,13 @@ use tokio::io::unix::AsyncFd;
 use tokio::sync::Notify;
 
 thread_local! {
-    static SOCK : Rc<OnceCell<ConnState>> = Default::default();
+    static SOCK : Rc<OnceCell<SessionDBus>> = Default::default();
 }
 
-pub struct ConnState {
+pub struct SessionDBus {
     pub local : LocalConnection,
+    prop_watchers : util::Cell<Vec<Box<dyn FnMut(&Message, &PropertiesPropertiesChanged, &SessionDBus)>>>,
+    name_watchers : util::Cell<Vec<Box<dyn FnMut(&str, &str, &str, &SessionDBus)>>>,
     wake : Notify,
 }
 
@@ -43,7 +47,12 @@ pub fn init() -> Result<(), Box<dyn Error>> {
         Ok(())
     })));
 
-    rc.set(ConnState { local, wake }).ok().expect("Called init twice");
+    rc.set(SessionDBus {
+        local,
+        wake,
+        prop_watchers : Default::default(),
+        name_watchers : Default::default(),
+    }).ok().expect("Called init twice");
 
     util::spawn("D-Bus I/O loop", async move {
         let conn = rc.get().unwrap();
@@ -91,16 +100,91 @@ pub fn init() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-pub fn get() -> impl std::ops::Deref<Target=ConnState> {
-    struct V(Rc<OnceCell<ConnState>>);
+impl SessionDBus {
+    pub fn get() -> impl std::ops::Deref<Target=Self> {
+        struct V(Rc<OnceCell<SessionDBus>>);
 
-    impl std::ops::Deref for V {
-        type Target = ConnState;
-        fn deref(&self) -> &ConnState {
-            self.0.get().expect("Must call dbus::init before dbus::get")
+        impl std::ops::Deref for V {
+            type Target = SessionDBus;
+            fn deref(&self) -> &SessionDBus {
+                self.0.get().expect("Must call dbus::init before dbus::get")
+            }
+        }
+        V(SOCK.with(|cell| cell.clone()))
+    }
+
+    pub async fn add_property_change_watcher<F>(&self, f : F)
+        where F : FnMut(&Message, &PropertiesPropertiesChanged, &Self) + 'static
+    {
+        if self.prop_watchers.take_in(|w| {
+            w.push(Box::new(f));
+            w.len() == 1
+        }) {
+            let prop_rule = MatchRule::new_signal("org.freedesktop.DBus.Properties", "PropertiesChanged");
+            let rule_str = prop_rule.match_str();
+            self.local.start_receive(prop_rule, Box::new(move |msg, _local| {
+                let this = Self::get();
+                if let Ok(p) = msg.read_all::<PropertiesPropertiesChanged>() {
+                    let mut watchers = this.prop_watchers.replace(Vec::new());
+                    for watcher in &mut watchers {
+                        (*watcher)(&msg, &p, &this);
+                    }
+                    this.prop_watchers.take_in(|w| {
+                        if w.is_empty() {
+                            *w = watchers;
+                        } else {
+                            w.extend(watchers);
+                        }
+                    });
+                } else {
+                    warn!("Could not parse PropertiesPropertiesChanged message: {:?}", msg);
+                }
+                true
+            }));
+
+            match self.local.add_match_no_cb(&rule_str).await {
+                Ok(()) => {}
+                Err(e) => warn!("Could not register for PropertyChange messages: {}", e),
+            }
         }
     }
-    V(SOCK.with(|cell| cell.clone()))
+
+    pub async fn add_name_watcher<F>(&self, f : F)
+        where F : FnMut(&str, &str, &str, &Self) + 'static
+    {
+        if self.name_watchers.take_in(|w| {
+            w.push(Box::new(f));
+            w.len() == 1
+        }) {
+            let na_rule = MatchRule::new_signal("org.freedesktop.DBus", "NameOwnerChanged");
+            let rule_str = na_rule.match_str();
+            self.local.start_receive(na_rule, Box::new(move |msg, _local| {
+                let this = Self::get();
+                if let (Some(name), Some(old), Some(new)) = msg.get3::<String, String, String>() {
+                    let mut watchers = this.name_watchers.replace(Vec::new());
+                    for watcher in &mut watchers {
+                        (*watcher)(&name, &old, &new, &this);
+                    }
+                    this.name_watchers.take_in(|w| {
+                        if w.is_empty() {
+                            *w = watchers;
+                        } else {
+                            w.extend(watchers);
+                        }
+                    });
+                }
+                true
+            }));
+            match self.local.add_match_no_cb(&rule_str).await {
+                Ok(()) => {}
+                Err(e) => warn!("Could not register for NameAcquired messages: {}", e),
+            }
+        }
+    }
+}
+
+pub fn get() -> impl std::ops::Deref<Target=SessionDBus> {
+    SessionDBus::get()
 }
 
 pub fn read_hash_map(value : &impl RefArg) -> Option<HashMap<String, Variant<Box<dyn RefArg>>>> {

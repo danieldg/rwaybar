@@ -2,8 +2,7 @@ use crate::dbus::get as get_dbus;
 use crate::dbus as dbus_util;
 use crate::state::{Runtime,NotifierList};
 use crate::util::{self,Cell};
-use dbus::channel::MatchingReceiver;
-use dbus::message::{MatchRule,Message};
+use dbus::message::Message;
 use dbus::nonblock::Proxy;
 use dbus::nonblock::stdintf::org_freedesktop_dbus::Properties;
 use dbus::nonblock::stdintf::org_freedesktop_dbus::PropertiesPropertiesChanged;
@@ -91,21 +90,40 @@ impl MediaPlayer2 {
             let dbus = get_dbus();
             let meta_bus = Proxy::new("org.freedesktop.DBus", "/org/freedesktop/DBus", Duration::from_secs(10), &dbus.local);
 
-            // TODO we need to watch for new players and player exits
-            //
-            // Could use arg0namespace as shown in https://dbus.freedesktop.org/doc/dbus-specification.html#message-bus-routing-match-rules
-
             // Watch for property updates to any active mpris player and update our internal map
-            let mut mpris_prop_rule = MatchRule::new_signal("org.freedesktop.DBus.Properties", "PropertiesChanged");
-            mpris_prop_rule.path = Some("/org/mpris/MediaPlayer2".into());
-            dbus.local.add_match_no_cb(&mpris_prop_rule.match_str()).await?;
             let target = mpris.clone();
-            dbus.local.start_receive(mpris_prop_rule, Box::new(move |msg, _local| {
-                target.handle_mpris_update(msg);
-                true
-            }));
+            dbus.add_property_change_watcher(move |msg, ppc, _dbus| {
+                if msg.path().as_deref() != Some("/org/mpris/MediaPlayer2") {
+                    return;
+                }
+                if ppc.interface_name != "org.mpris.MediaPlayer2.Player" {
+                    return;
+                }
+                target.handle_mpris_update(msg, ppc);
+            }).await;
 
-            // Now that property watching is active, populate our map with initial values for all active players
+            // Watch for new players and player exits
+            let this = mpris.clone();
+            dbus.add_name_watcher(move |name, old, new, _dbus| {
+                if !new.is_empty() && name.starts_with("org.mpris.MediaPlayer2.") {
+                    util::spawn("MPRIS state query", initial_query(this.clone(), name.to_owned()));
+                }
+                if !old.is_empty() {
+                    this.0.take_in_some(|inner| {
+                        let interested = &mut inner.interested;
+                        inner.players.retain(|player| {
+                            if player.owner == name || player.name == name {
+                                interested.notify_data();
+                                false
+                            } else {
+                                true
+                            }
+                        });
+                    });
+                }
+            }).await;
+
+            // Now that watching is active, populate our map with initial values for all active players
             let (names,) : (Vec<String>,) = meta_bus.method_call("org.freedesktop.DBus", "ListNames", ()).await?;
             for name in names {
                 if !name.starts_with("org.mpris.MediaPlayer2.") {
@@ -116,21 +134,15 @@ impl MediaPlayer2 {
                 util::spawn("MPRIS state query", initial_query(mpris.clone(), name));
             }
 
-            // the start_recieve callback handles most of the update logic
-            // (we could use the Token returned there to cancel)
             Ok(())
         });
 
         rv
     }
 
-    fn handle_mpris_update(&self, msg : Message) {
+    fn handle_mpris_update(&self, msg : &Message, p : &PropertiesPropertiesChanged) {
         let src = msg.sender().unwrap();
         assert!(src.starts_with(':'));
-        let p = match msg.read_all::<PropertiesPropertiesChanged>() {
-            Ok(p) if p.interface_name == "org.mpris.MediaPlayer2.Player" => p,
-            _ => return,
-        };
         self.0.take_in_some(|inner| {
             let mut new = None;
             let found = inner.players.iter_mut().find(|p| *p.owner == *src);
@@ -139,7 +151,7 @@ impl MediaPlayer2 {
                 player.owner = (*src).to_owned();
                 player
             });
-            for (prop, value) in p.changed_properties {
+            for (prop, value) in &p.changed_properties {
                 match prop.as_str() {
                     "PlaybackStatus" => {
                         value.as_str().map(|status| {
