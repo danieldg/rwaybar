@@ -6,7 +6,7 @@ use crate::icon;
 use crate::item::{Item,Render,EventSink,PopupDesc};
 use crate::state::{Runtime,NotifierList};
 use dbus::arg::{ArgType,RefArg,Variant};
-use dbus::channel::{MatchingReceiver,Token};
+use dbus::channel::{MatchingReceiver,Token,Sender};
 use dbus::message::{MatchRule,Message};
 use dbus::nonblock::Proxy;
 use dbus::nonblock::stdintf::org_freedesktop_dbus::Properties;
@@ -44,66 +44,160 @@ struct Tray {
 }
 
 fn init() -> Tray {
-    for &(is_kde, who) in &[(true, "kde"), (false, "freedesktop")] {
-        spawn("Tray initialization", async move {
-            let snw_path = format!("org.{}.StatusNotifierWatcher", who);
-            let dbus = get_dbus();
-            let name = format!("org.{}.StatusNotifierHost-{}", who, std::process::id());
-            match dbus.local.request_name(&name, false, false, true).await {
-                Ok(RequestNameReply::PrimaryOwner) => {}
-                _ => {
-                    warn!("Could not register as tray ({})", who);
-                    return Ok(());
-                }
-            }
+    spawn("Tray StatusNotifierWatcher", async move {
+        let dbus = get_dbus();
 
-            // TODO actually implement StatusNotifierWatcher ourselves
-            if false {
-                match dbus.local.request_name(&snw_path, true, false, false).await {
-                    Ok(_) => {}
-                    _ => {
-                        warn!("Could not register as StatusNotifierWatcher, tray may not work ({})", who);
+        let mut reg_db : Vec<String> = Vec::new();
+
+        let mut snw_match = MatchRule::new_method_call();
+        snw_match.path = Some("/StatusNotifierWatcher".into());
+        dbus.local.start_receive(snw_match, Box::new(move |msg : Message, local| {
+            let mut rsp = dbus::channel::default_reply(&msg);
+            match msg.interface().as_deref() {
+                Some(iface @ "org.kde.StatusNotifierWatcher") |
+                Some(iface @ "org.freedesktop.StatusNotifierWatcher") => {
+                    match msg.member().as_deref() {
+                        Some("RegisterStatusNotifierItem") => {
+                            if let Some(path) = msg.get1::<String>() {
+                                if path.starts_with('/') {
+                                    let service = format!("{}{}", msg.sender().unwrap(), path);
+                                    local.send(Message::new_signal("/StatusNotifierWatcher", iface, "StatusNotifierItemRegistered").unwrap()
+                                        .append1(&service)).unwrap();
+                                    reg_db.push(service);
+                                    rsp = Some(msg.return_with_args(()));
+                                } else if path.starts_with(':') {
+                                    // kde uses this style
+                                    let service = format!("{}/StatusNotifierItem", path);
+                                    local.send(Message::new_signal("/StatusNotifierWatcher", iface, "StatusNotifierItemRegistered").unwrap()
+                                        .append1(&service)).unwrap();
+                                    reg_db.push(service);
+                                    rsp = Some(msg.return_with_args(()));
+                                } else {
+                                    warn!("Unknown RegisterStatusNotifierItem from {:?}: {}", msg.sender(), path);
+                                }
+                            }
+                        }
+                        Some("RegisterStatusNotifierHost") => {
+                            let sig = Message::new_signal("/StatusNotifierWatcher", iface, "StatusNotifierHostRegistered").unwrap();
+                            local.send(sig).unwrap();
+                            rsp = Some(msg.return_with_args(()));
+                        }
+                        _ => {}
                     }
                 }
-            }
-
-            let prop_rule = MatchRule::new_signal("org.freedesktop.DBus.Properties", "PropertiesChanged");
-            dbus.local.start_receive(prop_rule, Box::new(move |msg, _local| {
-                handle_item_update_msg(msg);
-                true
-            }));
-
-            let mut item_rule = MatchRule::new_signal(snw_path.clone(), "x");
-            item_rule.member = None;
-            dbus.local.add_match_no_cb(&item_rule.match_str()).await?;
-
-            dbus.local.start_receive(item_rule, Box::new(move |msg : Message, _local| {
-                let item : String = match msg.get1() {
-                    Some(s) => s,
-                    None => return true,
-                };
-                match msg.member().as_deref().unwrap_or("") {
-                    "StatusNotifierItemRegistered" => do_add_item(is_kde, item),
-                    "StatusNotifierItemUnregistered" => do_del_item(item),
-                    _ => ()
+                Some("org.freedesktop.DBus.Properties") => {
+                    match msg.member().as_deref() {
+                        Some("Get") => {
+                            let (mut iface, prop) = msg.get2::<String,String>();
+                            match iface.as_deref() {
+                                Some("org.kde.StatusNotifierWatcher") |
+                                Some("org.freedesktop.StatusNotifierWatcher") => {}
+                                _ => iface = None,
+                            }
+                            match (iface, prop.as_deref()) {
+                                (Some(_), Some("RegisteredStatusNotifierItems")) => {
+                                    rsp = Some(msg.return_with_args((Variant(&reg_db),)));
+                                }
+                                (Some(_), Some("IsStatusNotifierHostRegistered")) => {
+                                    rsp = Some(msg.return_with_args((Variant(true),)));
+                                }
+                                (Some(_), Some("ProtocolVersion")) => {
+                                    rsp = Some(msg.return_with_args((Variant(0i32),)));
+                                }
+                                _ => {}
+                            }
+                        }
+                        Some("GetAll") => {
+                            let iface = msg.get1::<String>();
+                            match iface.as_deref() {
+                                Some("org.kde.StatusNotifierWatcher") |
+                                Some("org.freedesktop.StatusNotifierWatcher") => {
+                                    let rv : Vec<(String, Variant<&dyn RefArg>)> = vec![
+                                        ("RegisteredStatusNotifierItems".into(), Variant(&reg_db)),
+                                        ("IsStatusNotifierHostRegistered".into(), Variant(&true)),
+                                        ("ProtocolVersion".into(), Variant(&0i32)),
+                                    ];
+                                    // if only Dict implemented RefArg...
+                                    let rv : HashMap<_,_> = rv.into_iter().collect();
+                                    rsp = Some(msg.method_return().append_ref(&[rv]));
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
                 }
-                true
-            }));
-
-            let watcher = Proxy::new(&snw_path, "/StatusNotifierWatcher", Duration::from_secs(10), &dbus.local);
-            dbg!(watcher.method_call(&snw_path, "RegisterStatusNotifierHost", (&name,)).await)?;
-
-            let items : Vec<String> = watcher.get(&snw_path, "RegisteredStatusNotifierItems").await?;
-
-            for item in items {
-                do_add_item(is_kde, item);
+                _ => {}
             }
+            let _ = rsp.map(|rsp| local.send(rsp));
+            true
+        }));
 
-            Ok(())
-        });
-    }
+        spawn("Tray enumeration (KDE)", init_snw(true));
+        spawn("Tray enumeration (freedesktop)", init_snw(false));
+        Ok(())
+    });
 
     Tray::default()
+}
+
+async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
+    let who = if is_kde { "kde" } else { "freedesktop" };
+    let snw_path = if is_kde { "org.kde.StatusNotifierWatcher" } else { "org.freedesktop.StatusNotifierWatcher" };
+    let dbus = get_dbus();
+    let name = format!("org.{}.StatusNotifierHost-{}", who, std::process::id());
+    match dbus.local.request_name(&name, false, false, true).await {
+        Ok(RequestNameReply::PrimaryOwner) => {}
+        _ => {
+            warn!("Could not register as tray ({})", who);
+            return Ok(());
+        }
+    }
+
+    match dbus.local.request_name(snw_path, true, false, false).await {
+        Ok(RequestNameReply::PrimaryOwner) => {
+            let sig = Message::new_signal("/StatusNotifierWatcher", snw_path, "StatusNotifierHostRegistered")?;
+            let _ = dbus.local.send(sig);
+        }
+        Ok(_) => {}
+        _ => {
+            warn!("Could not register as StatusNotifierWatcher, tray may not work ({})", who);
+        }
+    }
+
+    let prop_rule = MatchRule::new_signal("org.freedesktop.DBus.Properties", "PropertiesChanged");
+    dbus.local.start_receive(prop_rule, Box::new(move |msg, _local| {
+        handle_item_update_msg(msg);
+        true
+    }));
+
+    let mut item_rule = MatchRule::new_signal(snw_path, "x");
+    item_rule.member = None;
+    dbus.local.add_match_no_cb(&item_rule.match_str()).await?;
+
+    dbus.local.start_receive(item_rule, Box::new(move |msg : Message, _local| {
+        let item : String = match msg.get1() {
+            Some(s) => s,
+            None => return true,
+        };
+        match msg.member().as_deref().unwrap_or("") {
+            "StatusNotifierItemRegistered" => do_add_item(is_kde, item),
+            "StatusNotifierItemUnregistered" => do_del_item(item),
+            _ => ()
+        }
+        true
+    }));
+
+    let watcher = Proxy::new(snw_path, "/StatusNotifierWatcher", Duration::from_secs(10), &dbus.local);
+    watcher.method_call(snw_path, "RegisterStatusNotifierHost", (&name,)).await?;
+
+    let items : Vec<String> = watcher.get(snw_path, "RegisteredStatusNotifierItems").await?;
+
+    for item in items {
+        do_add_item(is_kde, item);
+    }
+
+    Ok(())
 }
 
 fn do_add_item(is_kde : bool, item : String) {
@@ -116,23 +210,30 @@ fn do_add_item(is_kde : bool, item : String) {
             None => return Ok(()),
         };
 
-        let mut notify_rule = MatchRule::new_signal("org.freedesktop.DBus.Properties", "PropertiesChanged");
-        notify_rule.path = Some(path.into());
-        notify_rule.sender = Some(owner.into());
-        dbus.local.add_match_no_cb(&notify_rule.match_str()).await?;
-
         let mut item = TrayItem::default();
         item.owner = owner.into();
         item.path = path.into();
         item.is_kde = is_kde;
-        DATA.with(|cell| {
+        if DATA.with(|cell| {
             let tray = cell.get();
             let tray = tray.as_ref().unwrap();
             tray.items.take_in(|items| {
+                for item in &*items {
+                    if item.owner == owner && item.path == path {
+                        return true;
+                    }
+                }
                 items.push(item);
-            });
-            tray.interested.take().notify_data();
-        });
+                false
+            })
+        }) {
+            return Ok(());
+        }
+
+        let mut notify_rule = MatchRule::new_signal("org.freedesktop.DBus.Properties", "PropertiesChanged");
+        notify_rule.path = Some(path.into());
+        notify_rule.sender = Some(owner.into());
+        dbus.local.add_match_no_cb(&notify_rule.match_str()).await?;
 
         let proxy = Proxy::new(owner, path, Duration::from_secs(10), &dbus.local);
         let props = proxy.get_all(&sni_path).await?;
