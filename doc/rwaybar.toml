@@ -64,11 +64,14 @@ on-click-right = { "write" = "time_fmt", "format" = "%H:%M:%S" }
 
 [sway-mode]
 type = "sway-mode"
+padding = "3"
+bg = "red"
 
 [mode]
-format = "{sway-mode}"
-margin = "3"
-bg = "red"
+type = 'group'
+# The entire group will be hidden if condition expands to an empty string.
+condition = "{sway-mode}"
+items = ["sway-mode"]
 
 [sway-workspace]
 type = "sway-workspace"

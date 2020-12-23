@@ -196,6 +196,15 @@ impl MediaPlayer2 {
                     });
             }
 
+            if field == "state" {
+                return match player.and_then(|p| p.playing) {
+                    Some(PlayState::Playing) => f("Playing"),
+                    Some(PlayState::Paused) => f("Paused"),
+                    Some(PlayState::Stopped) => f("Stopped"),
+                    None => f(""),
+                };
+            }
+
             if let Some(player) = player {
                 match field {
                     "length" => {

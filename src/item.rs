@@ -637,6 +637,20 @@ impl Item {
                 }
             }
             Module::Group { items, spacing } => {
+                if let Some(cond) = self.config.as_ref()
+                    .and_then(|c| c.get("condition"))
+                    .and_then(|v| v.as_str())
+                {
+                    if !cond.is_empty() {
+                        match ctx.runtime.format(cond) {
+                            Ok(v) if v.is_empty() => return,
+                            Ok(_) => {}
+                            Err(e) => {
+                                warn!("Error evaluating condition '{}': {}", cond, e);
+                            }
+                        }
+                    }
+                }
                 let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
                 ctx.cairo.rel_move_to(spacing, 0.0);
                 for item in items {

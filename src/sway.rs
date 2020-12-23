@@ -233,9 +233,10 @@ impl Variable for Mode {
     fn read_in<F : FnOnce(&str) -> R,R>(&self, _name : &str, key : &str, _rt : &Runtime, f : F) -> R {
         self.value.take_in(|s| {
             match key {
-                "" if s == "default" => f(""),
-                "" => f(s),
+                "" | "text" if s == "default" => f(""),
+                "" | "text" => f(s),
                 "raw" => f(s),
+                "tooltip" => f(""),
                 _ => {
                     warn!("Unknown key in sway-mode");
                     f(s)
