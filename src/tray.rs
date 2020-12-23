@@ -226,7 +226,6 @@ impl TrayPopupMenu {
     {
         let mut item = MenuItem::default();
         for v in iter {
-            dbg!(&v);
             let mut iter = match v.as_iter() { Some(i) => i, None => continue };
             if v.arg_type() == ArgType::Variant {
                 self.add_items(&mut iter, depth);
@@ -250,7 +249,6 @@ impl TrayPopupMenu {
                         item = MenuItem::default();
                     }
                     2 => {
-                        dbg!(value);
                         match value.as_iter() {
                             Some(mut i) => self.add_items(&mut i, depth + 1),
                             None => {}
@@ -299,7 +297,6 @@ async fn refresh_menu(menu : Rc<Cell<Option<TrayPopupMenu>>>, owner : String, me
     menu.take_in_some(|menu| {
         menu.items.clear();
         menu.add_items(&mut contents.into_iter(), 0);
-        dbg!(&menu.items);
         menu.interested.notify_data();
     });
 
@@ -387,13 +384,12 @@ impl TrayPopup {
             if y < min || y > max {
                 continue;
             }
-            dbg!();
             let owner = self.owner.clone();
             let menu_path = self.menu_path.clone();
             tokio::task::spawn_local(async move {
                 let dbus = get_dbus();
                 let proxy = Proxy::new(owner, menu_path, Duration::from_secs(10), &dbus.local);
-                dbg!(proxy.method_call("com.canonical.dbusmenu", "Event", (id, "clicked", Variant(0i32), ts as u32)).await)?;
+                proxy.method_call("com.canonical.dbusmenu", "Event", (id, "clicked", Variant(0i32), ts as u32)).await?;
                 Ok::<(), Box<dyn Error>>(())
             });
         }
