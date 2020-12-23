@@ -29,18 +29,20 @@ impl CairoStylePixbuf {
         let mut buf = vec![0;(h*s) as usize].into_boxed_slice();
 
         let pixels = unsafe { &*pixbuf.get_pixels() }; // convert to non-mut and it's safe
+        let idx_map = u32::to_ne_bytes(u32::from_be_bytes([0,1,2,3]));
         for r in 0..h {
             let src_i = r * src_s;
             let dst_i = r * s;
             for c in 0..w {
                 let src_i = (src_i + c * 4) as usize;
                 let dst_i = (dst_i + c * 4) as usize;
-                let ai = (u32::from_ne_bytes([3,2,1,0]) & 3) as usize;
-                let alpha = pixels[src_i + ai] as u32;
-                for k in 0..4 {
-                    buf[dst_i + k] = (((pixels[src_i + k] as u32) * alpha) / 255) as u8;
+                let alpha = pixels[src_i + 3] as u32;
+                for k in 0..3 {
+                    let pix = pixels[src_i + k] as u32;
+                    let pix = ((pix * alpha) / 255) as u8;
+                    buf[dst_i + idx_map[k + 1] as usize] = pix;
                 }
-                buf[src_i + ai] = alpha as u8;
+                buf[src_i + idx_map[0] as usize] = alpha as u8;
             }
         }
 
