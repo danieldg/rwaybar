@@ -45,10 +45,10 @@ pub fn init() -> Result<(), Box<dyn Error>> {
 
     rc.set(ConnState { local, wake }).ok().expect("Called init twice");
 
-    tokio::task::spawn_local(async move {
+    util::spawn("D-Bus I/O loop", async move {
         let conn = rc.get().unwrap();
         let channel : &Channel = conn.local.as_ref();
-        let rv : io::Result<()> = async { loop {
+        loop {
             let msg_in = afd.readable();
             let msg_out = conn.wake.notified();
             pin_mut!(msg_in, msg_out);
@@ -84,12 +84,6 @@ pub fn init() -> Result<(), Box<dyn Error>> {
                         break;
                     }
                 }
-            }
-        } }.await;
-        match rv {
-            Ok(()) => {}
-            Err(e) => {
-                error!("Error in dbus connection: {}", e);
             }
         }
     });

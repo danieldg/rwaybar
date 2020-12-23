@@ -1,6 +1,9 @@
-use std::os::unix::io::RawFd;
-use std::os::unix::io::AsRawFd;
+use log::error;
+use std::error::Error;
 use std::fmt;
+use std::future::Future;
+use std::os::unix::io::AsRawFd;
+use std::os::unix::io::RawFd;
 
 pub fn toml_to_string(value : Option<&toml::Value>) -> Option<String> {
     value.and_then(|value| {
@@ -78,4 +81,15 @@ impl AsRawFd for Fd {
     fn as_raw_fd(&self) -> RawFd {
         self.0
     }
+}
+
+pub fn spawn(owner : &'static str, fut : impl Future<Output=Result<(), Box<dyn Error>>> + 'static) {
+    tokio::task::spawn_local(async move {
+        match fut.await {
+            Ok(()) => {}
+            Err(e) => {
+                error!("{}: {}", owner, e);
+            }
+        }
+    });
 }

@@ -1,7 +1,7 @@
 use crate::dbus::get as get_dbus;
 use crate::dbus as dbus_util;
 use crate::state::{Runtime,NotifierList};
-use crate::util::Cell;
+use crate::util::{self,Cell};
 use dbus::channel::MatchingReceiver;
 use dbus::message::{MatchRule,Message};
 use dbus::nonblock::Proxy;
@@ -87,7 +87,7 @@ impl MediaPlayer2 {
         let rv = Rc::new(MediaPlayer2(Cell::new(Some(Inner::default()))));
 
         let mpris = rv.clone();
-        tokio::task::spawn_local(async move {
+        util::spawn("MPRIS setup", async move {
             let dbus = get_dbus();
             let meta_bus = Proxy::new("org.freedesktop.DBus", "/org/freedesktop/DBus", Duration::from_secs(10), &dbus.local);
 
@@ -113,12 +113,12 @@ impl MediaPlayer2 {
                 }
 
                 // query them all in parallel
-                tokio::task::spawn_local(initial_query(mpris.clone(), name));
+                util::spawn("MPRIS state query", initial_query(mpris.clone(), name));
             }
 
             // the start_recieve callback handles most of the update logic
             // (we could use the Token returned there to cancel)
-            Ok::<(), Box<dyn Error>>(())
+            Ok(())
         });
 
         rv
@@ -251,22 +251,22 @@ impl MediaPlayer2 {
 
             let name = player.owner.clone();
 
-            tokio::task::spawn_local(async move {
+            util::spawn("MPRIS click", async move {
                 let dbus = get_dbus();
                 let player = Proxy::new(&name, "/org/mpris/MediaPlayer2", Duration::from_secs(10), &dbus.local);
                 match command.as_str() {
                     "Next" | "Previous" | "Pause" | "PlayPause" | "Stop" | "Play" => {
-                        player.method_call("org.mpris.MediaPlayer2.Player", command, ()).await
+                        player.method_call("org.mpris.MediaPlayer2.Player", command, ()).await?;
                     }
                     // TODO seek, volume?
                     "Raise" | "Quit" => {
-                        player.method_call("org.mpris.MediaPlayer2", command, ()).await
+                        player.method_call("org.mpris.MediaPlayer2", command, ()).await?;
                     }
                     _ => {
                         error!("Unknown command {}", command);
-                        Ok(())
                     }
                 }
+                Ok(())
             });
         })
     }
