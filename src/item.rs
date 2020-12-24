@@ -784,16 +784,16 @@ impl Item {
                 };
                 let start_pos = ctx.cairo.get_current_point();
                 ctx.cairo.rel_move_to(0.0, yoff);
-                pangocairo::layout_path(ctx.cairo, &layout);
-
                 if let Some(rgba) = ctx.text_stroke {
                     ctx.cairo.save();
+                    pangocairo::layout_path(ctx.cairo, &layout);
                     ctx.cairo.set_source_rgba(rgba.0 as f64 / 65535.0, rgba.1 as f64 / 65535.0, rgba.2 as f64 / 65535.0, rgba.3 as f64 / 65535.0);
-                    ctx.cairo.stroke_preserve();
+                    ctx.cairo.stroke();
                     ctx.cairo.restore();
                 }
 
-                ctx.cairo.fill();
+                ctx.cairo.move_to(start_pos.0, start_pos.1 + yoff);
+                pangocairo::show_layout(ctx.cairo, &layout);
                 let width = pango::units_to_double(size.0);
                 ctx.cairo.move_to(start_pos.0 + width, start_pos.1);
                 if !tooltip.is_empty() {
