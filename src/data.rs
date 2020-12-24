@@ -3,7 +3,7 @@ use crate::state::Notifier;
 use crate::item::Item;
 use crate::sway;
 use crate::tray;
-use crate::util::{Cell,Fd,toml_to_string,toml_to_f64};
+use crate::util::{Cell,Fd,toml_to_string,toml_to_f64,spawn_noerr};
 use crate::state::Runtime;
 use crate::mpris::MediaPlayer2;
 use json::JsonValue;
@@ -678,7 +678,7 @@ impl Action {
 }
 
 fn do_exec_json(fd : i32, name : String, value : Rc<Cell<JsonValue>>, redraw : Notifier) {
-    tokio::task::spawn_local(async move {
+    spawn_noerr(async move {
         let afd = match AsyncFd::new(Fd(fd)) {
             Ok(fd) => fd,
             Err(_) => return,

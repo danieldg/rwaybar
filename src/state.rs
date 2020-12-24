@@ -17,6 +17,7 @@ use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
 
 use crate::item::*;
 use crate::data::Module;
+use crate::util::spawn_noerr;
 use crate::wayland::{Popup,WaylandClient};
 
 pub struct BarPopup {
@@ -365,7 +366,7 @@ impl State {
 
         let notify = state.runtime.notify.unbound();
         let refresh = state.runtime.refresh.clone();
-        tokio::task::spawn_local(async move {
+        spawn_noerr(async move {
             loop {
                 use futures_util::future::Either;
                 if let Some(deadline) = refresh.time.get() {
@@ -388,7 +389,7 @@ impl State {
 
         let rv = Rc::new(RefCell::new(state));
         let state = rv.clone();
-        tokio::task::spawn_local(async move {
+        spawn_noerr(async move {
             loop {
                 notify_inner.notify.notified().await;
                 state.borrow_mut().request_draw_internal();

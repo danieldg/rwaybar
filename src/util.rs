@@ -83,8 +83,12 @@ impl AsRawFd for Fd {
     }
 }
 
+pub fn spawn_noerr(fut : impl Future<Output=()> + 'static) {
+    tokio::task::spawn_local(fut);
+}
+
 pub fn spawn(owner : &'static str, fut : impl Future<Output=Result<(), Box<dyn Error>>> + 'static) {
-    tokio::task::spawn_local(async move {
+    spawn_noerr(async move {
         match fut.await {
             Ok(()) => {}
             Err(e) => {

@@ -1,6 +1,6 @@
 use bytes::{Buf,BytesMut};
 use crate::Variable;
-use crate::util::Cell;
+use crate::util::{Cell,spawn_noerr};
 use crate::state::Runtime;
 use log::{warn,error};
 use std::cell::RefCell;
@@ -32,7 +32,7 @@ impl SwaySocket {
         let write_notify = Rc::new(Notify::new());
         let notify = write_notify.clone();
 
-        tokio::task::spawn_local(async move {
+        spawn_noerr(async move {
             let (mut rh, mut wh) = match match std::env::var_os("SWAYSOCK") {
                 Some(path) => UnixStream::connect(path).await,
                 None => {
@@ -47,7 +47,7 @@ impl SwaySocket {
                 }
             };
 
-            tokio::task::spawn_local(async move {
+            spawn_noerr(async move {
                 let mut wbuf = Vec::new();
                 loop {
                     debug_assert!(wbuf.is_empty());
