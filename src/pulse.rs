@@ -20,7 +20,7 @@ use libpulse_binding::mainloop::events::io::IoEventInternal;
 use libpulse_binding::mainloop::events::timer::TimeEventInternal;
 use libpulse_binding::volume::Volume;
 use libpulse_binding::proplist;
-use log::error;
+use log::{info,error};
 use once_cell::unsync::OnceCell;
 use std::rc::Rc;
 use std::cell::UnsafeCell;
@@ -855,9 +855,8 @@ pub fn read_in<F : FnOnce(&str) -> R, R>(_name : &str, target : &str, mut key : 
                     for info in si {
                         if Some(info.jack) == j_id {
                             let volume = Volume(info.volume);
-                            v.push_str(" - ");
                             v.push_str(volume.print().trim());
-                            v.push_str(" ");
+                            v.push_str(" - ");
                             if let Some(cid) = info.client {
                                 clients.take_in(|clients| {
                                     for client in clients {
@@ -882,6 +881,9 @@ pub fn read_in<F : FnOnce(&str) -> R, R>(_name : &str, target : &str, mut key : 
                 ji_list.take_in(|infos| {
                     for info in infos {
                         if info.name == name {
+                            if key == "text" && info.mute {
+                                return f("-");
+                            }
                             let volume = Volume(info.volume);
                             return f(volume.print().trim());
                         }
@@ -899,10 +901,13 @@ pub fn read_in<F : FnOnce(&str) -> R, R>(_name : &str, target : &str, mut key : 
                             break;
                         }
                     }
-                    f("")
+                    f("0")
                 })
             }
-            _ => f(""),
+            _ => {
+                info!("Unknown key '{}' in '{}'", key, name);
+                return f("");
+            }
         }
     })
 }

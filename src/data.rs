@@ -94,6 +94,12 @@ pub enum Module {
     },
     SwayMode(sway::Mode),
     SwayWorkspace(sway::Workspace),
+    Switch {
+        format : String,
+        cases : toml::value::Table,
+        default : String,
+        looped : Cell<bool>,
+    },
     Tray {
         spacing : String,
     },
@@ -248,6 +254,18 @@ impl Module {
             }
             Some("sway-workspace") => {
                 sway::Workspace::from_toml(value).map_or(Module::None, Module::SwayWorkspace)
+            }
+            Some("switch") => {
+                let format = toml_to_string(value.get("format")).unwrap_or_default();
+                let cases = match value.get("cases") {
+                    Some(toml::Value::Table(cases)) => cases.clone(),
+                    _ => {
+                        error!("'cases' must be a table in the 'switch' type");
+                        return Module::None;
+                    }
+                };
+                let default = toml_to_string(value.get("default")).unwrap_or_default();
+                Module::Switch { format, cases, default, looped : Cell::new(false) }
             }
             // "text" is an alias for "formatted"
             Some("tray") => {
@@ -420,7 +438,7 @@ impl Module {
                 error!("Cannot use '{}' in a text expansion", name);
                 f("")
             }
-            Module::None => f(""),
+
             Module::Clock { time, .. } => time.take_in(|s| f(s)),
             Module::Disk { contents, .. } => {
                 let vfs = contents.get();
@@ -440,24 +458,6 @@ impl Module {
                     _ => f("")
                 }
             }
-            Module::Value { value } => value.take_in(|s| f(s)),
-            Module::Item { value } => value.take_in(|s| f(s)),
-            Module::Pulse { target } => pulse::read_in(name, target, key, rt, f),
-            Module::ReadFile { contents, .. } if key == "raw" => contents.take_in(|s| f(s)),
-            Module::ReadFile { contents, .. } => contents.take_in(|s| f(s.trim())),
-            Module::Formatted { format, tooltip, looped } => {
-                if looped.get() {
-                    error!("Recursion detected when expanding {}", name);
-                    return f("");
-                }
-                looped.set(true);
-                let value = match key {
-                    "tooltip" => rt.format_or(&tooltip, &name),
-                    _ => rt.format_or(&format, &name),
-                };
-                looped.set(false);
-                f(&value)
-            }
             Module::Eval { format, looped } => {
                 if looped.get() {
                     error!("Recursion detected when expanding {}", name);
@@ -474,29 +474,6 @@ impl Module {
                     }
                 }
             }
-            Module::Regex { regex, text, replace, looped } => {
-                if looped.get() {
-                    error!("Recursion detected when expanding {}", name);
-                    return f("");
-                }
-                looped.set(true);
-                let text = rt.format_or(&text, &name);
-                looped.set(false);
-                if key == "" {
-                    let output = regex.replace_all(&text, replace.as_str());
-                    f(&output)
-                } else {
-                    if let Some(cap) = regex.captures(&text) {
-                        if let Ok(i) = key.parse() {
-                            f(cap.get(i).map_or("", |m| m.as_str()))
-                        } else {
-                            f(cap.name(key).map_or("", |m| m.as_str()))
-                        }
-                    } else {
-                        f("")
-                    }
-                }
-            }
             Module::ExecJson { command, value, .. } => {
                 let v = value.replace(JsonValue::Null);
                 let rv = f(v[key].as_str().unwrap_or_else(|| {
@@ -506,6 +483,21 @@ impl Module {
                 value.set(v);
                 rv
             }
+            Module::Formatted { format, tooltip, looped } => {
+                if looped.get() {
+                    error!("Recursion detected when expanding {}", name);
+                    return f("");
+                }
+                looped.set(true);
+                let value = match key {
+                    "tooltip" => rt.format_or(&tooltip, &name),
+                    _ => rt.format_or(&format, &name),
+                };
+                looped.set(false);
+                f(&value)
+            }
+            Module::Item { value } => value.take_in(|s| f(s)),
+            Module::MediaPlayer2 { mpris } => mpris.read_in(name, key, rt, f),
             Module::Meter { min, max, src, values, looped } => {
                 if looped.get() {
                     error!("Recursion detected when expanding {}", name);
@@ -532,9 +524,49 @@ impl Module {
                 looped.set(false);
                 f(&res)
             }
-            Module::MediaPlayer2 { mpris } => mpris.read_in(name, key, rt, f),
+            Module::None => f(""),
+            Module::Pulse { target } => pulse::read_in(name, target, key, rt, f),
+            Module::ReadFile { contents, .. } if key == "raw" => contents.take_in(|s| f(s)),
+            Module::ReadFile { contents, .. } => contents.take_in(|s| f(s.trim())),
+            Module::Regex { regex, text, replace, looped } => {
+                if looped.get() {
+                    error!("Recursion detected when expanding {}", name);
+                    return f("");
+                }
+                looped.set(true);
+                let text = rt.format_or(&text, &name);
+                looped.set(false);
+                if key == "" {
+                    let output = regex.replace_all(&text, replace.as_str());
+                    f(&output)
+                } else {
+                    if let Some(cap) = regex.captures(&text) {
+                        if let Ok(i) = key.parse() {
+                            f(cap.get(i).map_or("", |m| m.as_str()))
+                        } else {
+                            f(cap.name(key).map_or("", |m| m.as_str()))
+                        }
+                    } else {
+                        f("")
+                    }
+                }
+            }
             Module::SwayMode(mode) => mode.read_in(name, key, rt, f),
             Module::SwayWorkspace(ws) => ws.read_in(name, key, rt, f),
+            Module::Switch { format, cases, default, looped } => {
+                if looped.get() {
+                    error!("Recursion detected when expanding {}", name);
+                    return f("");
+                }
+                looped.set(true);
+                let text = rt.format_or(&format, &name);
+                let case = toml_to_string(cases.get(&text));
+                let case = case.as_ref().unwrap_or(default);
+                let text = rt.format_or(case, &name);
+                looped.set(false);
+                f(&text)
+            }
+            Module::Value { value } => value.take_in(|s| f(s)),
         }
     }
 
