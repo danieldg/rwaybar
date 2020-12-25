@@ -7,6 +7,7 @@ mod dbus;
 mod icon;
 mod item;
 mod mpris;
+mod pulse;
 mod state;
 mod sway;
 mod tray;

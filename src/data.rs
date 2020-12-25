@@ -1,6 +1,7 @@
 use crate::Variable as VariableTrait;
 use crate::state::Notifier;
 use crate::item::Item;
+use crate::pulse;
 use crate::sway;
 use crate::tray;
 use crate::util::{Cell,Fd,toml_to_string,toml_to_f64,spawn_noerr};
@@ -76,6 +77,9 @@ pub enum Module {
         looped : Cell<bool>,
     },
     None,
+    Pulse {
+        target : String,
+    },
     ReadFile {
         name : String,
         poll : f64,
@@ -200,6 +204,10 @@ impl Module {
             Some("mpris") => {
                 let mpris = MediaPlayer2::new();
                 Module::MediaPlayer2 { mpris }
+            }
+            Some("pulse") => {
+                let target = toml_to_string(value.get("target")).unwrap_or_default();
+                Module::Pulse { target }
             }
             Some("regex") => {
                 let text = value.get("text").and_then(|v| v.as_str()).unwrap_or_else(|| {
@@ -434,6 +442,7 @@ impl Module {
             }
             Module::Value { value } => value.take_in(|s| f(s)),
             Module::Item { value } => value.take_in(|s| f(s)),
+            Module::Pulse { target } => pulse::read_in(name, target, key, rt, f),
             Module::ReadFile { contents, .. } if key == "raw" => contents.take_in(|s| f(s)),
             Module::ReadFile { contents, .. } => contents.take_in(|s| f(s.trim())),
             Module::Formatted { format, tooltip, looped } => {

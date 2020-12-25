@@ -107,7 +107,7 @@ bg-alpha = 0.3
 spacing = 15
 padding = "0 0 4 0"
 margin = "0 0 0 -10"
-items = ["playing", "tray", "weather", "hdd", "bat", "cpu"]
+items = ["playing", "pulse-spk", "pulse-mic", "tray", "weather", "hdd", "bat", "cpu"]
 
 [music]
 type = "mpris"
@@ -128,6 +128,17 @@ on-click = { "send" = "music", "format" = "Next" }
 on-click-right = { "send" = "music", "format" = "Previous" }
 on-click-middle = { "send" = "music", "format" = "PlayPause" }
 on-click-backward = { "send" = "music", "format" = "Raise" }
+
+[pulse-spk]
+type = 'pulse'
+target = 'sink'
+# Instead of the default, you can specify a particular sink:
+# target = 'sink:alsa_output.pci-0000_00_1f.3.analog-stereo'
+# "pactl list" will show the available names
+
+[pulse-mic]
+type = 'pulse'
+target = 'source'
 
 [tray]
 type = "tray"
