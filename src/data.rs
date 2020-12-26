@@ -107,6 +107,7 @@ pub enum Module {
 
 #[derive(Debug)]
 pub enum IterationItem {
+    MediaPlayer2 { target : String },
     SwayWorkspace(sway::WorkspaceData),
 }
 
@@ -498,6 +499,7 @@ impl Module {
             }
             Module::Item { value } => value.take_in(|item| {
                 match item.as_deref() {
+                    Some(IterationItem::MediaPlayer2 { target }) => mpris::read_in(name, target, key, rt, f),
                     Some(IterationItem::SwayWorkspace(data)) => data.read_in(key, rt, f),
                     None => f(""),
                 }
@@ -605,6 +607,13 @@ impl Module {
                     }
                 }
             }
+            Module::Item { value : v } => v.take_in(|item| {
+                match item.as_deref() {
+                    Some(IterationItem::MediaPlayer2 { target }) => mpris::write(name, target, key, value, rt),
+                    Some(IterationItem::SwayWorkspace(data)) => data.write(key, value, rt),
+                    None => {}
+                }
+            }),
             Module::MediaPlayer2 { target } => mpris::write(name, target, key, value, rt),
             Module::Pulse { target } => pulse::do_write(name, target, key, value, rt),
             Module::SwayWorkspace(ws) => ws.write(name, key, value, rt),
@@ -625,8 +634,9 @@ impl Module {
         Module::Item { value : Cell::new(None) }
     }
 
-    pub fn read_focus_list<F : FnMut(bool, Rc<IterationItem>)>(&self, f : F) {
+    pub fn read_focus_list<F : FnMut(bool, Rc<IterationItem>)>(&self, rt : &Runtime, f : F) {
         match self {
+            Module::MediaPlayer2 { .. } => mpris::read_focus_list(rt, f),
             Module::SwayWorkspace(ws) => ws.read_focus_list(f),
             _ => ()
         }

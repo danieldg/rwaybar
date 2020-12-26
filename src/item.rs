@@ -684,7 +684,7 @@ impl Item {
                     }
                 };
                 ctx.cairo.rel_move_to(spacing, 0.0);
-                source.data.read_focus_list(|focus, item| {
+                source.data.read_focus_list(ctx.runtime, |focus, item| {
                     item_var.set(Some(item.clone()));
                     let x0 = ctx.cairo.get_current_point().0;
                     let mut ev = if focus {

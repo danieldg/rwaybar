@@ -280,6 +280,18 @@ impl WorkspaceData {
             _ => f("")
         }
     }
+
+    pub fn write(&self, key : &str, value : String, _rt : &Runtime) {
+        match key {
+            "switch" => SwaySocket::send(0, format!(r#"workspace --no-auto-back-and-forth "{}""#, value).as_bytes(), |_| ()),
+            "" if value == "switch" => {
+                SwaySocket::send(0, format!(r#"workspace --no-auto-back-and-forth "{}""#, self.name).as_bytes(), |_| ());
+            }
+            _ => {
+                error!("Ignoring write to item.{}", key);
+            }
+        }
+    }
 }
 
 impl WorkspacesData {

@@ -1,5 +1,6 @@
 use crate::dbus::get as get_dbus;
 use crate::dbus as dbus_util;
+use crate::data::IterationItem;
 use crate::state::{Runtime,NotifierList};
 use crate::util::{self,Cell};
 use dbus::message::Message;
@@ -218,14 +219,18 @@ pub fn read_in<F : FnOnce(&str) -> R, R>(_name : &str, target : &str, key : &str
 
             if let Some(player) = player {
                 match field {
+                    "player.name" => {
+                        f(&player.name[skip..])
+                    }
                     "length" => {
                         match player.meta.as_ref().and_then(|md| md.get("mpris:length")).and_then(|v| v.as_u64()) {
                             Some(len) => f(&format!("{}.{:06}", len / 1_000_000, len % 1_000_000)),
                             None => f(""),
                         }
                     }
-                    _ if field.contains(':') => {
-                        f(player.meta.as_ref().and_then(|md| md.get(field)).and_then(|v| v.as_str()).unwrap_or(""))
+                    _ if field.contains('.') => {
+                        let real_field = field.replace('.', ":");
+                        f(player.meta.as_ref().and_then(|md| md.get(&real_field).or(md.get(field))).and_then(|v| v.as_str()).unwrap_or(""))
                     }
                     // See http://www.freedesktop.org/wiki/Specifications/mpris-spec/metadata for
                     // a list of valid names
@@ -256,6 +261,22 @@ pub fn read_in<F : FnOnce(&str) -> R, R>(_name : &str, target : &str, key : &str
             }
         })
     })
+}
+
+pub fn read_focus_list<F : FnMut(bool, Rc<IterationItem>)>(rt : &Runtime, mut f : F) {
+    let players : Vec<_> = DATA.with(|cell| {
+        let state = cell.get_or_init(MediaPlayer2::new);
+        state.0.take_in_some(|inner| {
+            inner.interested.add(rt);
+
+            let skip = "org.mpris.MediaPlayer2.".len();
+            inner.players.iter().map(|p| (p.name[skip..].to_owned(), p.playing == Some(PlayState::Playing))).collect()
+        }).unwrap_or_default()
+    });
+
+    for (player, playing) in players {
+        f(playing, Rc::new(IterationItem::MediaPlayer2 { target : player }));
+    }
 }
 
 pub fn write(_name : &str, target : &str, key : &str, command : String, _rt : &Runtime) {

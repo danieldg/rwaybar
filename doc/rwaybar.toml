@@ -107,7 +107,7 @@ bg-alpha = 0.3
 spacing = 15
 padding = "0 0 4 0"
 margin = "0 0 0 -10"
-items = ["playing", "pulse-spk", "pulse-mic", "tray", "weather", "hdd", "bat", "cpu"]
+items = ["playing", "players", "pulse-spk", "pulse-mic", "tray", "weather", "hdd", "bat", "cpu"]
 
 [music]
 type = "mpris"
@@ -131,6 +131,22 @@ on-click = { "send" = "music", "format" = "Next" }
 on-click-right = { "send" = "music", "format" = "Previous" }
 on-click-middle = { "send" = "music", "format" = "PlayPause" }
 on-click-backward = { "send" = "music", "format" = "Raise" }
+
+[players]
+type = "focus-list"
+source = 'music'
+
+[players.focused-item]
+format = ""
+tooltip = "{item.player.name}: {item.title}"
+margin = "0 4 4 4"
+on-click = { "send" = "item", "format" = "Pause" }
+
+[players.item]
+format = ""
+tooltip = "{item.player.name}: {item.title}"
+margin = "0 4 4 4"
+on-click = { "send" = "item", "format" = "Play" }
 
 [pulse-spk]
 type = 'pulse'
