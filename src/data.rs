@@ -574,9 +574,6 @@ impl Module {
     pub fn write(&self, name : &str, key : &str, value : String, rt : &Runtime) {
         debug!("Writing {} to {}.{}", value, name, key);
         match self {
-            Module::Value { value : v } if key == "" => {
-                v.set(value);
-            }
             Module::ExecJson { stdin, .. } => {
                 let w = match stdin.take() {
                     None => {
@@ -604,8 +601,12 @@ impl Module {
                 }
             }
             Module::MediaPlayer2 { mpris } => mpris.write(name, key, value, rt),
+            Module::Pulse { target } => pulse::do_write(name, target, key, value, rt),
             Module::SwayMode(mode) => mode.write(name, key, value, rt),
             Module::SwayWorkspace(ws) => ws.write(name, key, value, rt),
+            Module::Value { value : v } if key == "" => {
+                v.set(value);
+            }
             _ => {
                 error!("Ignoring write to {}.{}", name, key);
             }

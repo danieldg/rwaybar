@@ -1,8 +1,12 @@
+use crate::state::NotifierList;
+use crate::state::Runtime;
+use crate::util::{self,Fd,Cell};
 use libc::timeval;
-use std::os::raw::c_void;
 use libpulse_binding::callbacks::ListResult;
+use libpulse_binding::context::introspect::{Introspector,SinkInfo,SourceInfo,ClientInfo,SinkInputInfo,SourceOutputInfo};
 use libpulse_binding::context::{self,Context};
-use libpulse_binding::context::introspect::{SinkInfo,SourceInfo,ClientInfo,SinkInputInfo,SourceOutputInfo};
+use libpulse_binding::context::subscribe::Facility;
+use libpulse_binding::context::subscribe::Operation;
 use libpulse_binding::def::RetvalActual;
 use libpulse_binding::error::PAErr;
 use libpulse_binding::mainloop::api::DeferEventCb;
@@ -11,30 +15,31 @@ use libpulse_binding::mainloop::api::IoEventCb;
 use libpulse_binding::mainloop::api::IoEventDestroyCb;
 use libpulse_binding::mainloop::api::Mainloop as MainloopTrait;
 use libpulse_binding::mainloop::api::MainloopApi;
-use libpulse_binding::mainloop::api::{MainloopInnerType,MainloopInternalType};
 use libpulse_binding::mainloop::api::TimeEventCb;
 use libpulse_binding::mainloop::api::TimeEventDestroyCb;
+use libpulse_binding::mainloop::api::{MainloopInnerType,MainloopInternalType};
 use libpulse_binding::mainloop::events::deferred::DeferEventInternal;
 use libpulse_binding::mainloop::events::io::FlagSet as IoEventFlagSet;
 use libpulse_binding::mainloop::events::io::IoEventInternal;
 use libpulse_binding::mainloop::events::timer::TimeEventInternal;
-use libpulse_binding::volume::Volume;
 use libpulse_binding::proplist;
-use log::{info,error};
+use libpulse_binding::volume::{ChannelVolumes,Volume};
+use log::{debug,info,error};
 use once_cell::unsync::OnceCell;
-use std::rc::Rc;
 use std::cell::UnsafeCell;
 use std::future::Future;
+use std::os::raw::c_void;
 use std::pin::Pin;
+use std::rc::{Rc,Weak};
 use std::task;
 use std::time::{Duration,SystemTime,UNIX_EPOCH};
 use tokio::io::unix::AsyncFd;
-use crate::util::{self,Fd,Cell};
-use crate::state::NotifierList;
-use crate::state::Runtime;
 
+/// An error type that prints an error message when created using ?
+///
+/// Needed because PAErr doesn't implement std::error::Error
 #[derive(Debug)]
-pub struct Error;
+struct Error;
 
 impl From<PAErr> for Error {
     fn from(e : PAErr) -> Error {
@@ -50,9 +55,9 @@ impl From<&str> for Error {
     }
 }
 
-#[derive(Debug)]
 enum Item {
     Defer {
+        main : Weak<MainInner>,
         dead : bool,
         enabled : bool,
         cb : Option<DeferEventCb>,
@@ -60,6 +65,7 @@ enum Item {
         free : Option<DeferEventDestroyCb>,
     },
     Timer {
+        main : Weak<MainInner>,
         dead : bool,
         ts : Cell<Option<Duration>>,
         cb : Option<TimeEventCb>,
@@ -67,6 +73,7 @@ enum Item {
         free : Option<TimeEventDestroyCb>,
     },
     Event {
+        main : Weak<MainInner>,
         dead : Cell<bool>,
         fd : i32,
         afd : Cell<Option<AsyncFd<Fd>>>,
@@ -101,19 +108,23 @@ impl Item {
     }
 }
 
-#[derive(Debug)]
-struct Inner {
-    items : Vec<Box<Item>>,
-}
-
-struct TokioMain {
+/// An implementation of the [pulse](libpulse_binding) [Mainloop](MainloopTrait) trait that
+/// dispatches through tokio.
+pub struct TokioMain {
     mi : Rc<MainInner>,
 }
 
-struct MainInner {
+/// The state structure passed to pulse.
+///
+/// Note: this structure is pinned in memory because it has a self-reference (api.userdata).
+pub struct MainInner {
     api : MainloopApi,
-    data : UnsafeCell<Inner>,
+    /// Note: items are stored as raw pointers because the actual items are also available to C and
+    /// via iter_get_item.  Otherwise, they are Box pointers owned by this vector.
+    items : Cell<Vec<*mut Item>>,
+    /// Note: only allow access following the rules for Pin
     sleep : UnsafeCell<Option<tokio::time::Sleep>>,
+    waker : Cell<Option<task::Waker>>,
 }
 
 impl MainloopTrait for TokioMain {
@@ -123,13 +134,13 @@ impl MainloopTrait for TokioMain {
     }
 }
 
-impl MainloopInternalType for Inner {
+impl MainloopInternalType for MainInner {
 }
 
 impl MainloopInnerType for MainInner {
-    type I = Inner;
-    fn get_ptr(&self) -> *mut Inner {
-        self.data.get()
+    type I = Self;
+    fn get_ptr(&self) -> *mut Self {
+        panic!("This function is not well-defined and is never called")
     }
 
     fn get_api(&self) -> &MainloopApi {
@@ -145,79 +156,84 @@ impl Drop for MainInner {
     fn drop(&mut self) {
         unsafe {
             // drop the circular reference set up by TokioMain::new
-            std::rc::Weak::from_raw(self.api.userdata);
+            Weak::from_raw(self.api.userdata);
+            // drop any remaining items (they should all be dead anyway)
+            for item in self.items.replace(Vec::new()) {
+                Box::from_raw(item);
+            }
         }
     }
 }
 
 impl TokioMain {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let mut mi = Rc::new(MainInner {
             api : MainloopApi {
                 userdata : 0 as *mut _,
-                io_new : Some(Inner::io_new),
-                io_enable : Some(Inner::io_enable),
-                io_free : Some(Inner::io_free),
-                io_set_destroy : Some(Inner::io_set_destroy),
-                time_new : Some(Inner::time_new),
-                time_restart : Some(Inner::time_restart),
-                time_free : Some(Inner::time_free),
-                time_set_destroy : Some(Inner::time_set_destroy),
-                defer_new : Some(Inner::defer_new),
-                defer_enable : Some(Inner::defer_enable),
-                defer_free : Some(Inner::defer_free),
-                defer_set_destroy : Some(Inner::defer_set_destroy),
-                quit : Some(Inner::quit),
+                io_new : Some(MainInner::io_new),
+                io_enable : Some(MainInner::io_enable),
+                io_free : Some(MainInner::io_free),
+                io_set_destroy : Some(MainInner::io_set_destroy),
+                time_new : Some(MainInner::time_new),
+                time_restart : Some(MainInner::time_restart),
+                time_free : Some(MainInner::time_free),
+                time_set_destroy : Some(MainInner::time_set_destroy),
+                defer_new : Some(MainInner::defer_new),
+                defer_enable : Some(MainInner::defer_enable),
+                defer_free : Some(MainInner::defer_free),
+                defer_set_destroy : Some(MainInner::defer_set_destroy),
+                quit : Some(MainInner::quit),
             },
-            data : UnsafeCell::new(Inner {
-                items : Vec::new(),
-            }),
+            items : Cell::new(Vec::new()),
             sleep : UnsafeCell::new(None),
+            waker : Cell::new(None),
         });
         let v = Rc::get_mut(&mut mi).unwrap();
-        v.api.userdata = v.data.get() as *mut _; // reserved below
+        v.api.userdata = v as *mut MainInner as *mut _;
         Rc::downgrade(&mi).into_raw();
         TokioMain { mi }
     }
 
     fn iter_get_item(&mut self, i : usize) -> Option<(&MainloopApi, &Item)> {
-        loop {
-            let api = &self.mi.api;
-            let data = self.mi.data.get();
-            let items = unsafe { &mut (*data).items };
-            if i >= items.len() {
-                return None;
-            }
-            if items[i].is_dead() {
-                let mut dead = items.swap_remove(i);
-                match &*dead {
-                    &Item::Defer { free : Some(cb), userdata, .. } => {
-                        let raw_item = &mut *dead as *mut Item;
-                        cb(api, raw_item as *mut _, userdata);
-                    }
-                    &Item::Timer { free : Some(cb), userdata, .. } => {
-                        let raw_item = &mut *dead as *mut Item;
-                        cb(api, raw_item as *mut _, userdata);
-                    }
-                    &Item::Event { free : Some(cb), userdata, .. } => {
-                        let raw_item = &mut *dead as *mut Item;
-                        cb(api, raw_item as *mut _, userdata);
-                    }
-                    _ => {}
+        let api = &self.mi.api;
+        self.mi.items.take_in(|items| {
+            loop {
+                if i >= items.len() {
+                    return None;
                 }
-                drop(dead);
-                continue;
+                if unsafe { (*items[i]).is_dead() } {
+                    let mut dead = unsafe { Box::from_raw(items.swap_remove(i)) };
+                    match &*dead {
+                        &Item::Defer { free : Some(cb), userdata, .. } => {
+                            let raw_item = &mut *dead as *mut Item;
+                            cb(api, raw_item as *mut _, userdata);
+                        }
+                        &Item::Timer { free : Some(cb), userdata, .. } => {
+                            let raw_item = &mut *dead as *mut Item;
+                            cb(api, raw_item as *mut _, userdata);
+                        }
+                        &Item::Event { free : Some(cb), userdata, .. } => {
+                            let raw_item = &mut *dead as *mut Item;
+                            cb(api, raw_item as *mut _, userdata);
+                        }
+                        _ => {}
+                    }
+                    drop(dead);
+                    continue;
+                }
+                let item = unsafe { &*items[i] };
+                return Some((api, item));
             }
-            return Some((api, &mut *items[i]));
-        }
+        })
     }
 
-    fn tick(&mut self, ctx : &mut task::Context) -> task::Poll<()> {
+    pub fn tick(&mut self, ctx : &mut task::Context) -> task::Poll<()> {
         let inow = tokio::time::Instant::now();
         let now  = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let mut wake = None::<Duration>;
         let mut rv = task::Poll::Pending;
         let mut i = 0;
+        self.mi.waker.set(Some(ctx.waker().clone()));
         while let Some((api, item)) = self.iter_get_item(i) {
             let raw_item = item as *const Item;
             i += 1;
@@ -320,6 +336,8 @@ impl TokioMain {
             }
         }
         if rv.is_pending() {
+            // Note: we can't pin the Rc normally because the Mainloop trait inner() returns an
+            // unpinned Rc.  However, the value is in fact pinned.
             let mut sleep = unsafe { Pin::new_unchecked(&mut *self.mi.sleep.get()) };
             if let Some(d) = wake {
                 sleep.set(Some(tokio::time::sleep_until(inow + d)));
@@ -338,26 +356,47 @@ impl TokioMain {
     }
 }
 
-impl Inner {
+impl MainInner {
+    unsafe fn from_api(api : *const MainloopApi) -> Rc<Self> {
+        let ptr = Weak::from_raw((*api).userdata as *const Self);
+        let rv = ptr.upgrade();
+        ptr.into_raw(); // we only want to borrow the Weak, not own it...
+        rv.expect("Called from_api on a dropped MainloopApi")
+    }
+
+    fn push(&self, item : Box<Item>) {
+        self.items.take_in(|items| {
+            items.push(Box::into_raw(item));
+        });
+    }
+
+    fn wake(main : &Weak<MainInner>) {
+        main.upgrade()
+            .and_then(|inner| inner.waker.replace(None))
+            .map(|waker| waker.wake());
+    }
+
     extern "C" fn io_new(a: *const MainloopApi, fd: i32, events: IoEventFlagSet, cb: Option<IoEventCb>, userdata: *mut c_void) -> *mut IoEventInternal {
         unsafe {
-            let inner : &mut Inner = &mut *((*a).userdata as *mut _);
+            let inner = MainInner::from_api(a);
             let events = Cell::new(events);
             let mut item = Box::new(Item::Event {
                 fd, cb, events, userdata, free : None,
                 afd : Cell::new(None), dead : Cell::new(false),
+                main : Rc::downgrade(&inner),
             });
             let rv = &mut *item as *mut Item as *mut _;
-            inner.items.push(item);
+            inner.push(item);
             rv
         }
     }
     extern "C" fn io_enable(e: *mut IoEventInternal, new: IoEventFlagSet) {
         unsafe {
             let item : *mut Item = e.cast();
-            match &mut *item {
-                Item::Event { events, .. } => {
+            match &*item {
+                Item::Event { main, events, .. } => {
                     events.set(new);
+                    MainInner::wake(main);
                 }
                 _ => panic!()
             }
@@ -366,7 +405,7 @@ impl Inner {
     extern "C" fn io_free(e: *mut IoEventInternal) {
         unsafe {
             let item : *mut Item = e.cast();
-            match &mut *item {
+            match &*item {
                 Item::Event { dead, afd, .. } => {
                     dead.set(true);
                     afd.set(None);
@@ -388,24 +427,25 @@ impl Inner {
     }
     extern "C" fn time_new(a: *const MainloopApi, tv: *const timeval, cb: Option<TimeEventCb>, userdata: *mut c_void) -> *mut TimeEventInternal {
         unsafe {
-            let inner : &mut Inner = &mut *((*a).userdata as *mut _);
+            let inner = MainInner::from_api(a);
             let tv = tv.read();
             let ts = Cell::new(Some(Duration::from_secs(tv.tv_sec as u64) + Duration::from_micros(tv.tv_usec as u64)));
             let mut item = Box::new(Item::Timer {
-                ts, cb, userdata, free : None, dead : false
+                main : Rc::downgrade(&inner), ts, cb, userdata, free : None, dead : false,
             });
             let rv = &mut *item as *mut Item as *mut _;
-            inner.items.push(item);
+            inner.push(item);
             rv
         }
     }
     extern "C" fn time_restart(e: *mut TimeEventInternal, tv: *const timeval) {
         unsafe {
             let item : *mut Item = e.cast();
-            match &mut *item {
-                Item::Timer { ts, .. } => {
+            match &*item {
+                Item::Timer { main, ts, .. } => {
                     let tv = tv.read();
                     ts.set(Some(Duration::from_secs(tv.tv_sec as u64) + Duration::from_micros(tv.tv_usec as u64)));
+                    MainInner::wake(main);
                 }
                 _ => panic!()
             }
@@ -430,12 +470,12 @@ impl Inner {
     }
     extern "C" fn defer_new(a: *const MainloopApi, cb: Option<DeferEventCb>, userdata: *mut c_void) -> *mut DeferEventInternal {
         unsafe {
-            let inner : &mut Inner = &mut *((*a).userdata as *mut _);
+            let inner = MainInner::from_api(a);
             let mut item = Box::new(Item::Defer {
-                cb, userdata, free : None, dead : false, enabled : true
+                main : Rc::downgrade(&inner), cb, userdata, free : None, dead : false, enabled : true
             });
             let rv = &mut *item as *mut Item as *mut _;
-            inner.items.push(item);
+            inner.push(item);
             rv
         }
     }
@@ -443,7 +483,12 @@ impl Inner {
         unsafe {
             let item : *mut Item = e.cast();
             match &mut *item {
-                Item::Defer { enabled, .. } => *enabled = b != 0,
+                Item::Defer { main, enabled, .. } => {
+                    *enabled = b != 0;
+                    if b != 0 {
+                        MainInner::wake(main);
+                    }
+                }
                 _ => panic!()
             }
         }
@@ -466,44 +511,47 @@ impl Inner {
         }
     }
     extern "C" fn quit(_: *const MainloopApi, retval: RetvalActual) {
-        error!("Got pulsaudio quit: {}", retval);
+        error!("Got pulseaudio quit request: {}", retval);
     }
 }
 
-thread_local! {
-    static DATA : OnceCell<Rc<PulseData>> = Default::default();
-}
-
-/// Information on one audio jack (source or sink)
+/// Information on one audio port (source or sink)
 #[derive(Debug)]
-struct JackInfo {
+struct PortInfo {
     index : u32,
     name : String,
     desc : String,
     port : String,
-    volume : u32,
+    volume : ChannelVolumes,
     mute : bool,
 }
 
+/// Information on one playback or recording stream
 #[derive(Debug)]
 struct WireInfo {
     index : u32,
     client : Option<u32>,
-    jack : u32,
+    port : u32,
     volume : u32,
     mute : bool,
 }
 
+/// A singleton structure that collects introspection data from the pulse server
 #[derive(Debug,Default)]
 struct PulseData {
+    context : Cell<Option<Context>>,
     default_sink : Cell<String>,
     default_source : Cell<String>,
-    sources : Cell<Vec<JackInfo>>,
-    sinks : Cell<Vec<JackInfo>>,
+    sources : Cell<Vec<PortInfo>>,
+    sinks : Cell<Vec<PortInfo>>,
     clients : Cell<Vec<(u32, String)>>,
     sink_ins : Cell<Vec<WireInfo>>,
     src_outs : Cell<Vec<WireInfo>>,
     interested : Cell<NotifierList>,
+}
+
+thread_local! {
+    static DATA : OnceCell<Rc<PulseData>> = Default::default();
 }
 
 impl PulseData {
@@ -512,7 +560,9 @@ impl PulseData {
 
         let rv = me.clone();
         util::spawn_noerr(async move {
-            let _ = me.mainloop().await;
+            match me.mainloop().await {
+                Ok(()) | Err(Error) => {}
+            }
         });
 
         rv
@@ -523,7 +573,7 @@ impl PulseData {
 
         let mut props = proplist::Proplist::new().ok_or("proplist")?;
         props.set_str(proplist::properties::APPLICATION_NAME, "rwaybar").unwrap();
-        let mut context = Context::new_with_proplist(&main, "rwaybar-ctx", &props).ok_or("context")?;
+        let mut context = Context::new_with_proplist(&main, "rwaybar", &props).ok_or("context")?;
         context.connect(None, context::FlagSet::NOFAIL, None)?;
 
         loop {
@@ -539,86 +589,20 @@ impl PulseData {
             }
         }
 
+        // now that the context is ready, subscribe to changes and query the current state
         let data = self.clone();
         let inspect = context.introspect();
         context.set_subscribe_callback(Some(Box::new(move |facility, op, idx| {
-            use libpulse_binding::context::subscribe::Facility;
-            use libpulse_binding::context::subscribe::Operation;
-            match (facility, op) {
-                (Some(Facility::Sink), Some(Operation::New)) |
-                (Some(Facility::Sink), Some(Operation::Changed)) => {
-                    let data = data.clone();
-                    inspect.get_sink_info_by_index(idx, move |item| {
-                        data.add_sink(item);
-                    });
-                }
-                (Some(Facility::Sink), Some(Operation::Removed)) => {
-                    data.sinks.take_in(|sinks| {
-                        sinks.retain(|info| info.index != idx);
-                    });
-                    data.interested.take().notify_data();
-                }
-                (Some(Facility::Source), Some(Operation::New)) |
-                (Some(Facility::Source), Some(Operation::Changed)) => {
-                    let data = data.clone();
-                    inspect.get_source_info_by_index(idx, move |item| {
-                        data.add_source(item);
-                    });
-                }
-                (Some(Facility::Source), Some(Operation::Removed)) => {
-                    data.sources.take_in(|sources| {
-                        sources.retain(|info| info.index != idx);
-                    });
-                    data.interested.take().notify_data();
-                }
-                (Some(Facility::Client), Some(Operation::New)) |
-                (Some(Facility::Client), Some(Operation::Changed)) => {
-                    let data = data.clone();
-                    inspect.get_client_info(idx, move |item| {
-                        data.add_client(item);
-                    });
-                }
-                (Some(Facility::Client), Some(Operation::Removed)) => {
-                    data.clients.take_in(|clients| {
-                        clients.retain(|info| info.0 != idx);
-                    });
-                    data.interested.take().notify_data();
-                }
-                (Some(Facility::SinkInput), Some(Operation::New)) |
-                (Some(Facility::SinkInput), Some(Operation::Changed)) => {
-                    let data = data.clone();
-                    inspect.get_sink_input_info(idx, move |item| {
-                        data.add_sink_input(item);
-                    });
-                }
-                (Some(Facility::SinkInput), Some(Operation::Removed)) => {
-                    data.sink_ins.take_in(|sink_ins| {
-                        sink_ins.retain(|info| info.index != idx);
-                    });
-                    data.interested.take().notify_data();
-                }
-                (Some(Facility::SourceOutput), Some(Operation::New)) |
-                (Some(Facility::SourceOutput), Some(Operation::Changed)) => {
-                    let data = data.clone();
-                    inspect.get_source_output_info(idx, move |item| {
-                        data.add_source_output(item);
-                    });
-                }
-                (Some(Facility::SourceOutput), Some(Operation::Removed)) => {
-                    data.src_outs.take_in(|src_outs| {
-                        src_outs.retain(|info| info.index != idx);
-                    });
-                    data.interested.take().notify_data();
-                }
-                _ => {
-                    dbg!(facility, op, idx);
-                }
-            }
+            data.subscribe_cb(&inspect, facility, op, idx);
         })));
 
-        let op = context.subscribe(context::subscribe::InterestMaskSet::ALL, |_| ());
-        std::mem::forget(op);
+        context.subscribe(context::subscribe::InterestMaskSet::ALL, |_| ());
+
         let inspect = context.introspect();
+
+        // hand off the context so it's available to callers
+        self.context.set(Some(context));
+
         let data = self.clone();
         inspect.get_server_info(move |info| {
             if let Some(name) = &info.default_sink_name {
@@ -659,16 +643,87 @@ impl PulseData {
         }
     }
 
+    fn subscribe_cb(self : &Rc<Self>, inspect : &Introspector, facility : Option<Facility>, op : Option<Operation>, idx : u32) {
+        match (facility, op) {
+            (Some(Facility::Sink), Some(Operation::New)) |
+            (Some(Facility::Sink), Some(Operation::Changed)) => {
+                let data = self.clone();
+                inspect.get_sink_info_by_index(idx, move |item| {
+                    data.add_sink(item);
+                });
+            }
+            (Some(Facility::Sink), Some(Operation::Removed)) => {
+                self.sinks.take_in(|sinks| {
+                    sinks.retain(|info| info.index != idx);
+                });
+                self.interested.take().notify_data();
+            }
+            (Some(Facility::Source), Some(Operation::New)) |
+            (Some(Facility::Source), Some(Operation::Changed)) => {
+                let data = self.clone();
+                inspect.get_source_info_by_index(idx, move |item| {
+                    data.add_source(item);
+                });
+            }
+            (Some(Facility::Source), Some(Operation::Removed)) => {
+                self.sources.take_in(|sources| {
+                    sources.retain(|info| info.index != idx);
+                });
+                self.interested.take().notify_data();
+            }
+            (Some(Facility::Client), Some(Operation::New)) |
+            (Some(Facility::Client), Some(Operation::Changed)) => {
+                let data = self.clone();
+                inspect.get_client_info(idx, move |item| {
+                    data.add_client(item);
+                });
+            }
+            (Some(Facility::Client), Some(Operation::Removed)) => {
+                self.clients.take_in(|clients| {
+                    clients.retain(|info| info.0 != idx);
+                });
+                self.interested.take().notify_data();
+            }
+            (Some(Facility::SinkInput), Some(Operation::New)) |
+            (Some(Facility::SinkInput), Some(Operation::Changed)) => {
+                let data = self.clone();
+                inspect.get_sink_input_info(idx, move |item| {
+                    data.add_sink_input(item);
+                });
+            }
+            (Some(Facility::SinkInput), Some(Operation::Removed)) => {
+                self.sink_ins.take_in(|sink_ins| {
+                    sink_ins.retain(|info| info.index != idx);
+                });
+                self.interested.take().notify_data();
+            }
+            (Some(Facility::SourceOutput), Some(Operation::New)) |
+            (Some(Facility::SourceOutput), Some(Operation::Changed)) => {
+                let data = self.clone();
+                inspect.get_source_output_info(idx, move |item| {
+                    data.add_source_output(item);
+                });
+            }
+            (Some(Facility::SourceOutput), Some(Operation::Removed)) => {
+                self.src_outs.take_in(|src_outs| {
+                    src_outs.retain(|info| info.index != idx);
+                });
+                self.interested.take().notify_data();
+            }
+            _ => { }
+        }
+    }
+
     fn add_sink(&self, item : ListResult<&SinkInfo>) {
         self.interested.take().notify_data();
         match item {
             ListResult::Item(info) => {
-                let pi = JackInfo {
+                let pi = PortInfo {
                     index: info.index,
                     name : info.name.as_deref().unwrap_or("").to_owned(),
                     desc : info.description.as_deref().unwrap_or("").to_owned(),
                     port : info.active_port.as_ref().and_then(|port| port.description.as_deref()).unwrap_or("").to_owned(),
-                    volume : info.volume.avg().0,
+                    volume : info.volume,
                     mute : info.mute,
                 };
                 self.sinks.take_in(|sinks| {
@@ -682,7 +737,7 @@ impl PulseData {
                 });
             }
             ListResult::End => {}
-            ListResult::Error => error!("get_sink_info failed"),
+            ListResult::Error => debug!("get_sink_info failed"),
         }
     }
 
@@ -690,12 +745,12 @@ impl PulseData {
         self.interested.take().notify_data();
         match item {
             ListResult::Item(info) => {
-                let pi = JackInfo {
+                let pi = PortInfo {
                     index: info.index,
                     name : info.name.as_deref().unwrap_or("").to_owned(),
                     desc : info.description.as_deref().unwrap_or("").to_owned(),
                     port : info.active_port.as_ref().and_then(|port| port.description.as_deref()).unwrap_or("").to_owned(),
-                    volume : info.volume.avg().0,
+                    volume : info.volume,
                     mute : info.mute,
                 };
                 self.sources.take_in(|sources| {
@@ -709,7 +764,7 @@ impl PulseData {
                 });
             }
             ListResult::End => {}
-            ListResult::Error => error!("get_source_info failed"),
+            ListResult::Error => debug!("get_source_info failed"),
         }
     }
 
@@ -729,7 +784,7 @@ impl PulseData {
                 });
             }
             ListResult::End => {}
-            ListResult::Error => error!("get_client_info failed"),
+            ListResult::Error => debug!("get_client_info failed"),
         }
     }
 
@@ -741,7 +796,7 @@ impl PulseData {
                     let new = WireInfo {
                         index : info.index,
                         client : info.client,
-                        jack : info.sink,
+                        port : info.sink,
                         mute : info.mute,
                         volume : info.volume.avg().0,
                     };
@@ -755,7 +810,7 @@ impl PulseData {
                 });
             }
             ListResult::End => {}
-            ListResult::Error => error!("get_sink_input failed"),
+            ListResult::Error => debug!("get_sink_input failed"),
         }
     }
 
@@ -767,7 +822,7 @@ impl PulseData {
                     let new = WireInfo {
                         index : info.index,
                         client : info.client,
-                        jack : info.source,
+                        port : info.source,
                         mute : info.mute,
                         volume : info.volume.avg().0,
                     };
@@ -781,12 +836,68 @@ impl PulseData {
                 });
             }
             ListResult::End => {}
-            ListResult::Error => error!("get_source_output failed"),
+            ListResult::Error => debug!("get_source_output failed"),
         }
+    }
+
+    pub fn with_target<F,R>(&self, target : &str, f : F) -> R
+        where F : FnOnce(Option<&mut PortInfo>, bool, &[WireInfo], &[(u32, String)]) -> R
+    {
+        let name;
+        let is_sink;
+        let pi_list;
+        let wi_list;
+
+        match target {
+            "sink" | "speaker" | "sink:default" => {
+                name = self.default_sink.take_in(|v| v.clone());
+                is_sink = true;
+                pi_list = &self.sinks;
+                wi_list = &self.sink_ins;
+            }
+            t if t.starts_with("sink:") => {
+                name = t[5..].to_owned();
+                is_sink = true;
+                pi_list = &self.sinks;
+                wi_list = &self.sink_ins;
+            }
+            "source" | "mic" | "source:default" => {
+                name = self.default_source.take_in(|v| v.clone());
+                is_sink = false;
+                pi_list = &self.sources;
+                wi_list = &self.src_outs;
+            }
+            t if t.starts_with("source:") => {
+                name = t[7..].to_owned();
+                is_sink = false;
+                pi_list = &self.sources;
+                wi_list = &self.src_outs;
+            }
+            _ => {
+                error!("Invalid target specification '{}' - should be source:<name> or sink:<name>", target);
+                name = String::new();
+                is_sink = false;
+                pi_list = &self.sources;
+                wi_list = &self.src_outs;
+            }
+        }
+
+        self.clients.take_in(|clients| {
+            wi_list.take_in(|wi| {
+                pi_list.take_in(|infos| {
+                    for info in infos {
+                        if info.name == name {
+                            return f(Some(info), is_sink, &wi, &clients);
+                        }
+                    }
+                    f(None, is_sink, &[], &clients)
+                })
+            })
+        })
     }
 }
 
-pub fn read_in<F : FnOnce(&str) -> R, R>(_name : &str, target : &str, mut key : &str, rt : &Runtime, f : F) -> R {
+pub fn read_in<F : FnOnce(&str) -> R, R>(cfg_name : &str, target : &str, mut key : &str, rt : &Runtime, f : F) -> R {
     let mut target = target;
     if target.is_empty() {
         if let Some(pos) = key.rfind('.') {
@@ -800,114 +911,151 @@ pub fn read_in<F : FnOnce(&str) -> R, R>(_name : &str, target : &str, mut key : 
         let pulse = cell.get_or_init(PulseData::init);
         pulse.interested.take_in(|interest| interest.add(&rt));
 
-        let name;
-        let ji_list;
-        let wi_list;
+        pulse.with_target(target, |port, _is_sink, wires, clients| {
+            let port = match port {
+                Some(port) => port,
+                None => {
+                    return f("");
+                }
+            };
+            match key {
+                "tooltip" => {
+                    let mut v = String::new();
+                    let volume = port.volume.avg();
+                    v.push_str(volume.print().trim());
+                    v.push_str(" - ");
+                    v.push_str(&port.port);
+                    v.push_str(" on ");
+                    v.push_str(&port.desc);
+                    v.push_str("\n");
+                    let p_id = port.index;
 
-        match target {
-            "sink" | "speaker" | "sink:default" => {
-                name = pulse.default_sink.take_in(|v| v.clone());
-                ji_list = &pulse.sinks;
-                wi_list = &pulse.sink_ins;
-            }
-            t if t.starts_with("sink:") => {
-                name = t[5..].to_owned();
-                ji_list = &pulse.sinks;
-                wi_list = &pulse.sink_ins;
-            }
-            "source" | "mic" | "source:default" => {
-                name = pulse.default_source.take_in(|v| v.clone());
-                ji_list = &pulse.sources;
-                wi_list = &pulse.src_outs;
-            }
-            t if t.starts_with("source:") => {
-                name = t[7..].to_owned();
-                ji_list = &pulse.sources;
-                wi_list = &pulse.src_outs;
-            }
-            _ => {
-                error!("Invalid target specification '{}' - should be source:<name> or sink:<name>", target);
-                return f("");
-            }
-        }
-
-        match key {
-            "tooltip" => {
-                let mut v = String::new();
-                let mut j_id = None;
-                let clients = &pulse.clients;
-                ji_list.take_in(|infos| {
-                    for info in infos {
-                        if info.name == name {
-                            let volume = Volume(info.volume);
-                            v.push_str(volume.print().trim());
-                            v.push_str(" - ");
-                            v.push_str(&info.port);
-                            v.push_str(" on ");
-                            v.push_str(&info.desc);
-                            v.push_str("\n");
-                            j_id = Some(info.index);
-                        }
-                    }
-                });
-
-                wi_list.take_in(|si| {
-                    for info in si {
-                        if Some(info.jack) == j_id {
+                    for info in wires {
+                        if info.port == p_id {
                             let volume = Volume(info.volume);
                             v.push_str(volume.print().trim());
                             v.push_str(" - ");
                             if let Some(cid) = info.client {
-                                clients.take_in(|clients| {
-                                    for client in clients {
-                                        if client.0 == cid {
-                                            v.push_str(&client.1);
-                                            return;
-                                        }
+                                for client in clients {
+                                    if client.0 == cid {
+                                        v.push_str(&client.1);
+                                        break;
                                     }
-                                });
+                                }
                             } else {
-                                v.push_str("?");
+                                v.push_str("(no client)");
                             }
                             v.push_str("\n");
                         }
                     }
-                });
-
-                v.pop();
-                f(&v)
-            }
-            "text" | "volume" => {
-                ji_list.take_in(|infos| {
-                    for info in infos {
-                        if info.name == name {
-                            if key == "text" && info.mute {
-                                return f("-");
-                            }
-                            let volume = Volume(info.volume);
-                            return f(volume.print().trim());
-                        }
+                    v.pop();
+                    f(&v)
+                }
+                "text" | "volume" => {
+                    if key == "text" && port.mute {
+                        f("-")
+                    } else {
+                        let volume = port.volume.avg();
+                        f(volume.print().trim())
                     }
+                }
+                "mute" => {
+                    if port.mute {
+                        f("1")
+                    } else {
+                        f("0")
+                    }
+                }
+                _ => {
+                    info!("Unknown key '{}' in '{}'", key, cfg_name);
                     f("")
-                })
+                }
             }
-            "mute" => {
-                ji_list.take_in(|infos| {
-                    for info in infos {
-                        if info.name == name {
-                            if info.mute {
-                                return f("1")
-                            }
-                            break;
-                        }
-                    }
-                    f("0")
-                })
-            }
-            _ => {
-                info!("Unknown key '{}' in '{}'", key, name);
-                return f("");
-            }
-        }
+        })
     })
+}
+
+pub fn do_write(_name : &str, target : &str, mut key : &str, value : String, rt : &Runtime) {
+    let mut target = target;
+    if target.is_empty() {
+        if let Some(pos) = key.rfind('.') {
+            target = &key[..pos];
+            key = &key[pos + 1..];
+        } else {
+            target = "sink";
+        }
+    }
+    DATA.with(|cell| {
+        let pulse = cell.get_or_init(PulseData::init);
+
+        pulse.context.take_in_some(|ctx| {
+            pulse.with_target(target, |port, is_sink, _wires, _clients| {
+                let port = match port {
+                    Some(port) => port,
+                    None => {
+                        info!("Ignoring write to unknown item '{}'", target);
+                        return;
+                    }
+                };
+
+                match key {
+                    "volume" => {
+                        let mut amt = &value[..];
+                        let dir = amt.chars().next();
+                        if matches!(dir, Some('+') | Some('-')) {
+                            amt = &amt[1..];
+                        }
+                        if amt.ends_with('%') {
+                            amt = &amt[..amt.len() - 1];
+                        }
+                        let step = match amt.parse::<f64>() {
+                            _ if amt.is_empty() => 1.0,
+                            Ok(v) => v,
+                            Err(e) => {
+                                error!("Cannot parse volume adjustment '{}': {}", value, e);
+                                return;
+                            }
+                        };
+                        let value = Volume::NORMAL.0 as f64 * step / 100.0;
+                        match dir {
+                            Some('+') => { port.volume.increase(Volume(value as u32)); }
+                            Some('-') => { port.volume.decrease(Volume(value as u32)); }
+                            _ => { port.volume.scale(Volume(value as u32)); }
+                        }
+                        if is_sink {
+                            ctx.introspect().set_sink_volume_by_index(port.index, &port.volume, None);
+                        } else {
+                            ctx.introspect().set_source_volume_by_index(port.index, &port.volume, None);
+                        }
+                        rt.notify.notify_data();
+                    }
+                    "mute" => {
+                        let old = port.mute;
+                        let new = match &*value {
+                            "toggle" => !old,
+                            "on" | "1" => true,
+                            "off" | "0" => false,
+                            _ => {
+                                error!("Invalid mute request '{}'", value);
+                                return;
+                            }
+                        };
+                        if old == new {
+                            return;
+                        }
+                        port.mute = new;
+                        if is_sink {
+                            ctx.introspect().set_sink_mute_by_index(port.index, new, None);
+                        } else {
+                            ctx.introspect().set_source_mute_by_index(port.index, new, None);
+                        }
+                        rt.notify.notify_data();
+                    }
+                    _ => {
+                        info!("Ignoring write to unknown key '{}'", target);
+                    }
+                }
+            });
+        });
+    });
 }
