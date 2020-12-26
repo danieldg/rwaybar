@@ -111,17 +111,20 @@ items = ["playing", "pulse-spk", "pulse-mic", "tray", "weather", "hdd", "bat", "
 
 [music]
 type = "mpris"
-# The mpris module doesn't take any options.  It exposes the properties that
-# your media player sets; try the values listed at
-# http://www.freedesktop.org/wiki/Specifications/mpris-spec/metadata
-# or look at what shows up in 'dbus-monitor' after a track change.
+# The mpris module can either try to auto-detect the right player to control or
+# it can take a name parameter, for example:
+# name = 'audacious'
+
+# It exposes the properties that your media player sets; try the values listed
+# at http://www.freedesktop.org/wiki/Specifications/mpris-spec/metadata or look
+# at what shows up in 'dbus-monitor' after a track change.
 
 # The mpris module also supports actions (shown below)
 
 [playing]
 format = "{music.title}"
-# If you only want to interface with a specific media player, use:
-# format = "{music.audacious.title}" and send = "music.audacious"
+# You can also interface with a specific media player here if you didn't set
+# name above: format = "{music.audacious.title}" / send = "music.audacious"
 font = "Liberation Sans 12"
 align = "center"
 on-click = { "send" = "music", "format" = "Next" }

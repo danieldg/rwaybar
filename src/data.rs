@@ -1,12 +1,12 @@
 use crate::Variable as VariableTrait;
-use crate::state::Notifier;
 use crate::item::Item;
+use crate::mpris;
 use crate::pulse;
+use crate::state::Notifier;
+use crate::state::Runtime;
 use crate::sway;
 use crate::tray;
 use crate::util::{Cell,Fd,toml_to_string,toml_to_f64,spawn_noerr};
-use crate::state::Runtime;
-use crate::mpris::MediaPlayer2;
 use json::JsonValue;
 use log::{debug,info,warn,error};
 use std::io;
@@ -66,9 +66,7 @@ pub enum Module {
         value : Cell<String>,
     },
     ItemReference { name : String },
-    MediaPlayer2 {
-        mpris : Rc<MediaPlayer2>,
-    },
+    MediaPlayer2 { target : String },
     Meter {
         min : String,
         max : String,
@@ -208,8 +206,8 @@ impl Module {
                 Module::Meter { min, max, src, values, looped : Cell::new(false) }
             }
             Some("mpris") => {
-                let mpris = MediaPlayer2::new();
-                Module::MediaPlayer2 { mpris }
+                let target = toml_to_string(value.get("name")).unwrap_or_default();
+                Module::MediaPlayer2 { target }
             }
             Some("pulse") => {
                 let target = toml_to_string(value.get("target")).unwrap_or_default();
@@ -497,7 +495,7 @@ impl Module {
                 f(&value)
             }
             Module::Item { value } => value.take_in(|s| f(s)),
-            Module::MediaPlayer2 { mpris } => mpris.read_in(name, key, rt, f),
+            Module::MediaPlayer2 { target } => mpris::read_in(name, target, key, rt, f),
             Module::Meter { min, max, src, values, looped } => {
                 if looped.get() {
                     error!("Recursion detected when expanding {}", name);
@@ -600,7 +598,7 @@ impl Module {
                     }
                 }
             }
-            Module::MediaPlayer2 { mpris } => mpris.write(name, key, value, rt),
+            Module::MediaPlayer2 { target } => mpris::write(name, target, key, value, rt),
             Module::Pulse { target } => pulse::do_write(name, target, key, value, rt),
             Module::SwayMode(mode) => mode.write(name, key, value, rt),
             Module::SwayWorkspace(ws) => ws.write(name, key, value, rt),

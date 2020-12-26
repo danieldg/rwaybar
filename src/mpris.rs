@@ -8,6 +8,7 @@ use dbus::nonblock::stdintf::org_freedesktop_dbus::Properties;
 use dbus::nonblock::stdintf::org_freedesktop_dbus::PropertiesPropertiesChanged;
 use dbus::arg::Variant;
 use dbus::arg::RefArg;
+use once_cell::unsync::OnceCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::rc::Rc;
@@ -47,7 +48,7 @@ struct Inner {
 }
 
 #[derive(Debug)]
-pub struct MediaPlayer2(Cell<Option<Inner>>);
+struct MediaPlayer2(Cell<Option<Inner>>);
 
 async fn initial_query(target : Rc<MediaPlayer2>, name : String) -> Result<(), Box<dyn Error>> {
     let dbus = get_dbus();
@@ -79,6 +80,10 @@ async fn initial_query(target : Rc<MediaPlayer2>, name : String) -> Result<(), B
     });
 
     Ok(())
+}
+
+thread_local! {
+    static DATA : OnceCell<Rc<MediaPlayer2>> = Default::default();
 }
 
 impl MediaPlayer2 {
@@ -170,17 +175,23 @@ impl MediaPlayer2 {
             inner.interested.notify_data();
         });
     }
+}
 
-    pub fn read_in<F : FnOnce(&str) -> R, R>(&self, _name : &str, key : &str, rt : &Runtime, f : F) -> R {
-        self.0.take_in(|oi| {
+pub fn read_in<F : FnOnce(&str) -> R, R>(_name : &str, target : &str, key : &str, rt : &Runtime, f : F) -> R {
+    DATA.with(|cell| {
+        let state = cell.get_or_init(MediaPlayer2::new);
+        state.0.take_in(|oi| {
             oi.as_mut().map(|inner| inner.interested.add(rt));
             let player;
             let field;
 
-            if let Some(dot) = key.find('.') {
+            let skip = "org.mpris.MediaPlayer2.".len();
+            if !target.is_empty() {
+                field = key;
+                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &p.name[skip..] == target));
+            } else if let Some(dot) = key.find('.') {
                 let name = &key[..dot];
                 field = &key[dot + 1..];
-                let skip = "org.mpris.MediaPlayer2.".len();
                 player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &p.name[skip..] == name));
             } else {
                 field = key;
@@ -244,14 +255,19 @@ impl MediaPlayer2 {
                 f("")
             }
         })
-    }
+    })
+}
 
-    pub fn write(&self, _name : &str, key : &str, command : String, _rt : &Runtime) {
-        self.0.take_in(|oi| {
+pub fn write(_name : &str, target : &str, key : &str, command : String, _rt : &Runtime) {
+    DATA.with(|cell| {
+        let state = cell.get_or_init(MediaPlayer2::new);
+        state.0.take_in(|oi| {
             let player;
 
-            if !key.is_empty() {
-                let skip = "org.mpris.MediaPlayer2.".len();
+            let skip = "org.mpris.MediaPlayer2.".len();
+            if !target.is_empty() {
+                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &p.name[skip..] == target));
+            } else if !key.is_empty() {
                 player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &p.name[skip..] == key));
             } else {
                 // Prefer playing players, then paused, then any
@@ -290,5 +306,5 @@ impl MediaPlayer2 {
                 Ok(())
             });
         })
-    }
+    })
 }
