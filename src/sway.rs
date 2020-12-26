@@ -1,7 +1,7 @@
 use bytes::{Buf,BytesMut};
-use crate::Variable;
-use crate::util::{Cell,spawn_noerr};
+use crate::data::IterationItem;
 use crate::state::Runtime;
+use crate::util::{Cell,spawn_noerr};
 use log::{warn,error};
 use std::cell::RefCell;
 use std::convert::TryInto;
@@ -196,12 +196,12 @@ pub struct Mode {
     value : Rc<Cell<String>>,
 }
 
-impl Variable for Mode {
-    fn from_toml(_config : &toml::Value) -> Option<Self> {
+impl Mode {
+    pub fn from_toml(_config : &toml::Value) -> Option<Self> {
         Some(Mode::default())
     }
 
-    fn init(&self, _name : &str, rt : &Runtime) {
+    pub fn init(&self, _name : &str, rt : &Runtime) {
         let value = self.value.clone();
         let notify = rt.notify.unbound();
         SwaySocket::subscribe("mode", 0x80000002, Box::new(move |buf| {
@@ -230,7 +230,7 @@ impl Variable for Mode {
         });
     }
 
-    fn read_in<F : FnOnce(&str) -> R,R>(&self, _name : &str, key : &str, _rt : &Runtime, f : F) -> R {
+    pub fn read_in<F : FnOnce(&str) -> R,R>(&self, _name : &str, key : &str, _rt : &Runtime, f : F) -> R {
         self.value.take_in(|s| {
             match key {
                 "" | "text" if s == "default" => f(""),
@@ -246,67 +246,111 @@ impl Variable for Mode {
     }
 }
 
+#[derive(Debug,Clone)]
+pub struct WorkspaceData {
+    name : String,
+    output : String,
+    repr : String,
+}
+
 #[derive(Debug,Default)]
-struct WorkspaceData {
+struct WorkspacesData {
     focus : String,
-    list : Vec<String>,
+    list : Vec<WorkspaceData>,
 }
 
 #[derive(Debug,Default)]
 pub struct Workspace {
     // TODO configuration to track all outputs vs one output
-    value : Rc<Cell<Option<WorkspaceData>>>,
+    value : Rc<Cell<Option<WorkspacesData>>>,
+}
+
+impl WorkspaceData {
+    pub fn read_in<F : FnOnce(&str) -> R,R>(&self, key : &str, _rt : &Runtime, f : F) -> R {
+        match key {
+            "name" | "text" | "" => {
+                f(&self.name)
+            }
+            "output" => {
+                f(&self.output)
+            }
+            "repr" | "tooltip" => {
+                f(&self.repr)
+            }
+            _ => f("")
+        }
+    }
+}
+
+impl WorkspacesData {
+    fn parse_update(&mut self, msg : json::JsonValue) {
+        match msg["change"].as_str() {
+            Some("focus") => {
+                self.focus = msg["current"]["name"].as_str().unwrap_or("").to_owned();
+            }
+            Some("init") => {
+                let new = WorkspaceData {
+                    name : match msg["current"]["name"].as_str() {
+                        Some(n) => n.to_owned(),
+                        None => return,
+                    },
+                    output : msg["current"]["output"].as_str().unwrap_or("").to_owned(),
+                    repr : msg["current"]["representation"].as_str().unwrap_or("").to_owned(),
+                };
+                // Note: sway will sometimes send duplicate "init" messages
+                for wks in &mut self.list {
+                    if wks.name == new.name {
+                        *wks = new;
+                        return;
+                    }
+                }
+                self.list.push(new);
+            }
+            Some("empty") => {
+                msg["current"]["name"].as_str().map(|gone| {
+                    self.list.retain(|wks| wks.name != gone)
+                });
+            }
+            Some("rename") => {
+                let old = msg["old"]["name"].as_str();
+                let new = msg["current"]["name"].as_str();
+                if let (Some(old), Some(new)) = (old,new) {
+                    for wks in &mut self.list {
+                        if wks.name == old {
+                            wks.name = new.to_owned();
+                        }
+                    }
+                }
+            }
+            Some("move") => {
+                let name = msg["current"]["name"].as_str();
+                let output = msg["current"]["output"].as_str();
+                if let (Some(name), Some(output)) = (name,output) {
+                    for wks in &mut self.list {
+                        if wks.name == name {
+                            wks.output = output.to_owned();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 impl Workspace {
-    pub fn read_focus_list<F : FnMut(&str, bool)>(&self, mut f : F) {
-        self.value.take_in_some(|data| {
-            for item in &data.list {
-                let focus = *item == data.focus;
-                f(&item, focus);
-            }
-        });
-    }
-}
-
-impl Variable for Workspace {
-    fn from_toml(_config : &toml::Value) -> Option<Self> {
+    pub fn from_toml(_config : &toml::Value) -> Option<Self> {
         Some(Workspace::default())
     }
 
-    fn init(&self, _name : &str, rt : &Runtime) {
+    pub fn init(&self, _name : &str, rt : &Runtime) {
         let value = self.value.clone();
         let notify = rt.notify.unbound();
         SwaySocket::subscribe("workspace", 0x80000000, Box::new(move |buf| {
             match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                 Ok(Ok(msg)) => {
                     value.take_in_some(|data| {
-                        match msg["change"].as_str() {
-                            Some("focus") => {
-                                data.focus = msg["current"]["name"].as_str().unwrap_or("").to_owned();
-                            }
-                            Some("init") => {
-                                msg["current"]["name"].as_str().map(|v| data.list.push(v.to_owned()));
-                            }
-                            Some("empty") => {
-                                msg["current"]["name"].as_str().map(|gone| {
-                                    data.list.retain(|n| n != gone)
-                                });
-                            }
-                            Some("rename") => {
-                                let old = msg["old"]["name"].as_str();
-                                let new = msg["current"]["name"].as_str();
-                                if let (Some(old), Some(new)) = (old,new) {
-                                    for name in &mut data.list {
-                                        if *name == old {
-                                            *name = new.to_owned();
-                                        }
-                                    }
-                                }
-                            }
-                            // TODO move, if we track outputs
-                            _ => {}
-                        }
+                        data.parse_update(msg);
                     });
                     notify.notify_data();
                 }
@@ -323,14 +367,17 @@ impl Variable for Workspace {
         SwaySocket::send(1, b"", move |buf| {
             match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                 Ok(Ok(msg)) => {
-                    let mut data = WorkspaceData::default();
+                    let mut data = WorkspacesData::default();
                     for workspace in msg.members() {
-                        workspace["name"].as_str().map(|name| {
-                            data.list.push(name.to_owned());
-                            if workspace["focused"].as_bool() == Some(true) {
-                                data.focus = name.to_owned();
-                            }
-                        });
+                        let new = WorkspaceData {
+                            name : workspace["name"].as_str().unwrap_or("").to_owned(),
+                            output : workspace["output"].as_str().unwrap_or("").to_owned(),
+                            repr : workspace["representation"].as_str().unwrap_or("").to_owned(),
+                        };
+                        if workspace["focused"].as_bool() == Some(true) {
+                            data.focus = new.name.clone();
+                        }
+                        data.list.push(new);
                     }
                     value.set(Some(data));
                     notify.notify_data();
@@ -340,15 +387,12 @@ impl Variable for Workspace {
         });
     }
 
-    fn read_in<F : FnOnce(&str) -> R,R>(&self, _name : &str, key : &str, _rt : &Runtime, f : F) -> R {
+    pub fn read_in<F : FnOnce(&str) -> R,R>(&self, _name : &str, key : &str, _rt : &Runtime, f : F) -> R {
         self.value.take_in(|v| {
             if let Some(data) = v {
                 match key {
-                    "" | "focus" => f(&data.focus),
-                    "list" => {
-                        let w = data.list.join(" ");
-                        f(&w)
-                    }
+                    "text" | "focus" => f(&data.focus),
+                    "tooltip" => f(""),
                     _ => {
                         warn!("Unknown key in sway-workspace");
                         f("")
@@ -360,7 +404,16 @@ impl Variable for Workspace {
         })
     }
 
-    fn write(&self, name : &str, key : &str, value : String, _rt : &Runtime) {
+    pub fn read_focus_list<F : FnMut(bool, Rc<IterationItem>)>(&self, mut f : F) {
+        self.value.take_in_some(|data| {
+            for item in &data.list {
+                let focus = item.name == data.focus;
+                f(focus, Rc::new(IterationItem::SwayWorkspace(item.clone())));
+            }
+        });
+    }
+
+    pub fn write(&self, name : &str, key : &str, value : String, _rt : &Runtime) {
         match key {
             "switch" => SwaySocket::send(0, format!(r#"workspace --no-auto-back-and-forth "{}""#, value).as_bytes(), |_| ()),
             _ => {

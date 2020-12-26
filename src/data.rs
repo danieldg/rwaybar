@@ -1,4 +1,3 @@
-use crate::Variable as VariableTrait;
 use crate::item::Item;
 use crate::mpris;
 use crate::pulse;
@@ -63,7 +62,7 @@ pub enum Module {
         // TODO use min-width to force earlier cropping
     },
     Item { // unique variant for the reserved "item" item
-        value : Cell<String>,
+        value : Cell<Option<Rc<IterationItem>>>,
     },
     ItemReference { name : String },
     MediaPlayer2 { target : String },
@@ -104,6 +103,11 @@ pub enum Module {
     Value {
         value : Cell<String>,
     },
+}
+
+#[derive(Debug)]
+pub enum IterationItem {
+    SwayWorkspace(sway::WorkspaceData),
 }
 
 impl Module {
@@ -414,8 +418,6 @@ impl Module {
                     }
                 }
             }
-            Module::SwayMode(mode) => mode.update(name, rt),
-            Module::SwayWorkspace(ws) => ws.update(name, rt),
             _ => {}
         }
     }
@@ -494,7 +496,12 @@ impl Module {
                 looped.set(false);
                 f(&value)
             }
-            Module::Item { value } => value.take_in(|s| f(s)),
+            Module::Item { value } => value.take_in(|item| {
+                match item.as_deref() {
+                    Some(IterationItem::SwayWorkspace(data)) => data.read_in(key, rt, f),
+                    None => f(""),
+                }
+            }),
             Module::MediaPlayer2 { target } => mpris::read_in(name, target, key, rt, f),
             Module::Meter { min, max, src, values, looped } => {
                 if looped.get() {
@@ -600,7 +607,6 @@ impl Module {
             }
             Module::MediaPlayer2 { target } => mpris::write(name, target, key, value, rt),
             Module::Pulse { target } => pulse::do_write(name, target, key, value, rt),
-            Module::SwayMode(mode) => mode.write(name, key, value, rt),
             Module::SwayWorkspace(ws) => ws.write(name, key, value, rt),
             Module::Value { value : v } if key == "" => {
                 v.set(value);
@@ -616,23 +622,15 @@ impl Module {
     }
 
     pub fn new_current_item() -> Self {
-        Module::Item { value : Cell::new(String::new()) }
+        Module::Item { value : Cell::new(None) }
     }
 
-    pub fn read_focus_list<F : FnMut(&str, bool)>(&self, f : F) {
+    pub fn read_focus_list<F : FnMut(bool, Rc<IterationItem>)>(&self, f : F) {
         match self {
             Module::SwayWorkspace(ws) => ws.read_focus_list(f),
             _ => ()
         }
     }
-
-    pub fn set_current_item(&self, new : Option<String>) {
-        match self {
-            Module::Item { value } => value.set(new.unwrap_or_default()),
-            _ => error!("set_current_item on non-Item"),
-        }
-    }
-
 }
 
 /// Handler invoked by a click or touch event

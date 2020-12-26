@@ -1,7 +1,8 @@
-use crate::data::{Action,Module};
+use crate::data::{Action,Module,IterationItem};
 use crate::state::Runtime;
 use crate::tray;
 use log::{debug,warn,error};
+use std::rc::Rc;
 
 /// State available to an [Item] render function
 #[derive(Clone,Copy)]
@@ -251,7 +252,7 @@ struct EventListener {
     x_min : f64,
     x_max : f64,
     buttons : u32,
-    item : String,
+    item : Option<Rc<IterationItem>>,
     target : Action,
 }
 
@@ -287,7 +288,7 @@ impl EventSink {
                 x_min : 0.0,
                 x_max : 1e20,
                 buttons,
-                item : String::new(),
+                item : None,
                 target : Action::from_toml(value)
             })
         }
@@ -299,7 +300,7 @@ impl EventSink {
             x_min : -1e20,
             x_max : 1e20,
             buttons : 7 | (15 << 5),
-            item : String::new(),
+            item : None,
             target : Action::from_tray(owner, path),
         });
         sink
@@ -350,12 +351,19 @@ impl EventSink {
             if (h.buttons & (1 << button)) == 0 {
                 continue;
             }
-            if h.item.is_empty() {
+            if h.item.is_none() {
                 h.target.invoke(runtime, button);
             } else {
-                runtime.items.get("item").unwrap().data.set_current_item(Some(h.item.clone()));
+                let item_var = match runtime.items.get("item") {
+                    Some(&Item { data : Module::Item { ref value }, .. }) => value,
+                    _ => {
+                        error!("The 'item' variable was not assignable");
+                        return;
+                    }
+                };
+                item_var.set(h.item.clone());
                 h.target.invoke(runtime, button);
-                runtime.items.get("item").unwrap().data.set_current_item(None);
+                item_var.set(None);
             }
         }
     }
@@ -668,10 +676,16 @@ impl Item {
                     Some(var) => var,
                     None => return,
                 };
-                let item_var = ctx.runtime.items.get("item").unwrap();
+                let item_var = match ctx.runtime.items.get("item") {
+                    Some(&Item { data : Module::Item { ref value }, .. }) => value,
+                    _ => {
+                        error!("The 'item' variable was not assignable");
+                        return;
+                    }
+                };
                 ctx.cairo.rel_move_to(spacing, 0.0);
-                source.data.read_focus_list(|item, focus| {
-                    item_var.data.set_current_item(Some(item.to_owned()));
+                source.data.read_focus_list(|focus, item| {
+                    item_var.set(Some(item.clone()));
                     let x0 = ctx.cairo.get_current_point().0;
                     let mut ev = if focus {
                         items[1].render(ctx)
@@ -681,12 +695,12 @@ impl Item {
                     let x1 = ctx.cairo.get_current_point().0;
                     ev.offset_clamp(0.0, x0, x1);
                     for h in &mut ev.handlers {
-                        h.item = item.to_owned();
+                        h.item = Some(item.clone());
                     }
                     rv.merge(ev);
                     ctx.cairo.rel_move_to(spacing, 0.0);
                 });
-                item_var.data.set_current_item(None);
+                item_var.set(None);
             }
             Module::Bar { items } => {
                 let start = ctx.cairo.get_current_point();

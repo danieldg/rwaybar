@@ -17,21 +17,6 @@ mod wayland;
 use state::State;
 use wayland::WaylandClient;
 
-pub trait Variable : std::fmt::Debug {
-    fn from_toml(config : &toml::Value) -> Option<Self>
-        where Self : Sized;
-    fn init(&self, name : &str, rt : &state::Runtime) {
-        let _ = (name, rt);
-    }
-    fn update(&self, name : &str, rt : &state::Runtime) {
-        let _ = (name, rt);
-    }
-    fn read_in<F : FnOnce(&str) -> R,R>(&self, name : &str, key : &str, rt : &state::Runtime, f : F) -> R;
-    fn write(&self, name : &str, key : &str, value : String, rt : &state::Runtime) {
-        let _ = (name, key, value, rt);
-    }
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
     env_logger::Builder::from_env(env_logger::Env::new().default_filter_or("warn")).init();
 
