@@ -637,7 +637,7 @@ impl Module {
     pub fn read_focus_list<F : FnMut(bool, Rc<IterationItem>)>(&self, rt : &Runtime, f : F) {
         match self {
             Module::MediaPlayer2 { .. } => mpris::read_focus_list(rt, f),
-            Module::SwayWorkspace(ws) => ws.read_focus_list(f),
+            Module::SwayWorkspace(ws) => ws.read_focus_list(rt, f),
             _ => ()
         }
     }
