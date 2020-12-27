@@ -1,7 +1,7 @@
 use crate::item::Item;
 use crate::mpris;
 use crate::pulse;
-use crate::state::Notifier;
+use crate::state::NotifierList;
 use crate::state::Runtime;
 use crate::sway;
 use crate::tray;
@@ -42,7 +42,7 @@ pub enum Module {
     ExecJson {
         command : String,
         stdin : Cell<Option<ChildStdin>>,
-        value : Rc<Cell<JsonValue>>,
+        value : Rc<(Cell<JsonValue>, Cell<NotifierList>)>,
     },
     FocusList {
         source : String,
@@ -144,7 +144,7 @@ impl Module {
                 Module::ExecJson {
                     command,
                     stdin : Cell::new(None),
-                    value : Rc::new(Cell::new(JsonValue::Null)),
+                    value : Rc::new((Cell::new(JsonValue::Null), Default::default())),
                 }
             }
             Some("focus-list") => {
@@ -318,9 +318,9 @@ impl Module {
                             libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
                         }
                         stdin.set(Some(pipe_in));
-                        value.set(JsonValue::Null);
+                        value.0.set(JsonValue::Null);
 
-                        do_exec_json(fd, name.to_owned(), value.clone(), rt.notify.unbound());
+                        do_exec_json(fd, name.to_owned(), value.clone());
                     }
                 }
             }
@@ -476,12 +476,13 @@ impl Module {
                 }
             }
             Module::ExecJson { command, value, .. } => {
-                let v = value.replace(JsonValue::Null);
+                let v = value.0.replace(JsonValue::Null);
                 let rv = f(v[key].as_str().unwrap_or_else(|| {
                     debug!("Could not find {}.{} in the output of {}", name, key, command);
                     ""
                 }));
-                value.set(v);
+                value.0.set(v);
+                value.1.take_in(|i| i.add(rt));
                 rv
             }
             Module::Formatted { format, tooltip, looped } => {
@@ -725,7 +726,7 @@ impl Action {
     }
 }
 
-fn do_exec_json(fd : i32, name : String, value : Rc<Cell<JsonValue>>, redraw : Notifier) {
+fn do_exec_json(fd : i32, name : String, value : Rc<(Cell<JsonValue>, Cell<NotifierList>)>) {
     spawn_noerr(async move {
         let afd = match AsyncFd::new(Fd(fd)) {
             Ok(fd) => fd,
@@ -779,8 +780,8 @@ fn do_exec_json(fd : i32, name : String, value : Rc<Cell<JsonValue>>, redraw : N
                         }
                         buffer.drain(..eol + 1);
                         let json = match json { Some(json) => json, None => continue };
-                        value.set(json);
-                        redraw.notify_data();
+                        value.0.set(json);
+                        value.1.take().notify_data();
                     }
                 }
             }.await {

@@ -217,13 +217,6 @@ struct NotifierInner {
 }
 
 impl Notifier {
-    /// A notify instance that does not track interested bars
-    ///
-    /// This is useful if you can't rerun add on every read
-    pub fn unbound(&self) -> Self {
-        Notifier { inner : self.inner.clone() }
-    }
-
     pub fn notify_data(&self) {
         self.inner.data_update.set(true);
         self.inner.notify.notify_one();
@@ -364,7 +357,7 @@ impl State {
         }
         state.set_data();
 
-        let notify = state.runtime.notify.unbound();
+        let notify = Notifier { inner : state.runtime.notify.inner.clone() };
         let refresh = state.runtime.refresh.clone();
         spawn_noerr(async move {
             loop {
