@@ -550,7 +550,7 @@ impl Module {
                 looped.set(true);
                 let text = rt.format_or(&text, &name);
                 looped.set(false);
-                if key == "" {
+                if key == "" || key == "text" {
                     let output = regex.replace_all(&text, replace.as_str());
                     f(&output)
                 } else {
