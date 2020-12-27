@@ -189,11 +189,11 @@ pub fn read_in<F : FnOnce(&str) -> R, R>(_name : &str, target : &str, key : &str
             let skip = "org.mpris.MediaPlayer2.".len();
             if !target.is_empty() {
                 field = key;
-                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &p.name[skip..] == target));
+                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| p.name.get(skip..) == Some(target)));
             } else if let Some(dot) = key.find('.') {
                 let name = &key[..dot];
                 field = &key[dot + 1..];
-                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &p.name[skip..] == name));
+                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| p.name.get(skip..) == Some(name)));
             } else {
                 field = key;
                 // Prefer playing players, then paused, then any
@@ -220,7 +220,7 @@ pub fn read_in<F : FnOnce(&str) -> R, R>(_name : &str, target : &str, key : &str
             if let Some(player) = player {
                 match field {
                     "player.name" => {
-                        f(&player.name[skip..])
+                        f(&player.name.get(skip..).unwrap_or_default())
                     }
                     "length" => {
                         match player.meta.as_ref().and_then(|md| md.get("mpris:length")).and_then(|v| v.as_u64()) {
@@ -270,7 +270,7 @@ pub fn read_focus_list<F : FnMut(bool, Rc<IterationItem>)>(rt : &Runtime, mut f 
             inner.interested.add(rt);
 
             let skip = "org.mpris.MediaPlayer2.".len();
-            inner.players.iter().map(|p| (p.name[skip..].to_owned(), p.playing == Some(PlayState::Playing))).collect()
+            inner.players.iter().map(|p| (p.name.get(skip..).unwrap_or_default().to_owned(), p.playing == Some(PlayState::Playing))).collect()
         }).unwrap_or_default()
     });
 
@@ -287,9 +287,9 @@ pub fn write(_name : &str, target : &str, key : &str, command : String, _rt : &R
 
             let skip = "org.mpris.MediaPlayer2.".len();
             if !target.is_empty() {
-                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &p.name[skip..] == target));
+                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| p.name.get(skip..) == Some(target)));
             } else if !key.is_empty() {
-                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &p.name[skip..] == key));
+                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| p.name.get(skip..) == Some(key)));
             } else {
                 // Prefer playing players, then paused, then any
                 player = oi.as_ref()
