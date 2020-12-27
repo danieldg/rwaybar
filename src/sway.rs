@@ -5,6 +5,7 @@ use crate::state::NotifierList;
 use crate::util::{Cell,spawn_noerr};
 use log::{warn,error};
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::convert::TryInto;
 use std::rc::Rc;
 use tokio::net::UnixStream;
@@ -294,6 +295,29 @@ impl WorkspaceData {
     }
 }
 
+fn sway_sort_fn(a : &WorkspaceData, b : &WorkspaceData) -> Ordering {
+    let mut a = a.name.as_str();
+    let mut b = b.name.as_str();
+    let a1 = a.chars().next().as_ref().map(char::is_ascii_digit);
+    let b1 = b.chars().next().as_ref().map(char::is_ascii_digit);
+    match (a1, b1) {
+        (Some(true), Some(true)) => {
+            if let Some(p) = a.find(|c : char| !c.is_ascii_digit()) {
+                a = &a[..p];
+            }
+            if let Some(p) = b.find(|c : char| !c.is_ascii_digit()) {
+                b = &b[..p];
+            }
+            let ai = a.parse::<u64>().ok();
+            let bi = b.parse::<u64>().ok();
+            ai.cmp(&bi)
+        }
+        (Some(true), _) => Ordering::Less,
+        (_, Some(true)) => Ordering::Greater,
+        _ => Ordering::Equal,
+    }
+}
+
 #[derive(Debug,Default)]
 struct WorkspacesData {
     focus : Cell<String>,
@@ -330,6 +354,7 @@ impl WorkspacesData {
                         }
                     }
                     list.push(new);
+                    list.sort_by(sway_sort_fn);
                 });
             }
             Some("empty") => {
@@ -342,11 +367,12 @@ impl WorkspacesData {
                 let new = msg["current"]["name"].as_str();
                 if let (Some(old), Some(new)) = (old,new) {
                     self.list.take_in(|list| {
-                        for wks in list {
+                        for wks in &mut *list {
                             if wks.name == old {
                                 wks.name = new.to_owned();
                             }
                         }
+                        list.sort_by(sway_sort_fn);
                     })
                 }
             }
