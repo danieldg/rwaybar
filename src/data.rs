@@ -23,6 +23,7 @@ pub enum Module {
     Bar {
         // always three items: left, center, right
         items : Box<[Item;3]>,
+        config : toml::Value,
     },
     Clock {
         format : String,
@@ -434,12 +435,17 @@ impl Module {
             Module::ItemReference { .. } |
             Module::Group { .. } |
             Module::FocusList { .. } |
-            Module::Bar { .. } |
             Module::Tray { .. } => {
                 error!("Cannot use '{}' in a text expansion", name);
                 f("")
             }
 
+            Module::Bar { config, .. } => {
+                match toml_to_string(config.get(key)) {
+                    Some(value) => f(&value),
+                    None => f(""),
+                }
+            }
             Module::Clock { time, .. } => time.take_in(|s| f(s)),
             Module::Disk { contents, .. } => {
                 let vfs = contents.get();

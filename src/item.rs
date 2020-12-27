@@ -409,7 +409,10 @@ impl Item {
 
         Item {
             config : Some(cfg.clone()),
-            data : Module::Bar { items : Box::new([left, center, right]) },
+            data : Module::Bar {
+                items : Box::new([left, center, right]),
+                config : cfg.clone(),
+            },
             events : EventSink::from_toml(cfg),
         }
     }
@@ -702,7 +705,7 @@ impl Item {
                 });
                 item_var.set(None);
             }
-            Module::Bar { items } => {
+            Module::Bar { items, .. } => {
                 let start = ctx.cairo.get_current_point();
                 let (clip_x0, clip_y0, clip_x1, _y1) = ctx.cairo.clip_extents();
                 let width = clip_x1 - clip_x0;

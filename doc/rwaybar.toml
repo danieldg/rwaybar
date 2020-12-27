@@ -7,6 +7,7 @@ size = 40
 font = "Roboto 18"
 align = "south"
 side = "top"
+the-clock-font = "Liberation Sans 26"
 
 [[bar]]
 name = "HDMI-A-1"
@@ -14,6 +15,7 @@ left = "tvl"
 center = "clock"
 right = "tvr"
 size = 20
+the-clock-font = "Liberation Sans 20"
 
 # Everything else is defined in its own section and addressed by name elsewhere.
 [dpl]
@@ -56,7 +58,10 @@ timezone = "UTC"
 type = "text"
 format = "{time}"
 tooltip = "{time-et} Eastern\n{time-ct} Central\n{time-pt} Pacific\n{time-utc} UTC"
-font = "Liberation Sans 26"
+# The expression "{bar.some-value}" reads configuration items from the
+# currently rendering bar, which is useful if you want to have bars of
+# different sizes without duplicating all your items just to change one value
+font = "{bar.the-clock-font}"
 margin = "0 10"
 on-click = { "exec" = "gnome-calendar" }
 on-click-middle = { "write" = "time_fmt", "format" = "%H:%M" }

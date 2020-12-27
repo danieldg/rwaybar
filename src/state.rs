@@ -56,9 +56,11 @@ impl Bar {
         rv
     }
 
-    fn render_with(&mut self, runtime : &Runtime, target : &mut RenderTarget) {
-        let item = &self.item;
+    fn render_with(&mut self, runtime : &mut Runtime, target : &mut RenderTarget) {
         if self.dirty && self.throttle.is_none() {
+            let rt_item = runtime.items.entry("bar".into()).or_insert_with(Item::none);
+            std::mem::swap(&mut self.item, rt_item);
+
             self.sink = target.with_surface((self.width, self.height), &self.surf, |surf| {
                 let ctx = cairo::Context::new(surf);
                 let font = pango::FontDescription::new();
@@ -75,9 +77,10 @@ impl Bar {
                     text_stroke : None,
                     runtime,
                 };
-
-                item.render(&ctx)
+                ctx.runtime.items["bar"].render(&ctx)
             });
+            std::mem::swap(&mut self.item, runtime.items.get_mut("bar").unwrap());
+
             let frame = self.surf.frame();
             let id = frame.as_ref().id();
             frame.quick_assign(move |_frame, _event, mut data| {
@@ -445,7 +448,7 @@ impl State {
         let mut target = RenderTarget::new(&mut self.wayland, shm_size);
 
         for bar in &mut self.bars {
-            bar.render_with(&self.runtime, &mut target);
+            bar.render_with(&mut self.runtime, &mut target);
         }
         self.wayland.display.flush()?;
         Ok(())
