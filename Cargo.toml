@@ -4,6 +4,12 @@ version = "0.1.0"
 authors = ["Daniel De Graaf <code@danieldg.net>"]
 edition = "2018"
 
+[profile.dev]
+panic = 'abort'
+
+[profile.release]
+panic = 'abort'
+
 [dependencies]
 # Basic runtime
 bytes = ""

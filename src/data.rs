@@ -278,6 +278,10 @@ impl Module {
                     spacing,
                 }
             }
+            Some("value") => {
+                let value = value.get("value").and_then(|v| v.as_str()).unwrap_or_default();
+                Module::Value { value : Cell::new(value.into()) }
+            }
             Some(_) => {
                 Module::None
             }

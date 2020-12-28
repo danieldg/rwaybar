@@ -33,17 +33,17 @@ block.
 
 ## Text Expansion
 
-Most values accept text expansion using `{module.key:format}` similar to python
+Most values accept text expansion using `{block-name.key:format}` similar to python
 `f""` or rust `format!` strings.  The `:format` part is optional; if present,
 it allows formatting the string (adding padding, restricting width, etc).  The
-`module` part is mandatory and defines which module (as defined in your
+`block-name` part is mandatory and defines which block (as defined in your
 configuration) to consult for the item.  The `.key` part is optional and allows
 modules to provide multiple values; see the module-specific documentation for
 details.
 
 ## Formatting
 
-Any module may contain one or more of the following keys, which influence the
+Any block may contain one or more of the following keys, which influence the
 display of the item.  While the names were chosen to be similar to CSS when
 possible, not all features of the corresponding CSS property are present.
 
@@ -52,7 +52,7 @@ All formatting values are subject to [text expansion](#text-expansion).
 Key | Value | Details
 ----|-------|---------
 `align` | `north`, `south`, `east`, `west`, `center` | Simple alignment of the item.  See the `halign` and `valign` properties for more control.
-`alpha` | `0.7` (70% opaque) | Applies transparency to the module as a whole - text, images, border, and background.  This is most useful on either the `bar` as a whole or on items like `tray` that don't have their own alpha settings.
+`alpha` | `0.7` (70% opaque) | Applies transparency to the block as a whole - text, images, border, and background.  This is most useful on either the `bar` as a whole or on items like `tray` that don't have their own alpha settings.
 `bg` | `red` or `#ff0000` | Background color (without transparency)
 `bg-alpha` | 0.2 (20% opaque) | Background opacity
 `border` | `1 2 3 4` (pixels) | Border width for the top, right, bottom, and left sides.  Like CSS, you can omit some of the values if they are the same.
@@ -63,8 +63,8 @@ Key | Value | Details
 `font` | A font name and size | 
 `halign` | `20%` | Horizontal alignment (only used when min-width is present)
 `margin` | `1 2 3 4` (pixels) | Margin width for the top, right, bottom, and left sides.  Like CSS, you can omit some of the values if they are the same.
-`max-width` | `30%` or `40` (pixels) | Minimum width for this module.  If the contents are larger, they will be cropped.
-`min-width` | `30%` or `40` (pixels) | Minimum width for this module.  If the contents are smaller, blank space is added and the contents are positioned according to `halign`
+`max-width` | `30%` or `40` (pixels) | Minimum width for this block.  If the contents are larger, they will be cropped.
+`min-width` | `30%` or `40` (pixels) | Minimum width for this block.  If the contents are smaller, blank space is added and the contents are positioned according to `halign`
 `padding` | `1 2 3 4` (pixels) | Padding width for the top, right, bottom, and left sides.  Like CSS, you can omit some of the values if they are the same.
 `text-outline` | `red` or `#ff0000` | Color for text outline
 `text-outline-alpha` | `0.5` | Opacity of the outline
@@ -72,7 +72,37 @@ Key | Value | Details
 
 ## Actions
 
-TODO
+Any block may contain one of the following keys that define actions to take
+when the block is clicked.
+
+Key | Details
+----|--------
+`on-click` | Left (primary) button
+`on-click-right` | Right button
+`on-click-middle` |
+`on-click-backward` | May also be known as "side"
+`on-click-forward` | May also be known as "extra"
+`on-scroll-up` |
+`on-scroll-down` |
+`on-vscroll` | A combination of up and down
+`on-scroll-left` |
+`on-scroll-right` |
+`on-hscroll` | A combination of left and right
+`on-scroll` | A scroll in any of the 4 directions
+
+Actions can either be a direct program execution, for example:
+
+```toml
+on-click = { exec = "firefox" }
+```
+
+Or it can be used to write a value to an existing block, for modules that support this:
+
+```toml
+on-click = { send = "mpris-block", msg = "PlayPause" }
+```
+
+Either `msg` or `format` are valid; both are text-expanded before sending to the module.
 
 ## Text Module
 
@@ -136,6 +166,9 @@ When inside a focus-list block, the `item` block refers to the current item (so
 
 ## formatted
 
+*Note*: The `type = formatted` key is optional for this module as long as you
+specify the format.
+
 Key | Expanded | Default | Details
 ----|----------|---------|--------
 `format` | Yes | -- | The string to display
@@ -161,9 +194,24 @@ Key | Expanded | Default | Details
 
 ## mpris
 
+#### Configuration
+
 Key | Expanded | Default | Details
 ----|----------|---------|--------
 `name` | No | "" | Name of the default player for this item; if empty, the first "playing" player will be used.
+
+#### Values
+
+All string (and string list) values defined by the [mpris metadata spec](http://www.freedesktop.org/wiki/Specifications/mpris-spec/metadata)
+are available, in addition to `length` which is the track length in seconds,
+and `player.name` which is the mpris endpoint name (which may be something like
+`firefox.instance1234567`).
+
+#### Actions
+
+For all actions, the target of the action is either the player specified in the block or the first "playing" player.
+
+`Next` | `Previous` | `Pause` | `PlayPause` | `Stop` | `Play` | `Raise` | `Quit`
 
 ## pulse
 
@@ -238,3 +286,15 @@ default = "<span color='#ff8888'></span>"
 Key | Expanded | Default | Details
 ----|----------|---------|--------
 `spacing` | Yes | 0 | Spacing between items in the tray
+
+## value
+
+*Note*: The `type = value` key is optional for this module as long as you
+specify the value.
+
+Key | Expanded | Default | Details
+----|----------|---------|--------
+`value` | No | "" | A string value that can be changed by actions
+
+The value module accepts value sent to it by [actions](#actions), which you can
+use to have some blocks control the contents of others.
