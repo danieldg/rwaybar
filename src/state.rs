@@ -38,6 +38,7 @@ pub struct Bar {
     dirty : bool,
     throttle : Option<Attached<WlCallback>>,
     item : Item,
+    cfg_index : usize,
 }
 
 impl Bar {
@@ -169,6 +170,13 @@ impl Bar {
         if let Some((_,_,desc)) = self.sink.get_hover(self.popup_x, 0.0) {
             desc.button(x, y, button, runtime);
         }
+    }
+}
+
+impl Drop for Bar {
+    fn drop(&mut self) {
+        self.surf.destroy();
+        self.ls_surf.destroy();
     }
 }
 
@@ -383,6 +391,19 @@ impl State {
             }
         });
 
+        let sync_cb = state.wayland.wl_display.sync();
+        sync_cb.quick_assign(move |_sync, _event, mut data| {
+            let state : &mut State = data.get().unwrap();
+            if !state.bars.is_empty() {
+                return;
+            }
+            error!("No bars matched this outptut configuration.  Available outputs:");
+            for data in &state.wayland.outputs {
+                error!(" name='{}' description='{}' at {},{} {}x{}",
+                    data.name, data.description, data.pos_x, data.pos_y, data.size_x, data.size_y);
+            }
+        });
+
         let rv = Rc::new(RefCell::new(state));
         let state = rv.clone();
         spawn_noerr(async move {
@@ -391,7 +412,7 @@ impl State {
                 state.borrow_mut().request_draw_internal();
             }
         });
-
+        
         Ok(rv)
     }
 
@@ -458,19 +479,31 @@ impl State {
         let data = &self.wayland.outputs[i];
         info!("Output[{}] name='{}' description='{}' at {},{} {}x{}",
             i, data.name, data.description, data.pos_x, data.pos_y, data.size_x, data.size_y);
-        for cfg in &self.bar_config {
+        for (i, cfg) in self.bar_config.iter().enumerate() {
             if let Some(name) = cfg.get("name").and_then(|v| v.as_str()) {
                 if name != &data.name {
                     continue;
                 }
             }
+            let mut cfg = cfg.clone();
+            if let Some(table) = cfg.as_table_mut() {
+                table.insert("name".into(), data.name.clone().into());
+            }
 
-            let bar = self.new_bar(&data.output, cfg);
+            let bar = self.new_bar(&data.output, cfg, i);
+            self.bars.retain(|bar| {
+                bar.cfg_index != i ||
+                    bar.item.config
+                        .as_ref()
+                        .and_then(|c| c.get("name"))
+                        .and_then(|n| n.as_str())
+                    != Some(&data.name)
+            });
             self.bars.push(bar);
         }
     }
 
-    fn new_bar(&self, output : &WlOutput, cfg : &toml::Value) -> Bar {
+    fn new_bar(&self, output : &WlOutput, cfg : toml::Value, cfg_index : usize) -> Bar {
         let ls : Attached<ZwlrLayerShellV1> = self.wayland.env.require_global();
         let surf : Attached<_> = self.wayland.env.create_surface();
         let ls_surf = ls.get_layer_surface(&surf, Some(output), Layer::Top, "bar".to_owned());
@@ -545,6 +578,7 @@ impl State {
             dirty : false,
             throttle : None,
             popup : None,
+            cfg_index,
         }
     }
 }

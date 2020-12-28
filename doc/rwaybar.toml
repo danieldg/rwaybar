@@ -17,6 +17,14 @@ right = "tvr"
 size = 20
 the-clock-font = "Liberation Sans 20"
 
+[[bar]]
+name = "WL-1"
+left = "tvl"
+center = "clock"
+right = "tvr"
+size = 20
+the-clock-font = "Liberation Sans 20"
+
 # Everything else is defined in its own section and addressed by name elsewhere.
 [dpl]
 type = "group"
@@ -95,7 +103,7 @@ border = "3 0 0 0"
 border-alpha = 0
 on-click = { "send" = "sway-workspace.switch", "format" = "{item}" }
 
-workspaces.focused-item]
+[workspaces.focused-item]
 format = " {item} "
 margin = "0 1 0 1"
 padding = "0 0 5 0"

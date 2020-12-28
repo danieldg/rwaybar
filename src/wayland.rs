@@ -6,6 +6,7 @@ use smithay_client_toolkit::seat::SeatData;
 use smithay_client_toolkit::shm::MemPool;
 use wayland_client::Attached;
 use wayland_client::protocol::wl_compositor::WlCompositor;
+use wayland_client::protocol::wl_display::WlDisplay;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_pointer::{ButtonState,Axis};
 use wayland_client::protocol::wl_registry::WlRegistry;
@@ -142,6 +143,7 @@ pub struct OutputData {
 pub struct WaylandClient {
     pub env : Environment<Globals>,
     pub display : wayland_client::Display,
+    pub wl_display : Attached<WlDisplay>,
     pub shm : MemPool,
     pub outputs : Vec<OutputData>,
     cursor : wayland_cursor::Cursor,
@@ -153,8 +155,9 @@ impl WaylandClient {
         let display = wayland_client::Display::connect_to_env()?;
 
         let mut wl_queue = display.create_event_queue();
+        let wl_display = display.attach(wl_queue.token());
 
-        let env = smithay_client_toolkit::environment::Environment::new(&display.attach(wl_queue.token()), &mut wl_queue, Globals {
+        let env = smithay_client_toolkit::environment::Environment::new(&wl_display, &mut wl_queue, Globals {
             sctk_compositor: SimpleGlobal::new(),
             sctk_shm: smithay_client_toolkit::shm::ShmHandler::new(),
             sctk_seats : smithay_client_toolkit::seat::SeatHandler::new(),
@@ -184,6 +187,7 @@ impl WaylandClient {
             env,
             shm,
             display,
+            wl_display,
             outputs : Vec::new(),
             cursor,
             cursor_surf,

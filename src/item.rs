@@ -88,7 +88,7 @@ impl Align {
 /// A visible item in a bar
 #[derive(Debug)]
 pub struct Item {
-    config : Option<toml::Value>,
+    pub config : Option<toml::Value>,
     pub data : Module,
     events : EventSink,
 }
@@ -402,18 +402,18 @@ impl Item {
         }
     }
 
-    pub fn new_bar(cfg : &toml::Value) -> Self {
+    pub fn new_bar(cfg : toml::Value) -> Self {
         let left = cfg.get("left").map_or_else(Item::none, Item::from_toml_ref);
         let right = cfg.get("right").map_or_else(Item::none, Item::from_toml_ref);
         let center = cfg.get("center").map_or_else(Item::none, Item::from_toml_ref);
 
         Item {
-            config : Some(cfg.clone()),
             data : Module::Bar {
                 items : Box::new([left, center, right]),
                 config : cfg.clone(),
             },
-            events : EventSink::from_toml(cfg),
+            events : EventSink::from_toml(&cfg),
+            config : Some(cfg),
         }
     }
 
