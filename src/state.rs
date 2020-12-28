@@ -33,8 +33,9 @@ pub struct Bar {
     pub sink : EventSink,
     pub anchor_top : bool,
     popup_x : f64,
-    width : i32,
-    height : i32,
+    pub scale : i32,
+    pixel_width : i32,
+    pixel_height : i32,
     dirty : bool,
     throttle : Option<Attached<WlCallback>>,
     item : Item,
@@ -45,13 +46,13 @@ impl Bar {
     fn get_render_size(&self) -> usize {
         let mut rv = 0;
         if self.dirty && self.throttle.is_none() {
-            let stride = cairo::Format::ARgb32.stride_for_width(self.width as u32).unwrap();
-            rv += (self.height as usize) * (stride as usize);
+            let stride = cairo::Format::ARgb32.stride_for_width(self.pixel_width as u32).unwrap();
+            rv += (self.pixel_height as usize) * (stride as usize);
         }
         if let Some(popup) = &self.popup {
             if !popup.wl.waiting_on_configure {
-                let stride = cairo::Format::ARgb32.stride_for_width(popup.wl.size.0 as u32).unwrap();
-                rv += (popup.wl.size.1 as usize) * (stride as usize);
+                let stride = cairo::Format::ARgb32.stride_for_width((popup.wl.size.0 * popup.wl.scale) as u32).unwrap();
+                rv += (popup.wl.size.1 * popup.wl.scale) as usize * (stride as usize);
             }
         }
         rv
@@ -62,8 +63,11 @@ impl Bar {
             let rt_item = runtime.items.entry("bar".into()).or_insert_with(Item::none);
             std::mem::swap(&mut self.item, rt_item);
 
-            self.sink = target.with_surface((self.width, self.height), &self.surf, |surf| {
+            self.sink = target.with_surface((self.pixel_width, self.pixel_height), &self.surf, |surf| {
                 let ctx = cairo::Context::new(surf);
+                let mut scale_matrix = cairo::Matrix::identity();
+                scale_matrix.scale(self.scale as f64, self.scale as f64);
+                ctx.set_matrix(scale_matrix);
                 let font = pango::FontDescription::new();
                 ctx.set_operator(cairo::Operator::Clear);
                 ctx.paint();
@@ -111,17 +115,23 @@ impl Bar {
                 return;
             }
             if let Some((_,_,desc)) = self.sink.get_hover(self.popup_x, 0.0) {
-                let new_size = target.with_surface(popup.wl.size, &popup.wl.surf, |surf| {
+                let scale = popup.wl.scale;
+                let pixel_size = (popup.wl.size.0 * scale, popup.wl.size.1 * scale);
+                let new_size = target.with_surface(pixel_size, &popup.wl.surf, |surf| {
                     let ctx = cairo::Context::new(&surf);
                     ctx.set_operator(cairo::Operator::Source);
                     ctx.paint();
                     ctx.set_operator(cairo::Operator::Over);
                     ctx.set_source_rgb(1.0, 1.0, 1.0);
+
+                    let mut scale_matrix = cairo::Matrix::identity();
+                    scale_matrix.scale(scale as f64, scale as f64);
+                    ctx.set_matrix(scale_matrix);
                     desc.render(&ctx, runtime)
                 });
                 popup.wl.surf.commit();
                 if new_size.0 > popup.wl.size.0 || new_size.1 > popup.wl.size.1 {
-                    target.wayland.resize_popup(&self.ls_surf, &mut popup.wl, new_size);
+                    target.wayland.resize_popup(&self.ls_surf, &mut popup.wl, new_size, scale);
                 }
             } else {
                 // contents vanished, dismiss the popup
@@ -140,7 +150,7 @@ impl Bar {
             }
         }
         if let Some((min_x, max_x, desc)) = self.sink.get_hover(x, y) {
-            let anchor = (min_x as i32, 0, (max_x - min_x) as i32, self.height);
+            let anchor = (min_x as i32, 0, (max_x - min_x) as i32, self.pixel_height / self.scale);
             let size = desc.get_size();
 
             let popup = BarPopup {
@@ -398,10 +408,12 @@ impl State {
                 return;
             }
             error!("No bars matched this outptut configuration.  Available outputs:");
-            for data in &state.wayland.outputs {
-                error!(" name='{}' description='{}' at {},{} {}x{}",
-                    data.name, data.description, data.pos_x, data.pos_y, data.size_x, data.size_y);
-            }
+            state.wayland.get_outputs().take_in(|outputs| {
+                for data in outputs {
+                    error!(" name='{}' description='{}' at {},{} {}x{}",
+                        data.name, data.description, data.position.0, data.position.1, data.size.0, data.size.1);
+                }
+            });
         });
 
         let rv = Rc::new(RefCell::new(state));
@@ -476,34 +488,36 @@ impl State {
     }
 
     pub fn output_ready(&mut self, i : usize) {
-        let data = &self.wayland.outputs[i];
-        info!("Output[{}] name='{}' description='{}' at {},{} {}x{}",
-            i, data.name, data.description, data.pos_x, data.pos_y, data.size_x, data.size_y);
-        for (i, cfg) in self.bar_config.iter().enumerate() {
-            if let Some(name) = cfg.get("name").and_then(|v| v.as_str()) {
-                if name != &data.name {
-                    continue;
+        self.wayland.get_outputs().take_in(|outputs| {
+            let data = &outputs[i];
+            info!("Output[{}] name='{}' description='{}' at {},{} {}x{}",
+                i, data.name, data.description, data.position.0, data.position.1, data.size.0, data.size.1);
+            for (i, cfg) in self.bar_config.iter().enumerate() {
+                if let Some(name) = cfg.get("name").and_then(|v| v.as_str()) {
+                    if name != &data.name {
+                        continue;
+                    }
                 }
-            }
-            let mut cfg = cfg.clone();
-            if let Some(table) = cfg.as_table_mut() {
-                table.insert("name".into(), data.name.clone().into());
-            }
+                let mut cfg = cfg.clone();
+                if let Some(table) = cfg.as_table_mut() {
+                    table.insert("name".into(), data.name.clone().into());
+                }
 
-            let bar = self.new_bar(&data.output, cfg, i);
-            self.bars.retain(|bar| {
-                bar.cfg_index != i ||
-                    bar.item.config
-                        .as_ref()
-                        .and_then(|c| c.get("name"))
-                        .and_then(|n| n.as_str())
-                    != Some(&data.name)
-            });
-            self.bars.push(bar);
-        }
+                let bar = self.new_bar(&data.output, data.scale, cfg, i);
+                self.bars.retain(|bar| {
+                    bar.cfg_index != i ||
+                        bar.item.config
+                            .as_ref()
+                            .and_then(|c| c.get("name"))
+                            .and_then(|n| n.as_str())
+                        != Some(&data.name)
+                });
+                self.bars.push(bar);
+            }
+        });
     }
 
-    fn new_bar(&self, output : &WlOutput, cfg : toml::Value, cfg_index : usize) -> Bar {
+    fn new_bar(&self, output : &WlOutput, scale : i32, cfg : toml::Value, cfg_index : usize) -> Bar {
         let ls : Attached<ZwlrLayerShellV1> = self.wayland.env.require_global();
         let surf : Attached<_> = self.wayland.env.create_surface();
         let ls_surf = ls.get_layer_surface(&surf, Some(output), Layer::Top, "bar".to_owned());
@@ -541,8 +555,8 @@ impl State {
                             continue;
                         }
 
-                        bar.width = width as i32;
-                        bar.height = height as i32;
+                        bar.pixel_width = width as i32 * bar.scale;
+                        bar.pixel_height = height as i32 * bar.scale;
 
                         ls_surf.ack_configure(serial);
                         bar.dirty = true;
@@ -563,6 +577,7 @@ impl State {
                 _ => ()
             }
         });
+        surf.set_buffer_scale(scale);
 
         surf.commit();
 
@@ -570,8 +585,9 @@ impl State {
             surf,
             ls_surf : ls_surf.into(),
             item : Item::new_bar(cfg),
-            width : 0,
-            height : 0,
+            scale,
+            pixel_width : 0,
+            pixel_height : 0,
             popup_x : 0.0,
             anchor_top,
             sink : EventSink::default(),

@@ -23,6 +23,9 @@ left = "tvl"
 center = "clock"
 right = "tvr"
 size = 20
+fg = "white"
+bg = "black"
+bg-alpha = 0.3
 the-clock-font = "Liberation Sans 20"
 
 # Everything else is defined in its own section and addressed by name elsewhere.

@@ -527,8 +527,9 @@ impl Item {
             match format.align.horiz.or(ctx.align.horiz) {
                 Some(f) => {
                     inner_x_offset = expand * f;
-                    let mut m = cairo::Matrix::identity();
-                    m.x0 = -inner_x_offset;
+
+                    let mut m = ctx.cairo.get_matrix();
+                    m.translate(-inner_x_offset, 0.0);
                     group.set_matrix(m);
                 }
                 _ => { // defaults to left align
@@ -736,9 +737,10 @@ impl Item {
                 ctx.cairo.set_source(&left);
                 ctx.cairo.paint();
 
-                let mut m = cairo::Matrix::identity();
-                m.x0 = right_size.0 - clip_x1;
-                right_ev.offset_clamp(-m.x0, -m.x0, clip_x1);
+                let mut m = ctx.cairo.get_matrix();
+                let right_offset = clip_x1 - right_size.0; // this is negative
+                m.translate(-right_offset, 0.0);
+                right_ev.offset_clamp(right_offset, right_offset, clip_x1);
                 rv.merge(right_ev);
                 right.set_matrix(m);
                 ctx.cairo.set_source(&right);
@@ -746,21 +748,24 @@ impl Item {
 
                 let max_side = (width - cent_size.0) / 2.0;
                 let total_room = width - (left_size.0 + right_size.0 + cent_size.0);
+                let cent_offset;
                 if total_room < 0.0 {
                     // TODO maybe we should have cropped it?
                     return;
                 } else if left_size.0 > max_side {
                     // left side is too long to properly center; put it just to the right of that
-                    m.x0 = -left_size.0;
+                    cent_offset = left_size.0;
                 } else if right_size.0 > max_side {
                     // right side is too long to properly center; put it just to the left of that
-                    m.x0 = right_size.0 + cent_size.0 - clip_x1;
+                    cent_offset = clip_x1 - right_size.0 - cent_size.0;
                 } else {
                     // Actually center the center module
-                    m.x0 = -max_side;
+                    cent_offset = max_side;
                 }
+                m = ctx.cairo.get_matrix();
+                m.translate(-cent_offset, 0.0);
                 cent.set_matrix(m);
-                cent_ev.offset_clamp(-m.x0, -m.x0, cent_size.0 - m.x0);
+                cent_ev.offset_clamp(cent_offset, cent_offset, cent_offset + cent_size.0);
                 rv.merge(cent_ev);
                 ctx.cairo.set_source(&cent);
                 ctx.cairo.paint();

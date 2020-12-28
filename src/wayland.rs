@@ -1,4 +1,5 @@
 use log::debug;
+use std::rc::Rc;
 use smithay_client_toolkit::environment::{SimpleGlobal,MultiGlobalHandler};
 use smithay_client_toolkit::environment::Environment;
 use smithay_client_toolkit::environment;
@@ -24,66 +25,119 @@ use wayland_protocols::xdg_shell::client::xdg_wm_base::XdgWmBase;
 use std::error::Error;
 
 use crate::state::{Bar,State};
+use crate::util::Cell;
 
 /// Helper for populating [OutputData]
 #[derive(Debug,Default)]
 struct OutputHandler {
-    outputs : Vec<Attached<WlOutput>>,
+    outputs : Rc<Cell<Vec<OutputData>>>,
 }
+
+/// Metadata on a [WlOutput]
+#[derive(Debug)]
+pub struct OutputData {
+    pub output : Attached<WlOutput>,
+    pub xdg : Option<Attached<ZxdgOutputV1>>,
+
+    pub scale : i32,
+
+    pub geometry : (i32, i32),  // real pixels
+    pub position : (i32, i32),  // logical_position from xdg_output
+    pub size : (i32, i32),      // logical_size from xdg_output
+    pub name : String,          // from xdg_output
+    pub description: String,
+}
+
 
 impl MultiGlobalHandler<WlOutput> for OutputHandler {
     fn created(&mut self, registry: Attached<WlRegistry>, id: u32, version: u32, _: wayland_client::DispatchData) {
         assert!(version > 1);
         let version = std::cmp::min(version, 3);
         let output = registry.bind::<WlOutput>(version, id);
-        // TODO is any of this info still useful?  Must record if so.
+        let outputs = self.outputs.clone();
         output.quick_assign(move |output, event, mut data| {
             use wayland_client::protocol::wl_output::Event;
             match event {
-                Event::Geometry { .. } => {
+                Event::Geometry { x, y, .. } => {
+                    outputs.take_in(|outputs| {
+                        for data in outputs {
+                            if data.output != *output {
+                                continue;
+                            }
+                            data.geometry.0 = x;
+                            data.geometry.1 = y;
+                        }
+                    });
                 }
                 Event::Scale { factor } => {
-                    let _ = factor;
+                    outputs.take_in(|outputs| {
+                        for data in outputs {
+                            if data.output != *output {
+                                continue;
+                            }
+                            data.scale = factor;
+                        }
+                    });
                 }
                 Event::Done => {
                     if let Some(state) = data.get::<State>() {
-                        for (i, data) in state.wayland.outputs.iter().enumerate() {
-                            if data.output == *output {
-                                // TODO are there other causes of Done, like resolution change?
-                                state.output_ready(i);
-                                return;
+                        let i = outputs.take_in(|outputs| {
+                            for (i, data) in outputs.iter_mut().enumerate() {
+                                if data.output != *output {
+                                    continue;
+                                }
+                                if data.xdg.is_some() {
+                                    return Some(i);
+                                } else {
+                                    state.wayland.output_finish_setup(data);
+                                    return None;
+                                }
                             }
+                            debug!("Strange, got a Done for an output we don't know about");
+                            None
+                        });
+                        if let Some(i) = i {
+                            state.output_ready(i);
                         }
-                        state.wayland.add_new_output(output.into());
                     }
                 }
                 _ => ()
             }
         });
-        self.outputs.push(output.into());
+        self.outputs.take_in(|outputs| {
+            outputs.push(OutputData {
+                output : output.into(),
+                xdg : None,
+                scale : 1,
+                geometry : (0, 0),
+                position : (0, 0),
+                size : (0, 0),
+                name : String::new(),
+                description: String::new(),
+            });
+        });
     }
-    fn removed(&mut self, id: u32, mut data: wayland_client::DispatchData) {
-        if let Some(state) = data.get::<State>() {
-            state.wayland.outputs.retain(|out| {
+
+    fn removed(&mut self, id: u32, _data: wayland_client::DispatchData) {
+        self.outputs.take_in(|outputs| {
+            outputs.retain(|out| {
                 if out.output.as_ref().id() == id {
-                    out.xdg.destroy();
+                    if let Some(xdg) = &out.xdg {
+                        xdg.destroy();
+                    }
+                    out.output.release();
                     false
                 } else {
                     true
                 }
             });
-        }
-        self.outputs.retain(|out| {
-            if out.as_ref().id() == id {
-                out.release();
-                false
-            } else {
-                true
-            }
         });
     }
+
     fn get_all(&self) -> Vec<Attached<WlOutput>> {
-        self.outputs.clone()
+        self.outputs.take_in(|outputs| {
+            outputs.iter().map(|data| data.output.clone()).collect()
+        })
     }
 }
 
@@ -125,27 +179,12 @@ environment!(Globals,
     ],
 );
 
-/// Metadata on a [WlOutput]
-#[derive(Debug)]
-pub struct OutputData {
-    pub output : Attached<WlOutput>,
-    pub xdg : Attached<ZxdgOutputV1>,
-
-    pub pos_x : i32,
-    pub pos_y : i32,
-    pub size_x : i32,
-    pub size_y : i32,
-    pub name : String,
-    pub description: String,
-}
-
 /// Structures related to the Wayland display
 pub struct WaylandClient {
     pub env : Environment<Globals>,
     pub display : wayland_client::Display,
     pub wl_display : Attached<WlDisplay>,
     pub shm : MemPool,
-    pub outputs : Vec<OutputData>,
     cursor : wayland_cursor::Cursor,
     cursor_surf : Attached<WlSurface>,
 }
@@ -188,14 +227,16 @@ impl WaylandClient {
             shm,
             display,
             wl_display,
-            outputs : Vec::new(),
             cursor,
             cursor_surf,
         };
 
-        for output in client.env.get_all_globals() {
-            client.add_new_output(output);
-        }
+
+        client.get_outputs().take_in(|outputs| {
+            for output in outputs {
+                client.output_finish_setup(output);
+            }
+        });
 
         let _seat_watcher = client.env.listen_for_seats(|seat, si, mut data| {
             let state : &mut State = data.get().unwrap();
@@ -210,6 +251,10 @@ impl WaylandClient {
         client.display.flush()?;
 
         Ok((client, wl_queue))
+    }
+
+    pub fn get_outputs(&self) -> Rc<Cell<Vec<OutputData>>> {
+        self.env.with_inner(|g| g.outputs.outputs.clone())
     }
 
     pub fn add_seat(&mut self, seat : &Attached<WlSeat>, si : &SeatData) {
@@ -337,57 +382,54 @@ impl WaylandClient {
         }
     }
 
-    pub fn add_new_output(&mut self, output : Attached<WlOutput>) {
+    pub fn output_finish_setup(&mut self, output : &mut OutputData) {
         let mgr : Attached<ZxdgOutputManagerV1> = self.env.require_global();
-        let xdg_out = mgr.get_xdg_output(&output);
+        let xdg_out = mgr.get_xdg_output(&output.output);
 
         xdg_out.quick_assign(move |xdg_out, event, mut data| {
             use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_v1::Event;
             let state : &mut State = data.get().unwrap();
-            for (i, data) in state.wayland.outputs.iter_mut().enumerate() {
-                if data.xdg != *xdg_out {
-                    continue;
+            let outputs = state.wayland.get_outputs();
+            let i = outputs.take_in(|outputs| {
+                for (i, data) in outputs.iter_mut().enumerate() {
+                    if data.xdg.as_ref() != Some(&*xdg_out) {
+                        continue;
+                    }
+                    match event {
+                        Event::LogicalPosition { x, y } => {
+                            data.position = (x, y);
+                        }
+                        Event::LogicalSize { width, height } => {
+                            data.size = (width, height);
+                        }
+                        Event::Name { name } => {
+                            data.name = name;
+                        }
+                        Event::Description { description } => {
+                            data.description = description;
+                        }
+                        Event::Done => {
+                            return Some(i);
+                        }
+                        _ => ()
+                    }
+                    return None;
                 }
-                match event {
-                    Event::LogicalPosition { x, y } => {
-                        data.pos_x = x;
-                        data.pos_y = y;
-                    }
-                    Event::LogicalSize { width, height } => {
-                        data.size_x = width;
-                        data.size_y = height;
-                    }
-                    Event::Name { name } => {
-                        data.name = name;
-                    }
-                    Event::Description { description } => {
-                        data.description = description;
-                    }
-                    Event::Done => {
-                        state.output_ready(i);
-                    }
-                    _ => ()
-                }
-                return;
+                None
+            });
+            if let Some(i) = i {
+                state.output_ready(i);
             }
         });
-        self.outputs.push(OutputData {
-            output,
-            xdg : xdg_out.into(),
-            pos_x : 0,
-            pos_y : 0,
-            size_x : 0,
-            size_y : 0,
-            name : String::new(),
-            description: String::new(),
-        });
+
+        output.xdg = Some(xdg_out.into());
     }
 
     pub fn new_popup(&self, bar : &Bar, anchor : (i32, i32, i32, i32), size : (i32, i32)) -> Popup {
-        self.new_popup_on(&bar.ls_surf, !bar.anchor_top, anchor, size)
+        self.new_popup_on(&bar.ls_surf, !bar.anchor_top, anchor, size, bar.scale)
     }
 
-    fn new_popup_on(&self, ls_surf : &ZwlrLayerSurfaceV1, prefer_top : bool, anchor : (i32, i32, i32, i32), size : (i32, i32)) -> Popup {
+    fn new_popup_on(&self, ls_surf : &ZwlrLayerSurfaceV1, prefer_top : bool, anchor : (i32, i32, i32, i32), size : (i32, i32), scale : i32) -> Popup {
         use wayland_protocols::xdg_shell::client::xdg_positioner::{Anchor,Gravity};
         let surf = self.env.create_surface();
         let wmb : Attached<XdgWmBase> = self.env.require_global();
@@ -445,6 +487,7 @@ impl WaylandClient {
 
         ls_surf.get_popup(&as_popup);
         as_xdg.set_window_geometry(0, 0, size.0, size.1);
+        surf.set_buffer_scale(scale);
         surf.commit();
         Popup {
             surf,
@@ -452,12 +495,13 @@ impl WaylandClient {
             as_popup : as_popup.into(),
             anchor,
             size,
+            scale,
             prefer_top,
             waiting_on_configure : true,
         }
     }
 
-    pub fn resize_popup(&self, ls_surf : &ZwlrLayerSurfaceV1, popup : &mut Popup, size : (i32, i32)) {
+    pub fn resize_popup(&self, ls_surf : &ZwlrLayerSurfaceV1, popup : &mut Popup, size : (i32, i32), scale : i32) {
         if popup.as_popup.as_ref().version() >= wayland_protocols::xdg_shell::client::xdg_popup::REQ_REPOSITION_SINCE {
             use wayland_protocols::xdg_shell::client::xdg_positioner::{Anchor,Gravity};
             popup.as_xdg.set_window_geometry(0, 0, size.0, size.1);
@@ -481,7 +525,7 @@ impl WaylandClient {
             popup.as_popup.destroy();
             popup.as_xdg.destroy();
             popup.surf.destroy();
-            *popup = self.new_popup_on(ls_surf, popup.prefer_top, popup.anchor, size);
+            *popup = self.new_popup_on(ls_surf, popup.prefer_top, popup.anchor, size, scale);
         }
     }
 }
@@ -491,7 +535,8 @@ pub struct Popup {
     pub as_xdg : Attached<XdgSurface>,
     pub as_popup : Attached<XdgPopup>,
     pub anchor : (i32, i32, i32, i32),
-    pub size : (i32, i32),
+    pub size : (i32, i32), // logical size
+    pub scale : i32,
     pub waiting_on_configure : bool,
     pub prefer_top : bool,
 }

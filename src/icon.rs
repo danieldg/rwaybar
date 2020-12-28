@@ -120,13 +120,16 @@ fn open_icon(name : &str, target_size : f64) -> io::Result<PathBuf> {
 
 pub fn render(ctx : &Render, name : &str) -> Result<(), ()> {
     let (clip_x0, clip_y0, clip_x1, clip_y1) = ctx.cairo.clip_extents();
-    let size = f64::min(clip_y1 - clip_y0, clip_x1 - clip_x0);
+    let m = ctx.cairo.get_matrix();
+    let (xsize, ysize) = m.transform_distance(clip_y1 - clip_y0, clip_x1 - clip_x0);
+    let logic_size = f64::min(clip_y1 - clip_y0, clip_x1 - clip_x0);
+    let pixel_size = f64::min(xsize, ysize);
 
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let tsize = size as i32;
+        let tsize = pixel_size as i32;
         match cache.entry(name.into()).or_insert_with(|| {
-                open_icon(name, size).ok()
+                open_icon(name, pixel_size).ok()
                 .and_then(|path| gdk_pixbuf::Pixbuf::from_file_at_size(path, tsize, tsize).ok())
                 .and_then(|pixbuf| pixbuf.add_alpha(false, 0,0,0))
                 .and_then(CairoStylePixbuf::parse)
@@ -140,15 +143,15 @@ pub fn render(ctx : &Render, name : &str) -> Result<(), ()> {
                 };
                 let pattern = cairo::SurfacePattern::create(&surf);
                 let point = ctx.cairo.get_current_point();
-                let mut m = cairo::Matrix::identity();
-                m.scale((w as f64 - 0.5) / size, (h as f64 - 0.5) / size);
+                let mut m = ctx.cairo.get_matrix();
+                m.scale((w as f64 - 0.5) / pixel_size, (h as f64 - 0.5) / pixel_size);
                 m.translate(-point.0, 0.0);
                 pattern.set_matrix(m);
                 ctx.cairo.save();
                 ctx.cairo.set_source(&pattern);
                 ctx.cairo.paint();
                 ctx.cairo.restore();
-                ctx.cairo.rel_move_to(size, 0.0);
+                ctx.cairo.rel_move_to(logic_size, 0.0);
                 Ok(())
             }
             None => Err(()),
