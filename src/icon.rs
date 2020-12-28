@@ -6,7 +6,7 @@ use std::path::{PathBuf,Component};
 use crate::item::Render;
 
 thread_local! {
-    static CACHE : RefCell<HashMap<String, Option<CairoStylePixbuf>>> = Default::default();
+    static CACHE : RefCell<HashMap<(String, i32), Option<CairoStylePixbuf>>> = Default::default();
 }
 
 #[derive(Debug)]
@@ -128,7 +128,7 @@ pub fn render(ctx : &Render, name : &str) -> Result<(), ()> {
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let tsize = pixel_size as i32;
-        match cache.entry(name.into()).or_insert_with(|| {
+        match cache.entry((name.into(), tsize)).or_insert_with(|| {
                 open_icon(name, pixel_size).ok()
                 .and_then(|path| gdk_pixbuf::Pixbuf::from_file_at_size(path, tsize, tsize).ok())
                 .and_then(|pixbuf| pixbuf.add_alpha(false, 0,0,0))
@@ -144,7 +144,9 @@ pub fn render(ctx : &Render, name : &str) -> Result<(), ()> {
                 let pattern = cairo::SurfacePattern::create(&surf);
                 let point = ctx.cairo.get_current_point();
                 let mut m = ctx.cairo.get_matrix();
-                m.scale((w as f64 - 0.5) / pixel_size, (h as f64 - 0.5) / pixel_size);
+                if w != tsize && h != tsize {
+                    m.scale((w as f64 - 0.5) / pixel_size, (h as f64 - 0.5) / pixel_size);
+                }
                 m.translate(-point.0, 0.0);
                 pattern.set_matrix(m);
                 ctx.cairo.save();
