@@ -119,7 +119,7 @@ fn open_icon(name : &str, target_size : f64) -> io::Result<PathBuf> {
 }
 
 pub fn render(ctx : &Render, name : &str) -> Result<(), ()> {
-    let (clip_x0, clip_y0, clip_x1, clip_y1) = ctx.cairo.clip_extents();
+    let (clip_x0, clip_y0, clip_x1, clip_y1) = *ctx.render_extents;
     let m = ctx.cairo.get_matrix();
     let (xsize, ysize) = m.transform_distance(clip_y1 - clip_y0, clip_x1 - clip_x0);
     let logic_size = f64::min(clip_y1 - clip_y0, clip_x1 - clip_x0);
@@ -142,18 +142,18 @@ pub fn render(ctx : &Render, name : &str) -> Result<(), ()> {
                     Err(_) => Err(())?,
                 };
                 let pattern = cairo::SurfacePattern::create(&surf);
-                let point = ctx.cairo.get_current_point();
+                let pos = ctx.render_pos.get();
                 let mut m = ctx.cairo.get_matrix();
                 if w != tsize && h != tsize {
                     m.scale((w as f64 - 0.5) / pixel_size, (h as f64 - 0.5) / pixel_size);
                 }
-                m.translate(-point.0, 0.0);
+                m.translate(-pos, 0.0);
                 pattern.set_matrix(m);
                 ctx.cairo.save();
                 ctx.cairo.set_source(&pattern);
                 ctx.cairo.paint();
                 ctx.cairo.restore();
-                ctx.cairo.rel_move_to(logic_size, 0.0);
+                ctx.render_pos.set(pos + logic_size);
                 Ok(())
             }
             None => Err(()),

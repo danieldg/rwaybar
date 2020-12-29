@@ -559,9 +559,9 @@ pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
         let tray = cell.get_or_init(Tray::init);
         tray.interested.take_in(|interest| interest.add(&ctx.runtime));
         tray.items.take_in(|items| {
-            ctx.cairo.rel_move_to(spacing, 0.0);
+            ctx.render_pos.set(ctx.render_pos.get() + spacing);
             for item in items {
-                let x0 = ctx.cairo.get_current_point().0;
+                let x0 = ctx.render_pos.get();
                 let mut done = false;
                 if !done && item.icon_path != "" {
                     let icon = format!("{}/{}.svg", item.icon_path, item.icon);
@@ -582,7 +582,7 @@ pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
                     let item : Item = Module::Value { value : Cell::new(item.title.clone()) }.into();
                     item.render(ctx);
                 }
-                let x1 = ctx.cairo.get_current_point().0;
+                let x1 = ctx.render_pos.get();
                 let mut es = EventSink::from_tray(item.owner.clone(), item.path.clone());
                 es.offset_clamp(0.0, x0, x1);
                 es.add_hover(x0, x1, PopupDesc::Tray(TrayPopup {
@@ -593,7 +593,7 @@ pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
                     rendered_ids : Vec::new(),
                 }));
                 ev.merge(es);
-                ctx.cairo.rel_move_to(spacing, 0.0);
+                ctx.render_pos.set(ctx.render_pos.get() + spacing);
             }
         });
     });

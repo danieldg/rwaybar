@@ -1,15 +1,17 @@
 use crate::data::{Action,Module,IterationItem};
 use crate::state::Runtime;
 use crate::tray;
-use log::{debug,warn,error};
+use crate::util::Cell;
+use log::{warn,error};
 use std::rc::Rc;
 
 /// State available to an [Item] render function
-#[derive(Clone,Copy)]
 pub struct Render<'a> {
     pub cairo : &'a cairo::Context,
     pub font : &'a pango::FontDescription,
     pub text_stroke : Option<(u16, u16, u16, u16)>,
+    pub render_extents : &'a (f64, f64, f64, f64),
+    pub render_pos : &'a Cell<f64>,
     pub align : Align,
     pub err_name : &'a str,
     pub runtime : &'a Runtime,
@@ -464,14 +466,14 @@ impl Item {
             self.render_inner(parent_ctx, &mut rv);
             return rv;
         }
-        let ctx = format.setup_ctx(parent_ctx);
+        let mut ctx = format.setup_ctx(parent_ctx);
 
-        let mut outer_clip = ctx.cairo.clip_extents();
-        let start_pos = ctx.cairo.get_current_point();
+        let mut outer_clip = *ctx.render_extents;
+        let start_pos = ctx.render_pos.get();
         ctx.cairo.push_group();
 
         let mut inner_clip = outer_clip;
-        inner_clip.0 = start_pos.0;
+        inner_clip.0 = start_pos;
 
         let shrink = format.get_shrink();
         if (shrink, format.max_width) != (None, None) {
@@ -494,22 +496,23 @@ impl Item {
                 }
                 None => {}
             }
-            ctx.cairo.rectangle(inner_clip.0, inner_clip.1, inner_clip.2, inner_clip.3);
-            ctx.cairo.clip();
-            ctx.cairo.move_to(inner_clip.0, inner_clip.1);
         }
 
         if let Some(rgba) = format.fg_rgba {
             ctx.cairo.set_source_rgba(rgba.0 as f64 / 65535.0, rgba.1 as f64 / 65535.0, rgba.2 as f64 / 65535.0, rgba.3 as f64 / 65535.0);
         }
 
-        self.render_inner(&ctx, &mut rv);
+        ctx.render_pos.set(inner_clip.0);
 
-        let inner_end = ctx.cairo.get_current_point();
+        ctx.render_extents = &inner_clip;
+        self.render_inner(&ctx, &mut rv);
+        let mut inner_clip = inner_clip;
+
+        let inner_end = ctx.render_pos.get();
         let group = ctx.cairo.pop_group();
         ctx.cairo.save();
 
-        let child_render_width = inner_end.0 - inner_clip.0;
+        let child_render_width = inner_end - inner_clip.0;
         let mut min_width = match format.min_width {
             None => 0.0,
             Some(Width::Pixels(n)) => n,
@@ -615,7 +618,7 @@ impl Item {
             ctx.cairo.paint();
         }
         ctx.cairo.restore();
-        ctx.cairo.move_to(outer_clip.2, outer_clip.1);
+        ctx.render_pos.set(outer_clip.2);
 
         rv
     }
@@ -664,14 +667,14 @@ impl Item {
                     }
                 }
                 let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                ctx.cairo.rel_move_to(spacing, 0.0);
+                ctx.render_pos.set(ctx.render_pos.get() + spacing);
                 for item in items {
-                    let x0 = ctx.cairo.get_current_point().0;
+                    let x0 = ctx.render_pos.get();
                     let mut ev = item.render(ctx);
-                    let x1 = ctx.cairo.get_current_point().0;
+                    let x1 = ctx.render_pos.get();
                     ev.offset_clamp(0.0, x0, x1);
                     rv.merge(ev);
-                    ctx.cairo.rel_move_to(spacing, 0.0);
+                    ctx.render_pos.set(ctx.render_pos.get() + spacing);
                 }
             }
             Module::FocusList { source, items, spacing } => {
@@ -687,28 +690,27 @@ impl Item {
                         return;
                     }
                 };
-                ctx.cairo.rel_move_to(spacing, 0.0);
+                ctx.render_pos.set(ctx.render_pos.get() + spacing);
                 source.data.read_focus_list(ctx.runtime, |focus, item| {
                     item_var.set(Some(item.clone()));
-                    let x0 = ctx.cairo.get_current_point().0;
+                    let x0 = ctx.render_pos.get();
                     let mut ev = if focus {
                         items[1].render(ctx)
                     } else {
                         items[0].render(ctx)
                     };
-                    let x1 = ctx.cairo.get_current_point().0;
+                    let x1 = ctx.render_pos.get();
                     ev.offset_clamp(0.0, x0, x1);
                     for h in &mut ev.handlers {
                         h.item = Some(item.clone());
                     }
                     rv.merge(ev);
-                    ctx.cairo.rel_move_to(spacing, 0.0);
+                    ctx.render_pos.set(ctx.render_pos.get() + spacing);
                 });
                 item_var.set(None);
             }
             Module::Bar { items, .. } => {
-                let start = ctx.cairo.get_current_point();
-                let (clip_x0, clip_y0, clip_x1, _y1) = ctx.cairo.clip_extents();
+                let (clip_x0, _y0, clip_x1, _y1) = *ctx.render_extents;
                 let width = clip_x1 - clip_x0;
 
                 let left = &items[0];
@@ -717,28 +719,28 @@ impl Item {
 
                 ctx.cairo.push_group();
                 let mut left_ev = left.render(&ctx);
-                let left_size = ctx.cairo.get_current_point();
+                let left_size = ctx.render_pos.get();
                 let left = ctx.cairo.pop_group();
-                left_ev.offset_clamp(0.0, 0.0, left_size.0);
+                left_ev.offset_clamp(0.0, 0.0, left_size);
                 rv.merge(left_ev);
 
+                ctx.render_pos.set(0.0);
                 ctx.cairo.push_group();
-                ctx.cairo.move_to(start.0, start.1);
                 let mut cent_ev = center.render(&ctx);
-                let cent_size = ctx.cairo.get_current_point();
+                let cent_size = ctx.render_pos.get();
                 let cent = ctx.cairo.pop_group();
 
+                ctx.render_pos.set(0.0);
                 ctx.cairo.push_group();
-                ctx.cairo.move_to(start.0, start.1);
                 let mut right_ev = right.render(&ctx);
-                let right_size = ctx.cairo.get_current_point();
+                let right_size = ctx.render_pos.get();
                 let right = ctx.cairo.pop_group();
 
                 ctx.cairo.set_source(&left);
                 ctx.cairo.paint();
 
                 let mut m = ctx.cairo.get_matrix();
-                let right_offset = clip_x1 - right_size.0; // this is negative
+                let right_offset = clip_x1 - right_size; // this is negative
                 m.translate(-right_offset, 0.0);
                 right_ev.offset_clamp(right_offset, right_offset, clip_x1);
                 rv.merge(right_ev);
@@ -746,18 +748,18 @@ impl Item {
                 ctx.cairo.set_source(&right);
                 ctx.cairo.paint();
 
-                let max_side = (width - cent_size.0) / 2.0;
-                let total_room = width - (left_size.0 + right_size.0 + cent_size.0);
+                let max_side = (width - cent_size) / 2.0;
+                let total_room = width - (left_size + right_size + cent_size);
                 let cent_offset;
                 if total_room < 0.0 {
                     // TODO maybe we should have cropped it?
                     return;
-                } else if left_size.0 > max_side {
+                } else if left_size > max_side {
                     // left side is too long to properly center; put it just to the right of that
-                    cent_offset = left_size.0;
-                } else if right_size.0 > max_side {
+                    cent_offset = left_size;
+                } else if right_size > max_side {
                     // right side is too long to properly center; put it just to the left of that
-                    cent_offset = clip_x1 - right_size.0 - cent_size.0;
+                    cent_offset = clip_x1 - right_size - cent_size;
                 } else {
                     // Actually center the center module
                     cent_offset = max_side;
@@ -765,12 +767,12 @@ impl Item {
                 m = ctx.cairo.get_matrix();
                 m.translate(-cent_offset, 0.0);
                 cent.set_matrix(m);
-                cent_ev.offset_clamp(cent_offset, cent_offset, cent_offset + cent_size.0);
+                cent_ev.offset_clamp(cent_offset, cent_offset, cent_offset + cent_size);
                 rv.merge(cent_ev);
                 ctx.cairo.set_source(&cent);
                 ctx.cairo.paint();
 
-                ctx.cairo.move_to(clip_x1, clip_y0);
+                ctx.render_pos.set(clip_x1);
             }
             Module::Tray { spacing } => {
                 let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
@@ -793,19 +795,19 @@ impl Item {
                 let size = layout.get_size();
                 let yoff = match ctx.align.vert {
                     Some(f) => {
-                        let (_x0, clip_y0, _x1, clip_y1) = ctx.cairo.clip_extents();
+                        let (_x0, clip_y0, _x1, clip_y1) = *ctx.render_extents;
                         let extra = clip_y1 - clip_y0 - pango::units_to_double(size.1);
                         if extra >= 0.0 {
                             extra * f
                         } else {
-                            debug!("Cannot align text '{}' which exceeds clip bounds", text);
                             0.0
                         }
                     }
                     _ => 0.0,
                 };
-                let start_pos = ctx.cairo.get_current_point();
-                ctx.cairo.rel_move_to(0.0, yoff);
+                let start_pos = ctx.render_pos.get();
+                let ypos = yoff + ctx.render_extents.1;
+                ctx.cairo.move_to(start_pos, ypos);
                 if let Some(rgba) = ctx.text_stroke {
                     ctx.cairo.save();
                     pangocairo::layout_path(ctx.cairo, &layout);
@@ -814,12 +816,12 @@ impl Item {
                     ctx.cairo.restore();
                 }
 
-                ctx.cairo.move_to(start_pos.0, start_pos.1 + yoff);
+                ctx.cairo.move_to(start_pos, ypos);
                 pangocairo::show_layout(ctx.cairo, &layout);
                 let width = pango::units_to_double(size.0);
-                ctx.cairo.move_to(start_pos.0 + width, start_pos.1);
+                ctx.render_pos.set(start_pos + width);
                 if !tooltip.is_empty() {
-                    rv.hovers.push((start_pos.0, start_pos.0 + width, PopupDesc::Text {
+                    rv.hovers.push((start_pos, start_pos + width, PopupDesc::Text {
                         value : tooltip,
                         markup,
                     }));

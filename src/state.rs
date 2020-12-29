@@ -1,7 +1,7 @@
 use futures_util::future::select;
 use futures_util::pin_mut;
 use log::{info,warn,error};
-use std::cell::{Cell,RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::time::Instant;
@@ -17,7 +17,7 @@ use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
 
 use crate::item::*;
 use crate::data::Module;
-use crate::util::spawn_noerr;
+use crate::util::{Cell,spawn_noerr};
 use crate::wayland::{Popup,WaylandClient};
 
 pub struct BarPopup {
@@ -72,12 +72,15 @@ impl Bar {
                 ctx.set_operator(cairo::Operator::Clear);
                 ctx.paint();
                 ctx.set_operator(cairo::Operator::Over);
-                ctx.move_to(0.0, 0.0);
+                let render_extents = ctx.clip_extents();
+                let render_pos = Cell::new(0.0);
 
                 let ctx = Render {
                     cairo : &ctx,
                     font : &font,
                     align : Align::bar_default(),
+                    render_extents : &render_extents,
+                    render_pos : &render_pos,
                     err_name: "bar",
                     text_stroke : None,
                     runtime,
