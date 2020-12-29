@@ -196,8 +196,36 @@ pub struct WaylandClient {
     pub display : wayland_client::Display,
     pub wl_display : Attached<WlDisplay>,
     pub shm : MemPool,
-    cursor : wayland_cursor::Cursor,
+    cursor : Cursor,
+}
+
+struct Cursor {
     cursor_surf : Attached<WlSurface>,
+    spot : (i32, i32),
+}
+
+impl Cursor {
+    fn new(env : &Environment<Globals>, scale : i32) -> Self {
+        let shm = env.require_global();
+        let base_theme = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".into());
+        let base_size = std::env::var("XCURSOR_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(24u32);
+
+        let mut cursor_theme = wayland_cursor::CursorTheme::load_from_name(&base_theme, base_size * scale as u32, &shm);
+        let cursor = cursor_theme.get_cursor("default").expect("Could not load cursor, check XCURSOR_THEME").clone();
+
+        let cursor_surf = env.create_surface();
+        let cursor_img = &cursor[0];
+        let dim = cursor_img.dimensions();
+        let spot = cursor[0].hotspot();
+        cursor_surf.set_buffer_scale(scale);
+        cursor_surf.attach(Some(&cursor_img), 0, 0);
+        cursor_surf.damage_buffer(0, 0, dim.0 as _, dim.1 as _);
+        cursor_surf.commit();
+        Cursor {
+            spot : (spot.0 as i32 / scale, spot.1 as i32 / scale),
+            cursor_surf,
+        }
+    }
 }
 
 impl WaylandClient {
@@ -222,16 +250,15 @@ impl WaylandClient {
             state.shm_ok_callback();
         })?;
 
-        let cursor_shm = env.require_global();
-        let mut cursor_theme = wayland_cursor::CursorTheme::load(32, &cursor_shm);
-        let cursor = cursor_theme.get_cursor("default").expect("Could not load cursor, check XCURSOR_THEME").clone();
-
-        let cursor_surf = env.create_surface();
-        let cursor_img = &cursor[0];
-        let dim = cursor_img.dimensions();
-        cursor_surf.attach(Some(&cursor_img), 0, 0);
-        cursor_surf.damage_buffer(0, 0, dim.0 as _, dim.1 as _);
-        cursor_surf.commit();
+        let mut cursor_scale = 1;
+        env.with_inner(|g| g.outputs.outputs.take_in(|outputs| {
+            for output in outputs {
+                if output.scale > cursor_scale {
+                    cursor_scale = output.scale;
+                }
+            }
+        }));
+        let cursor = Cursor::new(&env, cursor_scale);
 
         let mut client = WaylandClient {
             env,
@@ -239,9 +266,7 @@ impl WaylandClient {
             display,
             wl_display,
             cursor,
-            cursor_surf,
         };
-
 
         client.get_outputs().take_in(|outputs| {
             for output in outputs {
@@ -279,8 +304,8 @@ impl WaylandClient {
                 let state : &mut State = data.get().unwrap();
                 match event {
                     Event::Enter { serial, surface, surface_x, surface_y, .. } => {
-                        let spot = state.wayland.cursor[0].hotspot();
-                        mouse.set_cursor(serial, Some(&state.wayland.cursor_surf), spot.0 as _, spot.1 as _);
+                        let spot = state.wayland.cursor.spot;
+                        mouse.set_cursor(serial, Some(&state.wayland.cursor.cursor_surf), spot.0, spot.1);
 
                         over = Some(surface.as_ref().id());
                         x = surface_x;
