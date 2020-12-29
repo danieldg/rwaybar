@@ -334,7 +334,19 @@ impl WorkspacesData {
     fn parse_update(&self, msg : json::JsonValue) {
         match msg["change"].as_str() {
             Some("focus") => {
-                self.focus.set(msg["current"]["name"].as_str().unwrap_or("").to_owned());
+                if let Some(name) = msg["current"]["name"].as_str() {
+                    self.focus.set(name.to_owned());
+                    if let Some(repr) = msg["current"]["representation"].as_str() {
+                        self.list.take_in(|list| {
+                            for wks in list {
+                                if wks.name == name {
+                                    wks.repr = repr.to_owned();
+                                    return;
+                                }
+                            }
+                        });
+                    }
+                }
             }
             Some("init") => {
                 let new = WorkspaceData {
