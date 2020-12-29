@@ -372,6 +372,10 @@ impl TrayPopupMenu {
                             .map(|label| item.label = label.to_owned());
                         item.visible = props.get("visible").and_then(|v| v.as_i64()) != Some(0);
                         item.enabled = props.get("enabled").and_then(|v| v.as_i64()) != Some(0);
+                        if !item.visible {
+                            // Note: this is needed to correctly hide the sub-menu
+                            break;
+                        }
                         props.get("type").and_then(|v| v.as_str())
                             .map(|v| match v {
                                 "separator" => item.is_sep = true,
