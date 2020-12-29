@@ -8,7 +8,7 @@ use smithay_client_toolkit::shm::MemPool;
 use wayland_client::Attached;
 use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_display::WlDisplay;
-use wayland_client::protocol::wl_output::WlOutput;
+use wayland_client::protocol::wl_output::{WlOutput,Transform};
 use wayland_client::protocol::wl_pointer::{ButtonState,Axis};
 use wayland_client::protocol::wl_registry::WlRegistry;
 use wayland_client::protocol::wl_seat::WlSeat;
@@ -40,11 +40,14 @@ pub struct OutputData {
     pub xdg : Option<Attached<ZxdgOutputV1>>,
 
     pub scale : i32,
+    pub transform : Transform,
 
     pub geometry : (i32, i32),  // real pixels
     pub position : (i32, i32),  // logical_position from xdg_output
     pub size : (i32, i32),      // logical_size from xdg_output
     pub name : String,          // from xdg_output
+    pub make : String,
+    pub model : String,
     pub description: String,
 }
 
@@ -58,7 +61,7 @@ impl MultiGlobalHandler<WlOutput> for OutputHandler {
         output.quick_assign(move |output, event, mut data| {
             use wayland_client::protocol::wl_output::Event;
             match event {
-                Event::Geometry { x, y, .. } => {
+                Event::Geometry { x, y, make, model, transform, .. } => {
                     outputs.take_in(|outputs| {
                         for data in outputs {
                             if data.output != *output {
@@ -66,7 +69,12 @@ impl MultiGlobalHandler<WlOutput> for OutputHandler {
                             }
                             data.geometry.0 = x;
                             data.geometry.1 = y;
+                            data.make = make;
+                            data.model = model;
+                            data.transform = transform;
+                            return;
                         }
+                        debug!("Got a Geometry event for an output we don't know about");
                     });
                 }
                 Event::Scale { factor } => {
@@ -109,10 +117,13 @@ impl MultiGlobalHandler<WlOutput> for OutputHandler {
                 output : output.into(),
                 xdg : None,
                 scale : 1,
+                transform : Transform::Normal,
                 geometry : (0, 0),
                 position : (0, 0),
                 size : (0, 0),
                 name : String::new(),
+                make : String::new(),
+                model : String::new(),
                 description: String::new(),
             });
         });

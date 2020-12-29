@@ -413,8 +413,8 @@ impl State {
             error!("No bars matched this outptut configuration.  Available outputs:");
             state.wayland.get_outputs().take_in(|outputs| {
                 for data in outputs {
-                    error!(" name='{}' description='{}' at {},{} {}x{}",
-                        data.name, data.description, data.position.0, data.position.1, data.size.0, data.size.1);
+                    error!(" name='{}' description='{}' make='{}' model='{}' at {},{} {}x{}",
+                        data.name, data.description, data.make, data.model, data.position.0, data.position.1, data.size.0, data.size.1);
                 }
             });
         });
@@ -473,6 +473,7 @@ impl State {
 
     fn draw_now(&mut self) -> Result<(), Box<dyn Error>> {
         let mut shm_size = 0;
+        let begin = Instant::now();
         for bar in &self.bars {
             shm_size += bar.get_render_size();
         }
@@ -487,17 +488,34 @@ impl State {
             bar.render_with(&mut self.runtime, &mut target);
         }
         self.wayland.display.flush()?;
+        let render_time = begin.elapsed().as_nanos();
+        log::debug!("Frame took {}.{:06} ms", render_time / 1_000_000, render_time % 1_000_000);
         Ok(())
     }
 
     pub fn output_ready(&mut self, i : usize) {
         self.wayland.get_outputs().take_in(|outputs| {
             let data = &outputs[i];
-            info!("Output[{}] name='{}' description='{}' at {},{} {}x{}",
-                i, data.name, data.description, data.position.0, data.position.1, data.size.0, data.size.1);
+            info!("Output[{}] name='{}' description='{}' make='{}' model='{}' at {},{} {}x{}",
+                i, data.name, data.description, data.make, data.model, data.position.0, data.position.1, data.size.0, data.size.1);
             for (i, cfg) in self.bar_config.iter().enumerate() {
                 if let Some(name) = cfg.get("name").and_then(|v| v.as_str()) {
                     if name != &data.name {
+                        continue;
+                    }
+                }
+                if let Some(make) = cfg.get("make").and_then(|v| v.as_str()) {
+                    if make != &data.make {
+                        continue;
+                    }
+                }
+                if let Some(model) = cfg.get("model").and_then(|v| v.as_str()) {
+                    if model != &data.model {
+                        continue;
+                    }
+                }
+                if let Some(description) = cfg.get("description").and_then(|v| v.as_str()) {
+                    if description != &data.description {
                         continue;
                     }
                 }
