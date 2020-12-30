@@ -1,10 +1,16 @@
-use log::debug;
+use log::{debug,error};
+use std::cell::RefCell;
+use std::convert::Infallible;
+use std::error::Error;
+use std::io;
 use std::rc::Rc;
+use std::task;
 use smithay_client_toolkit::environment::{SimpleGlobal,MultiGlobalHandler};
 use smithay_client_toolkit::environment::Environment;
 use smithay_client_toolkit::environment;
 use smithay_client_toolkit::seat::SeatData;
 use smithay_client_toolkit::shm::MemPool;
+use tokio::io::unix::AsyncFd;
 use wayland_client::Attached;
 use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_display::WlDisplay;
@@ -22,10 +28,8 @@ use wayland_protocols::xdg_shell::client::xdg_popup::XdgPopup;
 use wayland_protocols::xdg_shell::client::xdg_surface::XdgSurface;
 use wayland_protocols::xdg_shell::client::xdg_wm_base::XdgWmBase;
 
-use std::error::Error;
-
 use crate::state::{Bar,State};
-use crate::util::Cell;
+use crate::util::{self,Cell};
 
 /// Helper for populating [OutputData]
 #[derive(Debug,Default)]
@@ -193,10 +197,11 @@ environment!(Globals,
 /// Structures related to the Wayland display
 pub struct WaylandClient {
     pub env : Environment<Globals>,
-    pub display : wayland_client::Display,
     pub wl_display : Attached<WlDisplay>,
     pub shm : MemPool,
     cursor : Cursor,
+    flush : Option<task::Waker>,
+    need_flush : bool,
 }
 
 struct Cursor {
@@ -263,9 +268,10 @@ impl WaylandClient {
         let mut client = WaylandClient {
             env,
             shm,
-            display,
             wl_display,
             cursor,
+            flush : None,
+            need_flush : true,
         };
 
         client.get_outputs().take_in(|outputs| {
@@ -283,14 +289,16 @@ impl WaylandClient {
             smithay_client_toolkit::seat::with_seat_data(&seat, |si| client.add_seat(&seat, si));
         }
 
-        // kick off the initial configuration events
-        client.display.flush()?;
-
         Ok((client, wl_queue))
     }
 
     pub fn get_outputs(&self) -> Rc<Cell<Vec<OutputData>>> {
         self.env.with_inner(|g| g.outputs.outputs.clone())
+    }
+
+    pub fn flush(&mut self) {
+        self.need_flush = true;
+        self.flush.take().map(|f| f.wake());
     }
 
     pub fn add_seat(&mut self, seat : &Attached<WlSeat>, si : &SeatData) {
@@ -563,6 +571,75 @@ impl WaylandClient {
             popup.surf.destroy();
             *popup = self.new_popup_on(ls_surf, popup.prefer_top, popup.anchor, size, scale);
         }
+    }
+}
+
+pub async fn run_queue(mut wl_queue : wayland_client::EventQueue, state : Rc<RefCell<State>>) -> io::Result<Infallible> {
+    let fd = AsyncFd::new(util::Fd(wl_queue.display().get_connection_fd()))?;
+    let mut reader = None;
+    let mut rg = None;
+    let mut wg = None;
+
+    loop {
+        if reader.is_none() {
+            reader = wl_queue.prepare_read();
+        }
+
+        futures_util::future::poll_fn(|ctx| {
+            let mut state = state.borrow_mut();
+            match &state.wayland.flush {
+                Some(w) if w.will_wake(ctx.waker()) => (),
+                _ => state.wayland.flush = Some(ctx.waker().clone()),
+            }
+
+            rg = match fd.poll_read_ready(ctx) {
+                task::Poll::Ready(g) => Some(g?),
+                task::Poll::Pending => None,
+            };
+
+            wg = match fd.poll_write_ready(ctx) {
+                task::Poll::Ready(g) => Some(g?),
+                task::Poll::Pending => None,
+            };
+
+            if state.wayland.need_flush && wg.is_some() {
+                task::Poll::Ready(Ok(()))
+            } else if rg.is_some() {
+                task::Poll::Ready(Ok(()))
+            } else {
+                task::Poll::Pending::<io::Result<()>>
+            }
+        }).await?;
+
+        if let Some(g) = &mut wg {
+            match wl_queue.display().flush() {
+                Ok(()) => {
+                    state.borrow_mut().wayland.need_flush = false;
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    g.clear_ready();
+                }
+                Err(e) => Err(e)?,
+            }
+        }
+
+        if let Some(g) = &mut rg {
+            match reader.take().map(|g| g.read_events()) {
+                None |
+                Some(Ok(())) => {
+                    // dispatch events and continue
+                }
+                Some(Err(e)) if e.kind() == io::ErrorKind::WouldBlock => {
+                    g.clear_ready();
+                }
+                Some(Err(e)) => Err(e)?,
+            }
+        }
+
+        let mut lock = state.borrow_mut();
+        wl_queue.dispatch_pending(&mut *lock, |event, object, _| {
+            error!("Orphan event: {}@{} : {}", event.interface, object.as_ref().id(), event.name);
+        })?;
     }
 }
 

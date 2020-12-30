@@ -487,7 +487,7 @@ impl State {
         for bar in &mut self.bars {
             bar.render_with(&mut self.runtime, &mut target);
         }
-        self.wayland.display.flush()?;
+        self.wayland.flush();
         let render_time = begin.elapsed().as_nanos();
         log::debug!("Frame took {}.{:06} ms", render_time / 1_000_000, render_time % 1_000_000);
         Ok(())

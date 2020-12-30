@@ -412,11 +412,13 @@ impl Module {
 
             }
             Module::ReadFile { name, poll, last_read, contents } => {
+                use std::io::Read;
                 if !Self::should_read_now(*poll, last_read, rt) {
                     return;
                 }
-                match std::fs::read_to_string(&name) {
-                    Ok(v) => {
+                let mut v = String::with_capacity(4096);
+                match std::fs::File::open(&name).and_then(|mut f| f.read_to_string(&mut v)) {
+                    Ok(_len) => {
                         contents.set(v);
                     }
                     Err(e) => {
