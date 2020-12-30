@@ -230,7 +230,7 @@ impl<'a> RenderTarget<'a> {
 }
 
 #[derive(Debug)]
-pub struct Notifier {
+struct Notifier {
     inner : Rc<NotifierInner>,
 }
 
@@ -272,7 +272,7 @@ impl NotifierList {
 /// Common state available during rendering operations
 pub struct Runtime {
     pub items : HashMap<String, Item>,
-    pub notify : Notifier,
+    notify : Notifier,
     refresh : Rc<RefreshState>,
 }
 

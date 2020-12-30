@@ -975,7 +975,7 @@ pub fn read_in<F : FnOnce(&str) -> R, R>(cfg_name : &str, target : &str, mut key
     })
 }
 
-pub fn do_write(_name : &str, target : &str, mut key : &str, value : String, rt : &Runtime) {
+pub fn do_write(_name : &str, target : &str, mut key : &str, value : String, _rt : &Runtime) {
     let mut target = target;
     if target.is_empty() {
         if let Some(pos) = key.rfind('.') {
@@ -1027,7 +1027,7 @@ pub fn do_write(_name : &str, target : &str, mut key : &str, value : String, rt 
                         } else {
                             ctx.introspect().set_source_volume_by_index(port.index, &port.volume, None);
                         }
-                        rt.notify.notify_data();
+                        pulse.interested.take().notify_data();
                     }
                     "mute" => {
                         let old = port.mute;
@@ -1049,7 +1049,7 @@ pub fn do_write(_name : &str, target : &str, mut key : &str, value : String, rt 
                         } else {
                             ctx.introspect().set_source_mute_by_index(port.index, new, None);
                         }
-                        rt.notify.notify_data();
+                        pulse.interested.take().notify_data();
                     }
                     _ => {
                         info!("Ignoring write to unknown key '{}'", target);
