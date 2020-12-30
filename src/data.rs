@@ -105,6 +105,7 @@ pub enum Module {
     },
     Value {
         value : Cell<String>,
+        interested : Cell<NotifierList>,
     },
 }
 
@@ -305,24 +306,30 @@ impl Module {
                 }
             }
             Some("value") => {
-                let value = value.get("value").and_then(|v| v.as_str()).unwrap_or_default();
-                Module::Value { value : Cell::new(value.into()) }
+                Module::new_value(toml_to_string(value.get("value")).unwrap_or_default())
             }
             Some(_) => {
                 Module::None
             }
             None => {
                 if let Some(value) = value.as_str() {
-                    Module::Value { value : Cell::new(value.into()) }
+                    Module::new_value(value)
                 } else if let Some(format) = value.get("format").and_then(|v| v.as_str()) {
                     let tooltip = value.get("tooltip").and_then(|v| v.as_str()).unwrap_or("").to_owned();
                     Module::Formatted { format : format.into(), tooltip, looped : Cell::new(false) }
-                } else if let Some(value) = value.get("value").and_then(|v| v.as_str()) {
-                    Module::Value { value : Cell::new(value.into()) }
+                } else if let Some(value) = toml_to_string(value.get("value")) {
+                    Module::new_value(value)
                 } else {
                     Module::None
                 }
             }
+        }
+    }
+
+    pub fn new_value<T : Into<String>>(t : T) -> Self {
+        Module::Value {
+            value : Cell::new(t.into()),
+            interested : Default::default(),
         }
     }
 
@@ -361,7 +368,7 @@ impl Module {
         }
     }
 
-    fn should_read_now(poll : f64, last_read : &Cell<Option<Instant>>, rt : &Runtime) -> bool {
+    fn should_read_now(poll : f64, last_read : &Cell<Option<Instant>>, rt : &Runtime, who : &'static str) -> bool {
         let now = Instant::now();
         if poll > 0.0 {
             let last = last_read.get();
@@ -369,11 +376,11 @@ impl Module {
                 let next = last + Duration::from_secs_f64(poll);
                 let early = last + Duration::from_secs_f64(poll * 0.9);
                 if early > now {
-                    rt.set_wake_at(next);
+                    rt.set_wake_at(next, who);
                     return false;
                 }
             }
-            rt.set_wake_at(now + Duration::from_secs_f64(poll));
+            rt.set_wake_at(now + Duration::from_secs_f64(poll), who);
         } else if last_read.get().is_some() {
             return false;
         }
@@ -408,7 +415,7 @@ impl Module {
 
                 // Set a timer to expire when the subsecond offset will be zero
                 // add another 1ms delay because epoll only gets 1ms granularity
-                rt.set_wake_at(wake);
+                rt.set_wake_at(wake, "clock");
 
                 if real_zone.is_empty() {
                     time.set(format!("{}", now.with_timezone(&chrono::Local).format(&real_format)));
@@ -424,7 +431,7 @@ impl Module {
                 }
             }
             Module::Disk { path, poll, last_read, contents } => {
-                if !Self::should_read_now(*poll, last_read, rt) {
+                if !Self::should_read_now(*poll, last_read, rt, "disk") {
                     return;
                 }
                 let cstr = std::ffi::CString::new(path.as_bytes()).unwrap();
@@ -439,7 +446,7 @@ impl Module {
             }
             Module::ReadFile { name, poll, last_read, contents } => {
                 use std::io::Read;
-                if !Self::should_read_now(*poll, last_read, rt) {
+                if !Self::should_read_now(*poll, last_read, rt, "read-file") {
                     return;
                 }
                 let mut v = String::with_capacity(4096);
@@ -671,7 +678,10 @@ impl Module {
                 looped.set(false);
                 f(&text)
             }
-            Module::Value { value } => value.take_in(|s| f(s)),
+            Module::Value { value, interested } => {
+                interested.take_in(|i| i.add(rt));
+                value.take_in(|s| f(s))
+            }
         }
     }
 
@@ -715,7 +725,8 @@ impl Module {
             Module::MediaPlayer2 { target } => mpris::write(name, target, key, value, rt),
             Module::Pulse { target } => pulse::do_write(name, target, key, value, rt),
             Module::SwayWorkspace(ws) => ws.write(name, key, value, rt),
-            Module::Value { value : v } if key == "" => {
+            Module::Value { value : v, interested } if key == "" => {
+                interested.take().notify_data("value");
                 v.set(value);
             }
             _ => {
@@ -878,7 +889,7 @@ fn do_exec_json(fd : i32, name : String, value : Rc<(Cell<JsonValue>, Cell<Notif
                         buffer.drain(..eol + 1);
                         let json = match json { Some(json) => json, None => continue };
                         value.0.set(json);
-                        value.1.take().notify_data();
+                        value.1.take().notify_data("exec-json");
                     }
                 }
             }.await {

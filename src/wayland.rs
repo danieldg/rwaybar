@@ -362,7 +362,6 @@ impl WaylandClient {
                                 bar.popup_button(x,y,button_id, &mut state.runtime);
                             }
                         }
-                        state.request_update();
                         return;
                     }
                     Event::Axis { axis, value, .. } => {
@@ -383,7 +382,6 @@ impl WaylandClient {
                                 bar.popup_button(x,y,button_id, &mut state.runtime);
                             }
                         }
-                        state.request_update();
                         return;
                     }
                     _ => {

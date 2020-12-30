@@ -217,7 +217,7 @@ impl Mode {
                 match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                     Ok(Ok(msg)) => {
                         msg["change"].as_str().map(|mode| mi.mode.set(mode.to_owned()));
-                        mi.interested.take().notify_data();
+                        mi.interested.take().notify_data("sway:mode");
                     }
                     _ => warn!("Ignoring invalid mode change message")
                 }
@@ -235,7 +235,7 @@ impl Mode {
             match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                 Ok(Ok(msg)) => {
                     msg["name"].as_str().map(|mode| value.mode.set(mode.to_owned()));
-                    value.interested.take().notify_data();
+                    value.interested.take().notify_data("sway:mode");
                 }
                 _ => warn!("Ignoring invalid get_binding_state reply")
             }
@@ -419,7 +419,7 @@ impl Workspace {
                 match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                     Ok(Ok(msg)) => {
                         value.parse_update(msg);
-                        value.interested.take().notify_data();
+                        value.interested.take().notify_data("sway:workspace");
                     }
                     _ => warn!("Ignoring invalid workspace change message")
                 }
@@ -450,7 +450,7 @@ impl Workspace {
                         list.push(new);
                     }
                     value.list.set(list);
-                    value.interested.take().notify_data();
+                    value.interested.take().notify_data("sway:workspace");
                 }
                 _ => warn!("Ignoring invalid get_workspaces reply")
             }

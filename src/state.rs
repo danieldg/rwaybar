@@ -1,6 +1,6 @@
 use futures_util::future::select;
 use futures_util::pin_mut;
-use log::{info,warn,error};
+use log::{debug,info,warn,error};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
@@ -168,7 +168,7 @@ impl Bar {
         if let Some(popup) = &mut self.popup {
             let vanish = Instant::now() + std::time::Duration::from_millis(100);
             popup.vanish = Some(vanish);
-            runtime.set_wake_at(vanish);
+            runtime.set_wake_at(vanish, "bar-hover");
         }
     }
 
@@ -241,7 +241,8 @@ struct NotifierInner {
 }
 
 impl Notifier {
-    pub fn notify_data(&self) {
+    pub fn notify_data(&self, who : &str) {
+        debug!("{} triggered refresh", who);
         self.inner.data_update.set(true);
         self.inner.notify.notify_one();
     }
@@ -264,8 +265,8 @@ impl NotifierList {
 
     /// Notify the bars in the list, and then remove them until they  Future calls to notify_data
     /// will do nothing until you add() bars again.
-    pub fn notify_data(&mut self) {
-        self.0.take().map(|n| n.notify_data());
+    pub fn notify_data(&mut self, who : &str) {
+        self.0.take().map(|n| n.notify_data(who));
     }
 }
 
@@ -279,17 +280,19 @@ pub struct Runtime {
 #[derive(Default)]
 struct RefreshState {
     time : Cell<Option<Instant>>,
+    cause : Cell<&'static str>,
     notify : tokio::sync::Notify,
 }
 
 impl Runtime {
-    pub fn set_wake_at(&self, wake : Instant) {
+    pub fn set_wake_at(&self, wake : Instant, who : &'static str) {
         match self.refresh.time.get() {
             Some(t) if t < wake => return,
             _ => ()
         }
 
         self.refresh.time.set(Some(wake));
+        self.refresh.cause.set(who);
         self.refresh.notify.notify_one();
     }
 
@@ -392,9 +395,8 @@ impl State {
                     pin_mut!(sleep, wake);
                     match select(sleep, wake).await {
                         Either::Left(_) => {
-                            log::debug!("wake_at triggered refresh");
                             refresh.time.set(None);
-                            notify.notify_data();
+                            notify.notify_data(refresh.cause.get());
                         }
                         _ => {}
                     }
@@ -429,10 +431,6 @@ impl State {
         });
         
         Ok(rv)
-    }
-
-    pub fn request_update(&mut self) {
-        self.runtime.notify.notify_data();
     }
 
     pub fn request_draw(&mut self) {

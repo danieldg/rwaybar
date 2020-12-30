@@ -294,7 +294,7 @@ fn do_del_item(item : String) {
         tray.items.take_in(|items| {
             items.retain(|item| item.owner != owner || item.path != path);
         });
-        tray.interested.take().notify_data();
+        tray.interested.take().notify_data("tray:item");
     });
 }
 
@@ -320,7 +320,7 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<String, Varian
                 }
             }
         });
-        tray.interested.take().notify_data();
+        tray.interested.take().notify_data("tray:item");
     });
 }
 
@@ -449,7 +449,7 @@ async fn refresh_menu(menu : Rc<TrayPopupMenu>, owner : String, menu_path : Stri
     let mut items = Vec::new();
     TrayPopupMenu::add_items(&mut items, &mut contents.into_iter(), 0);
     menu.items.set(items);
-    menu.interested.take().notify_data();
+    menu.interested.take().notify_data("tray:menu");
     menu.fresh.set(true);
 
     Ok(())
@@ -583,7 +583,7 @@ pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
                     done = true;
                 }
                 if !done {
-                    let item : Item = Module::Value { value : Cell::new(item.title.clone()) }.into();
+                    let item : Item = Module::new_value(&item.title).into();
                     item.render(ctx);
                 }
                 let x1 = ctx.render_pos.get();

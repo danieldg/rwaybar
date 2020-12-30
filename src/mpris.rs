@@ -77,7 +77,7 @@ async fn initial_query(target : Rc<MediaPlayer2>, name : String) -> Result<(), B
             playing,
             meta : Some(meta),
         });
-        inner.interested.notify_data();
+        inner.interested.notify_data("mpris:init");
     });
 
     Ok(())
@@ -119,7 +119,7 @@ impl MediaPlayer2 {
                         let interested = &mut inner.interested;
                         inner.players.retain(|player| {
                             if player.owner == name || player.name == name {
-                                interested.notify_data();
+                                interested.notify_data("mpris:new");
                                 false
                             } else {
                                 true
@@ -173,7 +173,7 @@ impl MediaPlayer2 {
             if let Some(new) = new {
                 inner.players.push(new);
             }
-            inner.interested.notify_data();
+            inner.interested.notify_data("mpris:props");
         });
     }
 }
