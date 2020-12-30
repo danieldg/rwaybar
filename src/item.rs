@@ -783,8 +783,8 @@ impl Item {
             // All other modules are rendered as text
             _ => {
                 let markup = self.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
-                let text = self.data.read_in(ctx.err_name, "text", &ctx.runtime, |s| s.to_string());
-                let tooltip = self.data.read_in(ctx.err_name, "tooltip", &ctx.runtime, |s| s.to_string());
+                let text = self.data.read_to_string(ctx.err_name, "text", &ctx.runtime);
+                let tooltip = self.data.read_to_string(ctx.err_name, "tooltip", &ctx.runtime);
                 let layout = pangocairo::create_layout(ctx.cairo).unwrap();
                 layout.set_font_description(Some(ctx.font));
                 if markup {

@@ -138,7 +138,12 @@ Key | Expanded | Default | Details
 
 Key | Expanded | Default | Details
 ----|----------|---------|--------
-`format` | Yes | -- | Mathematical expression to evaluate
+`expr` | No | -- | Expression to evaluate
+\* | Yes | -- | Variables usable in the expression
+
+Evaluates the given expression.  Basic math and logic operators are supported,
+but not variable assignment, conditionals, looping, or recursion.  All other
+keys in this block are expanded and can be read in the expression.
 
 ## exec-json
 

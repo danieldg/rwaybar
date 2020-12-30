@@ -37,7 +37,7 @@ wayland-protocols = ""
 chrono = ""
 chrono-tz = ""
 dbus = { version = "", features = ['futures'] }
-eval = ""
+evalexpr = ""
 gdk-pixbuf = ""
 libpulse-binding = ""
 regex = ""

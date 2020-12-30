@@ -6,6 +6,7 @@ use crate::state::Runtime;
 use crate::sway;
 use crate::tray;
 use crate::util::{Cell,Fd,toml_to_string,toml_to_f64,spawn_noerr};
+use evalexpr::Node as EvalExpr;
 use json::JsonValue;
 use log::{debug,info,warn,error};
 use std::io;
@@ -37,7 +38,8 @@ pub enum Module {
         contents : Cell<libc::statvfs>,
     },
     Eval {
-        format : String,
+        expr : EvalExpr,
+        vars : Vec<(String, String)>,
         looped : Cell<bool>,
     },
     ExecJson {
@@ -128,11 +130,35 @@ impl Module {
                 Module::Disk { path, poll, last_read: Cell::default(), contents : Cell::new(v) }
             }
             Some("eval") => {
-                let format = value.get("format").and_then(|v| v.as_str()).unwrap_or_else(|| {
-                    error!("Eval variables require a format: {}", value);
-                    ""
-                }).to_owned();
-                Module::Eval { format, looped : Cell::new(false) }
+                match value.get("expr")
+                    .and_then(|v| v.as_str())
+                    .map(|expr| evalexpr::build_operator_tree(&expr))
+                {
+                    Some(Ok(expr)) => {
+                        let mut vars = Vec::new();
+                        for ident in expr.iter_variable_identifiers() {
+                            if vars.iter().find(|(k, _)| k == ident).is_some() {
+                                continue;
+                            }
+                            match toml_to_string(value.get(ident)) {
+                                Some(value) => vars.push((ident.into(), value)),
+                                None => {
+                                    error!("Undefined variable '{}' in expression", ident);
+                                    return Module::None;
+                                }
+                            }
+                        }
+                        Module::Eval { expr, vars, looped : Cell::new(false) }
+                    }
+                    Some(Err(e)) => {
+                        error!("Could not parse expression: {}", e);
+                        Module::None
+                    }
+                    None => {
+                        error!("Eval blocks require an expression");
+                        Module::None
+                    }
+                }
             }
             Some("exec-json") => {
                 let command = match value.get("command").and_then(|v| v.as_str()) {
@@ -432,6 +458,13 @@ impl Module {
 
     /// Read the value of a variable
     ///
+    /// This is identical to read_in, but returns a String instead of using a callback closure.
+    pub fn read_to_string(&self, name : &str, key : &str, rt : &Runtime) -> String {
+        self.read_in(name, key, rt, |s| s.into())
+    }
+
+    /// Read the value of a variable
+    ///
     /// The provided closure should be passed the value of the variable.  This is done instead of
     /// returning the value to avoid unneeded string copies.
     ///
@@ -471,18 +504,70 @@ impl Module {
                     _ => f("")
                 }
             }
-            Module::Eval { format, looped } => {
+            Module::Eval { expr, vars, looped } => {
                 if looped.get() {
                     error!("Recursion detected when expanding {}", name);
                     return f("");
                 }
+                struct Context<'a> {
+                    float : evalexpr::Function,
+                    int : evalexpr::Function,
+                    vars : Vec<(&'a str, evalexpr::Value)>,
+                }
+                impl<'a> evalexpr::Context for Context<'a> {
+                    fn get_value(&self, name : &str) -> Option<&evalexpr::Value> {
+                        self.vars.iter()
+                            .filter(|&&(k,_)| k == name)
+                            .next()
+                            .map(|(_,v)| v)
+                    }
+                    fn get_function(&self, name : &str) -> Option<&evalexpr::Function> {
+                        match name {
+                            "float" => Some(&self.float),
+                            "int" => Some(&self.int),
+                            _ => None,
+                        }
+                    }
+                }
                 looped.set(true);
-                let value = rt.format_or(&format, &name);
+                let ctx = Context {
+                    int : evalexpr::Function::new(Box::new(move |arg| {
+                        let rv = arg.as_string()?;
+                        match rv.trim().parse() {
+                            Ok(v) => Ok(evalexpr::Value::Int(v)),
+                            Err(_) => Err(evalexpr::error::EvalexprError::ExpectedInt {
+                                actual : evalexpr::Value::String(rv),
+                            })
+                        }
+                    })),
+                    float : evalexpr::Function::new(Box::new(move |arg| {
+                        let rv = arg.as_string()?;
+                        match rv.trim().parse() {
+                            Ok(v) => Ok(evalexpr::Value::Float(v)),
+                            Err(_) => Err(evalexpr::error::EvalexprError::ExpectedFloat {
+                                actual : evalexpr::Value::String(rv),
+                            })
+                        }
+                    })),
+                    vars : vars.iter()
+                        .map(|(k,v)| {
+                            (&k[..], evalexpr::Value::String(rt.format_or(v, k)))
+                        })
+                        .collect(),
+                };
                 looped.set(false);
-                match eval::eval(&value) {
-                    Ok(v) => f(&format!("{}", v)),
+                match expr.eval_with_context(&ctx) {
+                    Ok(evalexpr::Value::String(s)) => f(&s),
+                    Ok(evalexpr::Value::Float(n)) => f(&format!("{}", n)),
+                    Ok(evalexpr::Value::Int(n)) => f(&format!("{}", n)),
+                    Ok(evalexpr::Value::Boolean(b)) => f(if b { "1" } else { "0" }),
+                    Ok(evalexpr::Value::Empty) => f(""),
+                    Ok(_) => {
+                        warn!("Ignoring invalid return type from eval");
+                        f("")
+                    }
                     Err(e) => {
-                        warn!("Eval error: {}", e);
+                        warn!("Eval error in {}: {}", name, e);
                         f("")
                     }
                 }

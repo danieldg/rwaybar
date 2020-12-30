@@ -197,7 +197,8 @@ poll = 20
 
 [temp1]
 type = "eval"
-format = "{temp1_raw} / 1000"
+temp = "{temp1_raw}"
+expr = "float(temp) / 1000"
 
 [hdd-icon]
 type = "meter"
@@ -244,7 +245,8 @@ poll = 20
 
 [cpu_temp]
 type = "eval"
-format = "{temp3_raw} / 1000"
+temp = "{temp3_raw}"
+expr = "float(temp) / 1000"
 
 [cpu_icon]
 type = "meter"
