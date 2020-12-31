@@ -13,14 +13,21 @@ right = "dp-right"
 
 ```
 
-Key | Value | Required | Expanded | Default
-----|-------|----------|----------|--------
-`name` | The output name (connector) for this bar. | No | No | Display on all outputs.
-`size` | The size of the bar in pixels | No | No | `20`
-`side` | `top` or `bottom` | No | No | `bottom`
-`left` | Block or list of blocks | No | No | None
-`center` | Block or list of blocks | No | No | None
-`right` | Block or list of blocks | No | No | None
+Key | Value | Expanded | Default
+----|-------|----------|--------
+`name` | The output name (connector) for this bar. | No | Display on all outputs matching make, model, and description.
+`make` | A regex that must match the make of the monitor | No | Display on all monitors
+`model` | A regex that must match the model of the monitor | No | Display on all monitors
+`description` | A regex that must match the description of the monitor | No | Display on all monitors
+`size` | The size of the bar in pixels | No | `20`
+`side` | `top` or `bottom` | No | `bottom`
+`left` | Block or list of blocks | No | None
+`center` | Block or list of blocks | No | None
+`right` | Block or list of blocks | No | None
+
+You can view the name/make/model/description for your monitors by running
+`RUST_LOG=info rwaybar`; they are also displayed by default if the
+configuration does not produce any matching bars.
 
 Note: the bar configuration may also include [formatting rules](#formatting)
 and other arbitrary text values accessible in [text expansions](#text-expansion).

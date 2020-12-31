@@ -503,18 +503,39 @@ impl State {
                     }
                 }
                 if let Some(make) = cfg.get("make").and_then(|v| v.as_str()) {
-                    if make != &data.make {
-                        continue;
+                    match regex::Regex::new(make) {
+                        Ok(re) => {
+                            if !re.is_match(&data.make) {
+                                continue;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Ignoring invalid regex in bar.make: {}", e);
+                        }
                     }
                 }
                 if let Some(model) = cfg.get("model").and_then(|v| v.as_str()) {
-                    if model != &data.model {
-                        continue;
+                    match regex::Regex::new(model) {
+                        Ok(re) => {
+                            if !re.is_match(&data.model) {
+                                continue;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Ignoring invalid regex in bar.model: {}", e);
+                        }
                     }
                 }
                 if let Some(description) = cfg.get("description").and_then(|v| v.as_str()) {
-                    if description != &data.description {
-                        continue;
+                    match regex::Regex::new(description) {
+                        Ok(re) => {
+                            if !re.is_match(&data.description) {
+                                continue;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Ignoring invalid regex in bar.description: {}", e);
+                        }
                     }
                 }
                 let mut cfg = cfg.clone();
