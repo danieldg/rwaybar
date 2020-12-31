@@ -202,9 +202,7 @@ impl Formatting {
         };
         if let Some(color) = color {
             let cstr = std::ffi::CString::new(color).unwrap();
-            unsafe {
-                pango_sys::pango_color_parse(&mut pc, cstr.as_ptr());
-            }
+            unsafe { pango_sys::pango_color_parse(&mut pc, cstr.as_ptr()); }
         }
         let alpha_f = alpha.unwrap_or(1.0) * 65535.0;
         let alpha_i = f64::min(65535.0, f64::max(0.0, alpha_f)) as u16;

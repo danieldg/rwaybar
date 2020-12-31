@@ -13,8 +13,7 @@ thread_local! {
 struct CairoStylePixbuf {
     w : i32,
     h : i32,
-    s : i32,
-    buf : Box<[u8]>,
+    surf : cairo::ImageSurface,
 }
 
 impl CairoStylePixbuf {
@@ -25,14 +24,14 @@ impl CairoStylePixbuf {
         let w = pixbuf.get_width() as i32;
         let h = pixbuf.get_height() as i32;
         let src_s = pixbuf.get_rowstride() as i32;
-        let s = cairo::Format::ARgb32.stride_for_width(w as u32).ok()?;
-        let mut buf = vec![0;(h*s) as usize].into_boxed_slice();
+        let dst_s = cairo::Format::ARgb32.stride_for_width(w as u32).ok()?;
+        let mut buf = vec![0;(h*dst_s) as usize].into_boxed_slice();
 
-        let pixels = unsafe { &*pixbuf.get_pixels() }; // convert to non-mut and it's safe
+        let pixels = unsafe { &*pixbuf.get_pixels() }; // this would be safe if non-mut
         let idx_map = u32::to_ne_bytes(u32::from_be_bytes([0,1,2,3]));
         for r in 0..h {
             let src_i = r * src_s;
-            let dst_i = r * s;
+            let dst_i = r * dst_s;
             for c in 0..w {
                 let src_i = (src_i + c * 4) as usize;
                 let dst_i = (dst_i + c * 4) as usize;
@@ -46,7 +45,8 @@ impl CairoStylePixbuf {
             }
         }
 
-        Some(CairoStylePixbuf { w, h, s, buf })
+        cairo::ImageSurface::create_for_data(buf, cairo::Format::ARgb32, w, h, dst_s)
+            .ok().map(|surf| CairoStylePixbuf { w, h, surf })
     }
 }
 
@@ -135,13 +135,8 @@ pub fn render(ctx : &Render, name : &str) -> Result<(), ()> {
                 .and_then(CairoStylePixbuf::parse)
             })
         {
-            &mut Some(CairoStylePixbuf { w, h, s, ref mut buf }) => {
-                let pixels = unsafe { &mut *(&mut **buf as *mut [u8]) }; // could just switch to Box::leak really
-                let surf = match cairo::ImageSurface::create_for_data(pixels, cairo::Format::ARgb32, w, h, s) {
-                    Ok(i) => i,
-                    Err(_) => Err(())?,
-                };
-                let pattern = cairo::SurfacePattern::create(&surf);
+            &mut Some(CairoStylePixbuf { w, h, ref surf }) => {
+                let pattern = cairo::SurfacePattern::create(surf);
                 let pos = ctx.render_pos.get();
                 let mut m = ctx.cairo.get_matrix();
                 if w != tsize && h != tsize {

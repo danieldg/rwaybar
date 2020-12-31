@@ -127,7 +127,7 @@ impl Module {
             Some("disk") => {
                 let path = value.get("path").and_then(|v| v.as_str()).unwrap_or("/").to_owned();
                 let poll = toml_to_f64(value.get("poll")).unwrap_or(60.0);
-                let v = unsafe { std::mem::zeroed() };
+                let v : libc::statvfs = unsafe { std::mem::zeroed() };
                 Module::Disk { path, poll, last_read: Cell::default(), contents : Cell::new(v) }
             }
             Some("eval") => {
@@ -351,10 +351,8 @@ impl Module {
                     Ok(mut child) => {
                         let pipe_in = child.stdin.take().unwrap();
                         let fd = child.stdout.take().unwrap().into_raw_fd();
-                        unsafe {
-                            libc::fcntl(pipe_in.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK);
-                            libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
-                        }
+                        unsafe { libc::fcntl(pipe_in.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK); }
+                        unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK); }
                         stdin.set(Some(pipe_in));
                         value.0.set(JsonValue::Null);
 
@@ -435,11 +433,8 @@ impl Module {
                     return;
                 }
                 let cstr = std::ffi::CString::new(path.as_bytes()).unwrap();
-                let rv = unsafe {
-                    libc::statvfs(cstr.as_ptr(), contents.as_ptr())
-                };
+                let rv = unsafe { libc::statvfs(cstr.as_ptr(), contents.as_ptr()) };
                 if rv != 0 {
-                    contents.set(unsafe { std::mem::zeroed() });
                     warn!("Could not read disk at '{}': {}", path, std::io::Error::last_os_error());
                 }
 
@@ -845,7 +840,7 @@ fn do_exec_json(fd : i32, name : String, value : Rc<(Cell<JsonValue>, Cell<Notif
                 if buffer.len() == buffer.capacity() {
                     buffer.reserve(2048);
                 }
-                unsafe {
+                unsafe { // child pipe read into vec spare capacity
                     let start = buffer.len();
                     let max_len = buffer.capacity() - start;
                     let rv = libc::read(fd, buffer.as_mut_ptr().offset(start as isize) as *mut _, max_len);
