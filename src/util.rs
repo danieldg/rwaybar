@@ -40,6 +40,10 @@ impl<T> Cell<T> {
     pub fn new(t : T) -> Self {
         Cell(std::cell::Cell::new(t))
     }
+
+    pub fn into_inner(self) -> T {
+        self.0.into_inner()
+    }
 }
 
 impl<T : Default> Cell<T> {

@@ -5,8 +5,10 @@ use crate::state::NotifierList;
 use crate::state::Runtime;
 use crate::sway;
 use crate::tray;
-use crate::util::{Cell,Fd,toml_to_string,toml_to_f64,spawn};
+use crate::util::{Cell,Fd,toml_to_string,toml_to_f64,spawn_noerr};
 use evalexpr::Node as EvalExpr;
+use futures_util::future::RemoteHandle;
+use futures_util::FutureExt;
 use json::JsonValue;
 use log::{debug,info,warn,error};
 use std::io;
@@ -45,7 +47,8 @@ pub enum Module {
     ExecJson {
         command : String,
         stdin : Cell<Option<ChildStdin>>,
-        value : Rc<(Cell<JsonValue>, Cell<NotifierList>)>,
+        value : Cell<Option<Rc<(Cell<JsonValue>, Cell<NotifierList>)>>>,
+        handle : Cell<Option<RemoteHandle<()>>>,
     },
     FocusList {
         source : String,
@@ -172,7 +175,8 @@ impl Module {
                 Module::ExecJson {
                     command,
                     stdin : Cell::new(None),
-                    value : Rc::new((Cell::new(JsonValue::Null), Default::default())),
+                    value : Cell::new(None),
+                    handle : Cell::new(None),
                 }
             }
             Some("focus-list") => {
@@ -338,9 +342,23 @@ impl Module {
     }
 
     /// One-time setup, if needed
-    pub fn init(&self, name : &str, rt : &Runtime) {
-        match self {
-            Module::ExecJson { command, stdin, value } => {
+    pub fn init(&self, name : &str, rt : &Runtime, from : Option<Self>) {
+        match (self, from) {
+            (Module::ExecJson { command, stdin, value, handle },
+                Some(Module::ExecJson {
+                    command : old_cmd,
+                    stdin : old_stdin,
+                    value : old_value,
+                    handle : old_handle,
+                }))
+                if *command == old_cmd =>
+            {
+                stdin.set(old_stdin.into_inner());
+                value.set(old_value.into_inner());
+                handle.set(old_handle.into_inner());
+            }
+
+            (Module::ExecJson { command, stdin, value, handle }, _) => {
                 match Command::new("/bin/sh")
                     .arg("-c").arg(&command)
                     .stdin(Stdio::piped())
@@ -349,19 +367,19 @@ impl Module {
                 {
                     Err(e) => error!("Could not execute {}: {}", command, e),
                     Ok(mut child) => {
+                        let rc = Rc::new((Cell::new(JsonValue::Null), Default::default()));
                         let pipe_in = child.stdin.take().unwrap();
                         let fd = child.stdout.take().unwrap().into_raw_fd();
                         unsafe { libc::fcntl(pipe_in.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK); }
                         unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK); }
                         stdin.set(Some(pipe_in));
-                        value.0.set(JsonValue::Null);
-
-                        do_exec_json(fd, name.to_owned(), value.clone());
+                        value.set(Some(rc.clone()));
+                        handle.set(Some(do_exec_json(fd, name.to_owned(), rc)));
                     }
                 }
             }
-            Module::SwayMode(mode) => mode.init(name, rt),
-            Module::SwayWorkspace(ws) => ws.init(name, rt),
+            (Module::SwayMode(mode), _) => mode.init(name, rt),
+            (Module::SwayWorkspace(ws), _) => ws.init(name, rt),
             _ => {}
         }
     }
@@ -575,6 +593,7 @@ impl Module {
                 }
             }
             Module::ExecJson { command, value, .. } => {
+                let value = value.take_in_some(|v| v.clone()).unwrap();
                 let v = value.0.replace(JsonValue::Null);
                 let rv = f(v[key].as_str().unwrap_or_else(|| {
                     debug!("Could not find {}.{} in the output of {}", name, key, command);
@@ -829,13 +848,19 @@ impl Action {
     }
 }
 
-fn do_exec_json(fd : i32, name : String, value : Rc<(Cell<JsonValue>, Cell<NotifierList>)>) {
-    spawn("exec-json", async move {
-        let afd = AsyncFd::new(Fd(fd))?;
+fn do_exec_json(fd : i32, name : String, value : Rc<(Cell<JsonValue>, Cell<NotifierList>)>) -> RemoteHandle<()> {
+    let (task, rh) = async move {
+        let afd = AsyncFd::new(Fd(fd)).expect("Invalid FD from ChildStdin");
         let mut buffer : Vec<u8> = Vec::with_capacity(1024);
 
         'waiting : loop {
-            let mut rh = afd.readable().await?;
+            let mut rh = match afd.readable().await {
+                Ok(h) => h,
+                Err(e) => {
+                    warn!("Unable to wait for child read: {}", e);
+                    return;
+                }
+            };
             'reading : loop {
                 if buffer.len() == buffer.capacity() {
                     buffer.reserve(2048);
@@ -847,7 +872,7 @@ fn do_exec_json(fd : i32, name : String, value : Rc<(Cell<JsonValue>, Cell<Notif
                     match rv {
                         0 => {
                             libc::close(fd);
-                            return Ok(());
+                            return;
                         }
                         len if rv > 0 && rv <= max_len as _ => {
                             buffer.set_len(start + len as usize);
@@ -860,7 +885,10 @@ fn do_exec_json(fd : i32, name : String, value : Rc<(Cell<JsonValue>, Cell<Notif
                                     rh.clear_ready();
                                     continue 'waiting;
                                 }
-                                _ => Err(e)?,
+                                _ => {
+                                    warn!("Got {} on child read; discontinuing", e);
+                                    return;
+                                }
                             }
                         }
                     }
@@ -887,5 +915,7 @@ fn do_exec_json(fd : i32, name : String, value : Rc<(Cell<JsonValue>, Cell<Notif
                 }
             }
         }
-    });
+    }.remote_handle();
+    spawn_noerr(task);
+    rh
 }

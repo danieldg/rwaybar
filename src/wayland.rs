@@ -93,24 +93,20 @@ impl MultiGlobalHandler<WlOutput> for OutputHandler {
                 }
                 Event::Done => {
                     if let Some(state) = data.get::<State>() {
-                        let i = outputs.take_in(|outputs| {
-                            for (i, data) in outputs.iter_mut().enumerate() {
+                        outputs.take_in(|outputs| {
+                            for data in outputs {
                                 if data.output != *output {
                                     continue;
                                 }
                                 if data.xdg.is_some() {
-                                    return Some(i);
+                                    state.output_ready(data);
                                 } else {
                                     state.wayland.output_finish_setup(data);
-                                    return None;
                                 }
+                                return;
                             }
                             debug!("Strange, got a Done for an output we don't know about");
-                            None
                         });
-                        if let Some(i) = i {
-                            state.output_ready(i);
-                        }
                     }
                 }
                 _ => ()
@@ -432,8 +428,8 @@ impl WaylandClient {
             use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_v1::Event;
             let state : &mut State = data.get().unwrap();
             let outputs = state.wayland.get_outputs();
-            let i = outputs.take_in(|outputs| {
-                for (i, data) in outputs.iter_mut().enumerate() {
+            outputs.take_in(|outputs| {
+                for data in outputs {
                     if data.xdg.as_ref() != Some(&*xdg_out) {
                         continue;
                     }
@@ -451,17 +447,13 @@ impl WaylandClient {
                             data.description = description;
                         }
                         Event::Done => {
-                            return Some(i);
+                            state.output_ready(&data);
                         }
                         _ => ()
                     }
-                    return None;
+                    return;
                 }
-                None
             });
-            if let Some(i) = i {
-                state.output_ready(i);
-            }
         });
 
         output.xdg = Some(xdg_out.into());

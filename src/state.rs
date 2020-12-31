@@ -17,8 +17,8 @@ use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
 
 use crate::item::*;
 use crate::data::Module;
-use crate::util::{Cell,spawn_noerr};
-use crate::wayland::{Popup,WaylandClient};
+use crate::util::{Cell,spawn,spawn_noerr};
+use crate::wayland::{OutputData,Popup,WaylandClient};
 
 pub struct BarPopup {
     pub wl : Popup,
@@ -333,33 +333,6 @@ pub struct State {
 
 impl State {
     pub fn new(wayland : WaylandClient) -> Result<Rc<RefCell<Self>>, Box<dyn Error>> {
-        let cfg = std::fs::read_to_string("rwaybar.toml")?;
-        let config : toml::Value = toml::from_str(&cfg)?;
-
-        let cfg = config.as_table().unwrap();
-
-        let mut bar_config = Vec::new();
-
-        let items = cfg.iter().filter_map(|(key, value)| {
-            if key == "bar" {
-                if let Some(bars) = value.as_array() {
-                    bar_config.extend(bars.iter().cloned());
-                } else {
-                    bar_config.push(value.clone());
-                }
-                None
-            } else {
-                let key = key.to_owned();
-                let value = Item::from_item_list(&key, value);
-                Some((key, value))
-            }
-        }).collect();
-
-        if bar_config.is_empty() {
-            error!("At least one [[bar]] section is required");
-            std::process::exit(1);
-        }
-
         let notify_inner = Rc::new(NotifierInner {
             notify : tokio::sync::Notify::new(),
             data_update : Cell::new(true),
@@ -368,21 +341,16 @@ impl State {
         let mut state = Self {
             wayland,
             bars : Vec::new(),
+            bar_config : Vec::new(),
             runtime : Runtime {
-                items,
+                items : Default::default(),
                 refresh : Default::default(),
                 notify : Notifier { inner : notify_inner.clone() },
             },
-            bar_config,
             draw_waiting_on_shm : false,
         };
 
-        state.runtime.items.insert("item".into(), Module::new_current_item().into());
-
-        for (k,v) in &state.runtime.items {
-            v.data.init(k, &state.runtime);
-        }
-        state.set_data();
+        state.load_config(false)?;
 
         let notify = Notifier { inner : state.runtime.notify.inner.clone() };
         let refresh = state.runtime.refresh.clone();
@@ -429,8 +397,87 @@ impl State {
                 state.borrow_mut().request_draw_internal();
             }
         });
+
+        let state = rv.clone();
+        spawn("Config reload", async move {
+            let mut hups = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+            while let Some(()) = hups.recv().await {
+                match state.borrow_mut().load_config(true) {
+                    Ok(()) => (),
+                    Err(e) => error!("Config reload failed: {}", e),
+                }
+            }
+            Ok(())
+        });
         
         Ok(rv)
+    }
+
+    fn load_config(&mut self, reload : bool) -> Result<(), Box<dyn Error>> {
+        let mut bar_config = Vec::new();
+
+        let cfg = std::fs::read_to_string("rwaybar.toml")?;
+        let config : toml::Value = toml::from_str(&cfg)?;
+
+        let cfg = config.as_table().unwrap();
+
+        let new_items = cfg.iter().filter_map(|(key, value)| {
+            if key == "bar" {
+                if let Some(bars) = value.as_array() {
+                    bar_config.extend(bars.iter().cloned());
+                } else {
+                    bar_config.push(value.clone());
+                }
+                None
+            } else {
+                let key = key.to_owned();
+                let value = Item::from_item_list(&key, value);
+                Some((key, value))
+            }
+        }).collect();
+
+        if bar_config.is_empty() {
+            Err("At least one [[bar]] section is required")?;
+        }
+
+        debug!("Loading configuration");
+
+        let mut old_items = std::mem::replace(&mut self.runtime.items, new_items);
+        self.bar_config = bar_config;
+
+        self.runtime.items.insert("item".into(), Module::new_current_item().into());
+
+        for (k,v) in &self.runtime.items {
+            if let Some(item) = old_items.remove(k) {
+                v.data.init(k, &self.runtime, Some(item.data));
+            } else {
+                v.data.init(k, &self.runtime, None);
+            }
+        }
+        self.runtime.notify.inner.data_update.set(true);
+
+        if reload {
+            self.bars.clear();
+            self.wayland.get_outputs().take_in(|outputs| {
+                for output in outputs {
+                    self.output_ready(output);
+                }
+            });
+            if self.bars.is_empty() {
+                error!("No bars matched this outptut configuration.  Available outputs:");
+                self.wayland.get_outputs().take_in(|outputs| {
+                    for data in outputs {
+                        error!(" name='{}' description='{}' make='{}' model='{}' at {},{} {}x{}",
+                            data.name, data.description, data.make, data.model, data.position.0, data.position.1, data.size.0, data.size.1);
+                    }
+                });
+            }
+            self.request_draw();
+        } else {
+            self.set_data();
+        }
+
+        Ok(())
     }
 
     pub fn request_draw(&mut self) {
@@ -491,70 +538,68 @@ impl State {
         Ok(())
     }
 
-    pub fn output_ready(&mut self, i : usize) {
-        self.wayland.get_outputs().take_in(|outputs| {
-            let data = &outputs[i];
-            info!("Output[{}] name='{}' description='{}' make='{}' model='{}' at {},{} {}x{}",
-                i, data.name, data.description, data.make, data.model, data.position.0, data.position.1, data.size.0, data.size.1);
-            for (i, cfg) in self.bar_config.iter().enumerate() {
-                if let Some(name) = cfg.get("name").and_then(|v| v.as_str()) {
-                    if name != &data.name {
-                        continue;
-                    }
+    pub fn output_ready(&mut self, data : &OutputData) {
+        info!("Output name='{}' description='{}' make='{}' model='{}' at {},{} {}x{}",
+            data.name, data.description, data.make, data.model, data.position.0, data.position.1, data.size.0, data.size.1);
+        for (i, cfg) in self.bar_config.iter().enumerate() {
+            if let Some(name) = cfg.get("name").and_then(|v| v.as_str()) {
+                if name != &data.name {
+                    continue;
                 }
-                if let Some(make) = cfg.get("make").and_then(|v| v.as_str()) {
-                    match regex::Regex::new(make) {
-                        Ok(re) => {
-                            if !re.is_match(&data.make) {
-                                continue;
-                            }
-                        }
-                        Err(e) => {
-                            error!("Ignoring invalid regex in bar.make: {}", e);
-                        }
-                    }
-                }
-                if let Some(model) = cfg.get("model").and_then(|v| v.as_str()) {
-                    match regex::Regex::new(model) {
-                        Ok(re) => {
-                            if !re.is_match(&data.model) {
-                                continue;
-                            }
-                        }
-                        Err(e) => {
-                            error!("Ignoring invalid regex in bar.model: {}", e);
-                        }
-                    }
-                }
-                if let Some(description) = cfg.get("description").and_then(|v| v.as_str()) {
-                    match regex::Regex::new(description) {
-                        Ok(re) => {
-                            if !re.is_match(&data.description) {
-                                continue;
-                            }
-                        }
-                        Err(e) => {
-                            error!("Ignoring invalid regex in bar.description: {}", e);
-                        }
-                    }
-                }
-                let mut cfg = cfg.clone();
-                if let Some(table) = cfg.as_table_mut() {
-                    table.insert("name".into(), data.name.clone().into());
-                }
-
-                let bar = self.new_bar(&data.output, data.scale, cfg, i);
-                self.bars.retain(|bar| {
-                    bar.cfg_index != i ||
-                        bar.item.config
-                            .as_ref()
-                            .and_then(|c| c.get("name"))
-                            .and_then(|n| n.as_str())
-                        != Some(&data.name)
-                });
-                self.bars.push(bar);
             }
-        });
+            if let Some(make) = cfg.get("make").and_then(|v| v.as_str()) {
+                match regex::Regex::new(make) {
+                    Ok(re) => {
+                        if !re.is_match(&data.make) {
+                            continue;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Ignoring invalid regex in bar.make: {}", e);
+                    }
+                }
+            }
+            if let Some(model) = cfg.get("model").and_then(|v| v.as_str()) {
+                match regex::Regex::new(model) {
+                    Ok(re) => {
+                        if !re.is_match(&data.model) {
+                            continue;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Ignoring invalid regex in bar.model: {}", e);
+                    }
+                }
+            }
+            if let Some(description) = cfg.get("description").and_then(|v| v.as_str()) {
+                match regex::Regex::new(description) {
+                    Ok(re) => {
+                        if !re.is_match(&data.description) {
+                            continue;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Ignoring invalid regex in bar.description: {}", e);
+                    }
+                }
+            }
+            let mut cfg = cfg.clone();
+            if let Some(table) = cfg.as_table_mut() {
+                table.insert("name".into(), data.name.clone().into());
+            }
+
+            let bar = self.new_bar(&data.output, data.scale, cfg, i);
+            self.bars.retain(|bar| {
+                bar.cfg_index != i ||
+                    bar.item.config
+                        .as_ref()
+                        .and_then(|c| c.get("name"))
+                        .and_then(|n| n.as_str())
+                    != Some(&data.name)
+            });
+            self.bars.push(bar);
+            self.wayland.flush();
+        }
     }
 
     fn new_bar(&self, output : &WlOutput, scale : i32, cfg : toml::Value, cfg_index : usize) -> Bar {
