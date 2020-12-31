@@ -53,7 +53,7 @@ pub enum Module {
     FocusList {
         source : String,
         // always two items: non-focused, focused
-        items : Box<[Item;2]>,
+        items : Box<(Item, Option<Item>)>,
         spacing : String,
     },
     Formatted {
@@ -189,9 +189,9 @@ impl Module {
                 };
                 let spacing = toml_to_string(value.get("spacing")).unwrap_or_default();
                 let item = value.get("item").map_or_else(Item::none, Item::from_toml_ref);
-                let fitem = value.get("focused-item").map_or_else(Item::none, Item::from_toml_ref);
+                let fitem = value.get("focused-item").map(Item::from_toml_ref);
 
-                let items = Box::new([item, fitem]);
+                let items = Box::new((item, fitem));
                 Module::FocusList {
                     source,
                     items,

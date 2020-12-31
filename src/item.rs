@@ -693,9 +693,9 @@ impl Item {
                     item_var.set(Some(item.clone()));
                     let x0 = ctx.render_pos.get();
                     let mut ev = if focus {
-                        items[1].render(ctx)
+                        items.1.as_ref().unwrap_or(&items.0).render(ctx)
                     } else {
-                        items[0].render(ctx)
+                        items.0.render(ctx)
                     };
                     let x1 = ctx.render_pos.get();
                     ev.offset_clamp(0.0, x0, x1);
