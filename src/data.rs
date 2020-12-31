@@ -5,7 +5,7 @@ use crate::state::NotifierList;
 use crate::state::Runtime;
 use crate::sway;
 use crate::tray;
-use crate::util::{Cell,Fd,toml_to_string,toml_to_f64,spawn_noerr};
+use crate::util::{Cell,Fd,toml_to_string,toml_to_f64,spawn};
 use evalexpr::Node as EvalExpr;
 use json::JsonValue;
 use log::{debug,info,warn,error};
@@ -835,68 +835,60 @@ impl Action {
 }
 
 fn do_exec_json(fd : i32, name : String, value : Rc<(Cell<JsonValue>, Cell<NotifierList>)>) {
-    spawn_noerr(async move {
-        let afd = match AsyncFd::new(Fd(fd)) {
-            Ok(fd) => fd,
-            Err(_) => return,
-        };
+    spawn("exec-json", async move {
+        let afd = AsyncFd::new(Fd(fd))?;
         let mut buffer : Vec<u8> = Vec::with_capacity(1024);
 
-        loop {
-            match async {
-                let mut rh = afd.readable().await?;
-                loop {
-                    if buffer.len() == buffer.capacity() {
-                        buffer.reserve(2048);
-                    }
-                    unsafe {
-                        let start = buffer.len();
-                        let max_len = buffer.capacity() - start;
-                        let rv = libc::read(fd, buffer.as_mut_ptr().offset(start as isize) as *mut _, max_len);
-                        match rv {
-                            0 => {
-                                libc::close(fd);
-                                return Ok(());
-                            }
-                            len if rv > 0 && rv <= max_len as _ => {
-                                buffer.set_len(start + len as usize);
-                            }
-                            _ => {
-                                let e = io::Error::last_os_error();
-                                match e.kind() {
-                                    io::ErrorKind::Interrupted => continue,
-                                    io::ErrorKind::WouldBlock => {
-                                        rh.clear_ready();
-                                        return Ok(());
-                                    }
-                                    _ => return Err(e),
+        'waiting : loop {
+            let mut rh = afd.readable().await?;
+            'reading : loop {
+                if buffer.len() == buffer.capacity() {
+                    buffer.reserve(2048);
+                }
+                unsafe {
+                    let start = buffer.len();
+                    let max_len = buffer.capacity() - start;
+                    let rv = libc::read(fd, buffer.as_mut_ptr().offset(start as isize) as *mut _, max_len);
+                    match rv {
+                        0 => {
+                            libc::close(fd);
+                            return Ok(());
+                        }
+                        len if rv > 0 && rv <= max_len as _ => {
+                            buffer.set_len(start + len as usize);
+                        }
+                        _ => {
+                            let e = io::Error::last_os_error();
+                            match e.kind() {
+                                io::ErrorKind::Interrupted => continue 'reading,
+                                io::ErrorKind::WouldBlock => {
+                                    rh.clear_ready();
+                                    continue 'waiting;
                                 }
+                                _ => Err(e)?,
                             }
                         }
                     }
-                    while let Some(eol) = buffer.iter().position(|&c| c == b'\n') {
-                        let mut json = None;
-                        match std::str::from_utf8(&buffer[..eol]) {
-                            Err(_) => info!("Ignoring bad UTF8 from '{}'", name),
-                            Ok(v) => {
-                                debug!("'{}': {}", name, v);
-                                match json::parse(v) {
-                                    Ok(v) => { json = Some(v); }
-                                    Err(e) => info!("Ignoring bad JSON from '{}': {}", name, e),
-                                }
+                }
+                while let Some(eol) = buffer.iter().position(|&c| c == b'\n') {
+                    let mut json = None;
+                    match std::str::from_utf8(&buffer[..eol]) {
+                        Err(_) => info!("Ignoring bad UTF8 from '{}'", name),
+                        Ok(v) => {
+                            debug!("'{}': {}", name, v);
+                            match json::parse(v) {
+                                Ok(v) => { json = Some(v); }
+                                Err(e) => info!("Ignoring bad JSON from '{}': {}", name, e),
                             }
                         }
-                        buffer.drain(..eol + 1);
-                        let json = match json { Some(json) => json, None => continue };
+                    }
+                    // Note: this is optimized for the normal case where the script sends one line
+                    // at a time, so this drain would empty the buffer.
+                    buffer.drain(..eol + 1);
+                    if let Some(json) = json {
                         value.0.set(json);
                         value.1.take().notify_data("exec-json");
                     }
-                }
-            }.await {
-                Ok(()) => continue,
-                Err(e) => {
-                    warn!("Error reading from JSON child: {}", e);
-                    return;
                 }
             }
         }
