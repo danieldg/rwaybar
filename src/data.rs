@@ -96,6 +96,7 @@ pub enum Module {
         looped : Cell<bool>,
     },
     SwayMode(sway::Mode),
+    SwayTree(sway::Tree),
     SwayWorkspace(sway::Workspace),
     Switch {
         format : String,
@@ -287,6 +288,9 @@ impl Module {
             Some("sway-mode") => {
                 sway::Mode::from_toml(value).map_or(Module::None, Module::SwayMode)
             }
+            Some("sway-tree") => {
+                sway::Tree::from_toml(value).map_or(Module::None, Module::SwayTree)
+            }
             Some("sway-workspace") => {
                 sway::Workspace::from_toml(value).map_or(Module::None, Module::SwayWorkspace)
             }
@@ -379,6 +383,7 @@ impl Module {
                 }
             }
             (Module::SwayMode(mode), _) => mode.init(name, rt),
+            (Module::SwayTree(tree), _) => tree.init(name, rt),
             (Module::SwayWorkspace(ws), _) => ws.init(name, rt),
             _ => {}
         }
@@ -678,6 +683,7 @@ impl Module {
                 }
             }
             Module::SwayMode(mode) => mode.read_in(name, key, rt, f),
+            Module::SwayTree(tree) => tree.read_in(name, key, rt, f),
             Module::SwayWorkspace(ws) => ws.read_in(name, key, rt, f),
             Module::Switch { format, cases, default, looped } => {
                 if looped.get() {

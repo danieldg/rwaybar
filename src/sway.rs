@@ -86,7 +86,7 @@ impl SwaySocket {
                     }
                     Ok(_) => {}
                 }
-                
+
                 loop {
                     if rbuf.len() < hdr_len {
                         continue 'read;
@@ -272,10 +272,10 @@ impl WorkspaceData {
             "name" | "text" | "" => {
                 f(&self.name)
             }
-            "output" => {
+            "output" | "tooltip" => {
                 f(&self.output)
             }
-            "repr" | "tooltip" => {
+            "repr" => {
                 f(&self.repr)
             }
             _ => f("")
@@ -485,6 +485,223 @@ impl Workspace {
             "switch" => SwaySocket::send(0, format!(r#"workspace --no-auto-back-and-forth "{}""#, value).as_bytes(), |_| ()),
             _ => {
                 error!("Ignoring write to {}.{}", name, key);
+            }
+        }
+    }
+}
+
+#[derive(Debug,Copy,Clone)]
+enum Layout {
+    Horiz,
+    Vert,
+    Tabbed,
+    Stacked,
+}
+
+#[derive(Debug,Clone)]
+enum NodeType {
+    Container {
+        layout : Layout,
+        children : Vec<Node>,
+    },
+    Window {
+        title : String,
+        appid : String, // or Class if null
+    },
+}
+
+#[derive(Debug,Clone)]
+struct Node {
+    id : u32,
+    focus : bool,
+    marks : String, // "" or "1" or "mark-name, another-mark"
+    contents : NodeType,
+}
+
+impl Node {
+    fn parse(value : &mut json::JsonValue) -> Node {
+        let mut marks = String::new();
+        for (i, mark) in value["marks"].members().enumerate() {
+            if i != 0 {
+                marks.push_str(", ");
+            }
+            marks.push_str(mark.as_str().unwrap_or(""));
+        }
+
+        let contents = loop {
+            let layout = match value["layout"].as_str() {
+                Some("splith") => Layout::Horiz,
+                Some("splitv") => Layout::Vert,
+                Some("tabbed") => Layout::Tabbed,
+                Some("stacked") => Layout::Stacked,
+                _ => {
+                    break NodeType::Window {
+                        title : value["name"].take_string().unwrap_or_default(),
+                        appid : value["app_id"].take_string()
+                            .or_else(|| value["window_properties"]["class"].take_string())
+                            .unwrap_or_default(),
+                    };
+                }
+            };
+            break NodeType::Container {
+                layout,
+                children : value["nodes"].members_mut().map(Node::parse).collect(),
+            };
+        };
+        Node {
+            id : value["id"].as_u32().unwrap_or(!0),
+            focus : value["focused"].as_bool().unwrap_or(false),
+            marks,
+            contents,
+        }
+    }
+
+    fn show(&self, rv : &mut String) {
+        // TODO all the formatting here should be in the config
+        if !self.marks.is_empty() {
+            rv.push('(');
+            rv.push_str(&self.marks);
+            rv.push(')');
+        }
+        if self.focus {
+            rv.push_str("<span color='#6eff30'>");
+        }
+        match &self.contents {
+            NodeType::Window { appid, .. } => {
+                rv.push_str(&appid);
+            }
+            NodeType::Container { layout, children } => {
+                rv.push(match layout {
+                    Layout::Horiz => 'H',
+                    Layout::Vert => 'V',
+                    Layout::Tabbed => 'T',
+                    Layout::Stacked => 'S',
+                });
+                rv.push('[');
+                for (i, child) in children.iter().enumerate() {
+                    if i != 0 {
+                        rv.push(' ');
+                    }
+                    child.show(rv);
+                }
+                rv.push(']');
+            }
+        }
+        if self.focus {
+            rv.push_str("</span>");
+        }
+    }
+}
+
+#[derive(Debug,Clone)]
+struct WorkspaceNode {
+    name : String,
+    output : String,
+    repr : Node,
+    floating : Vec<Node>,
+}
+
+impl WorkspaceNode {
+    fn parse_tree(mut value : json::JsonValue) -> Vec<WorkspaceNode> {
+        let mut rv = Vec::new();
+        for output in value["nodes"].members_mut() {
+            let output_name = output["name"].as_str().unwrap_or_default().to_owned();
+            for workspace in output["nodes"].members_mut() {
+                let repr = Node::parse(workspace);
+                rv.push(WorkspaceNode {
+                    output : output_name.clone(),
+                    name : workspace["name"].take_string().unwrap_or_default(),
+                    repr,
+                    floating : workspace["floating_nodes"].members_mut().map(Node::parse).collect(),
+                });
+            }
+        }
+        rv
+    }
+}
+
+#[derive(Debug,Default)]
+pub struct Tree {
+    value : Rc<TreeInner>,
+}
+
+#[derive(Debug,Default)]
+struct TreeInner {
+    workspaces : Cell<Option<Vec<WorkspaceNode>>>,
+    interested : Cell<NotifierList>,
+}
+
+impl TreeInner {
+    fn refresh(value : Rc<Self>) {
+        SwaySocket::send(4, b"", move |buf| {
+            match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
+                Ok(Ok(msg)) => {
+                    value.workspaces.set(Some(WorkspaceNode::parse_tree(msg)));
+                    value.interested.take().notify_data("sway:tree");
+                }
+                _ => warn!("Ignoring invalid get_binding_state reply")
+            }
+        });
+    }
+}
+
+impl Tree {
+    pub fn from_toml(_config : &toml::Value) -> Option<Self> {
+        Some(Tree::default())
+    }
+
+    pub fn init(&self, _name : &str, _rt : &Runtime) {
+        let weak = Rc::downgrade(&self.value);
+        SwaySocket::subscribe("window", 0x80000003, Box::new(move |buf| {
+            let remove_callback;
+            if let Some(mi) = weak.upgrade() {
+                match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
+                    Ok(Ok(msg)) => {
+                        if msg["change"].as_str() == Some("title") {
+                            // TODO find and update the node without rerunning get_tree
+                        } else {
+                            // Other update messages don't have enough information to determine the
+                            // new layout, so we need to rerun get_tree.  This needs to be done
+                            // outside the callback to avoid a RefCell reborrow.
+                            spawn_noerr(async move {
+                                TreeInner::refresh(mi);
+                            });
+                        }
+                    }
+                    _ => warn!("Ignoring invalid window change message")
+                }
+                remove_callback = false;
+            } else {
+                remove_callback = true;
+            }
+            ListenerResult {
+                remove_callback,
+                consumed : false,
+            }
+        }));
+        TreeInner::refresh(self.value.clone());
+    }
+
+    pub fn read_in<F : FnOnce(&str) -> R,R>(&self, _name : &str, key : &str, rt : &Runtime, f : F) -> R {
+        self.value.interested.take_in(|i| i.add(rt));
+        match key {
+            // TODO decide how to render this
+            _ => {
+                let mut rv = String::new();
+                self.value.workspaces.take_in_some(|workspaces| {
+                    for workspace in workspaces {
+                        rv.push_str(&workspace.name);
+                        rv.push_str(":");
+                        workspace.repr.show(&mut rv);
+                        for node in &workspace.floating {
+                            rv.push_str(" + ");
+                            node.show(&mut rv);
+                        }
+                        rv.push(' ');
+                    }
+                });
+                rv.pop();
+                f(&rv)
             }
         }
     }
