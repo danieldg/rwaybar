@@ -622,6 +622,28 @@ impl Item {
         rv
     }
 
+    pub fn render_clamped(&self, ctx : &Render, ev : &mut EventSink) {
+        let x0 = ctx.render_pos.get();
+        let mut rv = self.render(ctx);
+        let x1 = ctx.render_pos.get();
+        rv.offset_clamp(0.0, x0, x1);
+        ev.merge(rv);
+    }
+
+    pub fn render_clamped_item(&self, ctx : &Render, ev : &mut EventSink, item : &Rc<IterationItem>) {
+        let item_var = ctx.runtime.get_item_var();
+        let prev = item_var.replace(Some(item.clone()));
+        let x0 = ctx.render_pos.get();
+        let mut rv = self.render(ctx);
+        let x1 = ctx.render_pos.get();
+        rv.offset_clamp(0.0, x0, x1);
+        for h in &mut rv.handlers {
+            h.item = Some(item.clone());
+        }
+        ev.merge(rv);
+        item_var.set(prev);
+    }
+
     /// Render the block contents to the given context.
     ///
     /// Your item starts at the context's current point.  When you are done rendering, you should
@@ -668,11 +690,7 @@ impl Item {
                 let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
                 ctx.render_pos.set(ctx.render_pos.get() + spacing);
                 for item in items {
-                    let x0 = ctx.render_pos.get();
-                    let mut ev = item.render(ctx);
-                    let x1 = ctx.render_pos.get();
-                    ev.offset_clamp(0.0, x0, x1);
-                    rv.merge(ev);
+                    item.render_clamped(ctx, rv);
                     ctx.render_pos.set(ctx.render_pos.get() + spacing);
                 }
             }
@@ -682,13 +700,7 @@ impl Item {
                     Some(var) => var,
                     None => return,
                 };
-                let item_var = match ctx.runtime.items.get("item") {
-                    Some(&Item { data : Module::Item { ref value }, .. }) => value,
-                    _ => {
-                        error!("The 'item' variable was not assignable");
-                        return;
-                    }
-                };
+                let item_var = ctx.runtime.get_item_var();
                 ctx.render_pos.set(ctx.render_pos.get() + spacing);
                 let prev = item_var.replace(None);
                 source.data.read_focus_list(ctx.runtime, |focus, item| {
@@ -798,6 +810,9 @@ impl Item {
                     }));
                 }
             },
+            Module::SwayTree(tree) => {
+                tree.render(ctx, rv);
+            }
             Module::Tray { spacing } => {
                 let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
                 tray::show(ctx, rv, spacing);

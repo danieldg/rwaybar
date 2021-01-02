@@ -169,7 +169,7 @@ it in a loop if you want to do this.
 
 Key | Expanded | Default | Details
 ----|----------|---------|--------
-`source` | No | -- | A module name that exposes a list of values 
+`source` | No | -- | A module name that exposes a list of values
 `item` | N/A | | A block (or block name) to display for each item in the list
 `focused-item` | N/A | Same as item | A block to display for items marked as "focused" in the list
 
@@ -262,6 +262,53 @@ Note: this is intended for reading files like `/proc/loadavg` where there is no 
 ## sway-mode
 
 Expands to the current keybinding mode in sway
+
+## sway-tree
+
+Key | Type | Default | Details
+----|------|---------|--------
+`pre-workspace` | Block | -- | Block shown before displaying the contents of a workspace. `{item.name}` and `{item.output}` are available.
+`pre-node` | Block | -- | Block shown before displaying a container. See below for item contents.
+`window` | Block | -- | Block shown for every window in a container. See below for item contents.
+`post-node` | Block | -- | Block shown after displaying a container. See below for item contents.
+`pre-float` | Block | -- | Block shown before displaying a floating container.
+`post-float` | Block | -- | Block shown after displaying a floating container.
+`post-workspace` | Block | -- | Block shown after displaying the contents of a workspace. `{item.name}` and `{item.output}` are available.
+
+Within a node (either a container or a window), the following item keys are available:
+
+Key | Value | Details
+----|-------|--------
+`id` | `23` | The unique ID for the container (`con_id` in sway criteria)
+`marks` | "1" | The list of marks on the container, if any
+`focus` | `0` or `1` | `1` if the window has focus.
+`appid` | `firefox` | The app\_id or Class (for Xwayland) of the window (windows only)
+`title` | | The window title (windows only)
+`layout` | `H` | The layout of the container.  Will be one of `H`, `V`, `T`, or `S`.
+
+Actions on a node directed at the current item may specify a sway command,
+which will be prefixed with a `[con_id]` criteria and executed.  For example:
+
+```toml
+[tree-block]
+type = 'sway-tree'
+
+[tree-block.pre-node]
+format = "{item.layout}["
+
+[tree-block.window]
+type = 'icon'
+name = '{item.appid}'
+fallback = '({item.appid})'
+tooltip = '{item.title}'
+on-click = { send = "item", format = "focus" }
+on-click-backward = { send = "item", format = "kill" }
+on-scroll-right = { send = "item", format = "move right" }
+on-scroll-left = { send = "item", format = "move left" }
+```
+
+[tree-block.post-node]
+format = "]"
 
 ## sway-workspace
 

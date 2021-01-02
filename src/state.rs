@@ -16,7 +16,7 @@ use layer_shell::zwlr_layer_shell_v1::{ZwlrLayerShellV1, Layer};
 use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
 
 use crate::item::*;
-use crate::data::Module;
+use crate::data::{Module,IterationItem};
 use crate::util::{Cell,spawn,spawn_noerr};
 use crate::wayland::{OutputData,Popup,WaylandClient};
 
@@ -317,6 +317,15 @@ impl Runtime {
             Err(e) => {
                 warn!("Error formatting '{}': {}", context, e);
                 String::new()
+            }
+        }
+    }
+
+    pub fn get_item_var(&self) -> &Cell<Option<Rc<IterationItem>>> {
+        match self.items.get("item") {
+            Some(&Item { data : Module::Item { ref value }, .. }) => value,
+            _ => {
+                panic!("The 'item' variable was not assignable");
             }
         }
     }

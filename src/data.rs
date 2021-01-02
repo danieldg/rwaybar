@@ -122,6 +122,7 @@ pub enum Module {
 pub enum IterationItem {
     MediaPlayer2 { target : String },
     SwayWorkspace(sway::WorkspaceData),
+    SwayTreeItem(Rc<sway::Node>),
 }
 
 impl Module {
@@ -640,6 +641,7 @@ impl Module {
                 match item.as_deref() {
                     Some(IterationItem::MediaPlayer2 { target }) => mpris::read_in(name, target, key, rt, f),
                     Some(IterationItem::SwayWorkspace(data)) => data.read_in(key, rt, f),
+                    Some(IterationItem::SwayTreeItem(node)) => node.read_in(key, rt, f),
                     None => f(""),
                 }
             }),
@@ -754,6 +756,7 @@ impl Module {
                 match item.as_deref() {
                     Some(IterationItem::MediaPlayer2 { target }) => mpris::write(name, target, key, value, rt),
                     Some(IterationItem::SwayWorkspace(data)) => data.write(key, value, rt),
+                    Some(IterationItem::SwayTreeItem(node)) => node.write(key, value, rt),
                     None => {}
                 }
             }),

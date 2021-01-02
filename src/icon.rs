@@ -58,10 +58,42 @@ fn open_icon(name : &str, target_size : f64) -> io::Result<PathBuf> {
     let base = "/usr/share/icons"; // TODO other paths?
     let theme = "hicolor"; // TODO configurable as list
 
-    let mut sorted_dirs = Vec::new();
-    sorted_dirs.push((0, 0, PathBuf::from("/usr/share/pixmaps")));
+    let f = |mut path: PathBuf| {
+        path.push(name);
+        path.set_extension("svg");
+        match File::open(&path) {
+            Ok(_) => {
+                return Some(path);
+            }
+            Err(_) => {}
+        }
+        path.set_extension("png");
+        match File::open(&path) {
+            Ok(_) => {
+                return Some(path);
+            }
+            Err(_) => {}
+        }
+        None
+    };
 
-    for size_dir in fs::read_dir(format!("{}/{}", base, theme))? {
+    match f(PathBuf::from("/usr/share/pixmaps")) {
+        Some(rv) => return Ok(rv),
+        None => {}
+    }
+    match iter_icons(&format!("{}/{}", base, theme), target_size, f)? {
+        Some(rv) => return Ok(rv),
+        None => {}
+    }
+    Err(io::ErrorKind::NotFound.into())
+}
+
+fn iter_icons<F,R>(base : &str, target_size : f64, mut f : F) -> io::Result<Option<R>>
+    where F : FnMut(PathBuf) -> Option<R>
+{
+    let mut sorted_dirs = Vec::new();
+
+    for size_dir in fs::read_dir(base)? {
         let cur_rank;
         let mut cur_size = 0;
         let size_dir = size_dir?;
@@ -99,25 +131,13 @@ fn open_icon(name : &str, target_size : f64) -> io::Result<PathBuf> {
 
     for (_,_,size_dir) in sorted_dirs.into_iter().rev() {
         for theme_item in fs::read_dir(size_dir)? {
-            let mut path = theme_item?.path();
-            path.push(name);
-            path.set_extension("svg");
-            match File::open(&path) {
-                Ok(_) => {
-                    return Ok(path);
-                }
-                Err(_) => {}
-            }
-            path.set_extension("png");
-            match File::open(&path) {
-                Ok(_) => {
-                    return Ok(path);
-                }
-                Err(_) => {}
+            let path = theme_item?.path();
+            if let v @ Some(_) = f(path) {
+                return Ok(v);
             }
         }
     }
-    Err(io::ErrorKind::NotFound.into())
+    Ok(None)
 }
 
 pub fn render(ctx : &Render, name : &str) -> Result<(), ()> {
@@ -144,7 +164,7 @@ pub fn render(ctx : &Render, name : &str) -> Result<(), ()> {
                 if w != tsize && h != tsize {
                     m.scale((w as f64 - 0.5) / pixel_size, (h as f64 - 0.5) / pixel_size);
                 }
-                m.translate(-pos, 0.0);
+                m.translate(-pos, -clip_y0);
                 pattern.set_matrix(m);
                 ctx.cairo.save();
                 ctx.cairo.set_source(&pattern);

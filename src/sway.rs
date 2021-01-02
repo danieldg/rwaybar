@@ -1,4 +1,5 @@
 use bytes::{Buf,BytesMut};
+use crate::item::{Item,Render,EventSink};
 use crate::data::IterationItem;
 use crate::state::Runtime;
 use crate::state::NotifierList;
@@ -498,11 +499,11 @@ enum Layout {
     Stacked,
 }
 
-#[derive(Debug,Clone)]
+#[derive(Debug)]
 enum NodeType {
     Container {
         layout : Layout,
-        children : Vec<Node>,
+        children : Vec<Rc<Node>>,
     },
     Window {
         title : String,
@@ -510,8 +511,8 @@ enum NodeType {
     },
 }
 
-#[derive(Debug,Clone)]
-struct Node {
+#[derive(Debug)]
+pub struct Node {
     id : u32,
     focus : bool,
     marks : String, // "" or "1" or "mark-name, another-mark"
@@ -545,7 +546,7 @@ impl Node {
             };
             break NodeType::Container {
                 layout,
-                children : value["nodes"].members_mut().map(Node::parse).collect(),
+                children : value["nodes"].members_mut().map(Node::parse).map(Rc::new).collect(),
             };
         };
         Node {
@@ -556,40 +557,59 @@ impl Node {
         }
     }
 
-    fn show(&self, rv : &mut String) {
-        // TODO all the formatting here should be in the config
-        if !self.marks.is_empty() {
-            rv.push('(');
-            rv.push_str(&self.marks);
-            rv.push(')');
-        }
-        if self.focus {
-            rv.push_str("<span color='#6eff30'>");
-        }
+    fn render(self : &Rc<Self>, items : &TreeItems, ctx : &Render, ev : &mut EventSink) {
+        let ii = Rc::new(IterationItem::SwayTreeItem(self.clone()));
         match &self.contents {
-            NodeType::Window { appid, .. } => {
-                rv.push_str(&appid);
-            }
-            NodeType::Container { layout, children } => {
-                rv.push(match layout {
-                    Layout::Horiz => 'H',
-                    Layout::Vert => 'V',
-                    Layout::Tabbed => 'T',
-                    Layout::Stacked => 'S',
-                });
-                rv.push('[');
-                for (i, child) in children.iter().enumerate() {
-                    if i != 0 {
-                        rv.push(' ');
-                    }
-                    child.show(rv);
+            NodeType::Container { children, .. } => {
+                if let Some(item) = &items.pre_node {
+                    item.render_clamped_item(ctx, ev, &ii);
                 }
-                rv.push(']');
+                for child in children {
+                    child.render(items, ctx, ev);
+                }
+                if let Some(item) = &items.post_node {
+                    item.render_clamped_item(ctx, ev, &ii);
+                }
+            }
+            NodeType::Window { .. } => {
+                if let Some(item) = &items.window {
+                    item.render_clamped_item(ctx, ev, &ii);
+                }
             }
         }
-        if self.focus {
-            rv.push_str("</span>");
+    }
+
+    pub fn read_in<F : FnOnce(&str) -> R,R>(&self, key : &str, _rt : &Runtime, f : F) -> R {
+        match (key, &self.contents) {
+            ("id", _) => {
+                f(&format!("{}", self.id))
+            }
+            ("marks", _) => {
+                f(&self.marks)
+            }
+            ("focus", _) => {
+                f(if self.focus { "1" } else { "0" })
+            }
+            ("appid", NodeType::Window { appid, .. }) => {
+                f(appid)
+            }
+            ("title", NodeType::Window { title, .. }) => {
+                f(title)
+            }
+            ("layout", NodeType::Container { layout, ..}) => {
+                f(match layout {
+                    Layout::Horiz => "H",
+                    Layout::Vert => "V",
+                    Layout::Tabbed => "T",
+                    Layout::Stacked => "S",
+                })
+            }
+            _ => f("")
         }
+    }
+
+    pub fn write(&self, _key : &str, value : String, _rt : &Runtime) {
+        SwaySocket::send(0, format!("[con_id={}] {}", self.id, value).as_bytes(), |_| ());
     }
 }
 
@@ -597,8 +617,8 @@ impl Node {
 struct WorkspaceNode {
     name : String,
     output : String,
-    repr : Node,
-    floating : Vec<Node>,
+    repr : Rc<Node>,
+    floating : Vec<Rc<Node>>,
 }
 
 impl WorkspaceNode {
@@ -607,12 +627,12 @@ impl WorkspaceNode {
         for output in value["nodes"].members_mut() {
             let output_name = output["name"].as_str().unwrap_or_default().to_owned();
             for workspace in output["nodes"].members_mut() {
-                let repr = Node::parse(workspace);
+                let repr = Rc::new(Node::parse(workspace));
                 rv.push(WorkspaceNode {
                     output : output_name.clone(),
                     name : workspace["name"].take_string().unwrap_or_default(),
                     repr,
-                    floating : workspace["floating_nodes"].members_mut().map(Node::parse).collect(),
+                    floating : workspace["floating_nodes"].members_mut().map(Node::parse).map(Rc::new).collect(),
                 });
             }
         }
@@ -620,9 +640,21 @@ impl WorkspaceNode {
     }
 }
 
-#[derive(Debug,Default)]
+#[derive(Debug)]
 pub struct Tree {
     value : Rc<TreeInner>,
+    items : Box<TreeItems>,
+}
+
+#[derive(Debug)]
+struct TreeItems {
+    pre_workspace : Option<Item>,
+    pre_node : Option<Item>,
+    window : Option<Item>,
+    post_node : Option<Item>,
+    pre_float : Option<Item>,
+    post_float : Option<Item>,
+    post_workspace : Option<Item>,
 }
 
 #[derive(Debug,Default)]
@@ -646,8 +678,20 @@ impl TreeInner {
 }
 
 impl Tree {
-    pub fn from_toml(_config : &toml::Value) -> Option<Self> {
-        Some(Tree::default())
+    pub fn from_toml(config : &toml::Value) -> Option<Self> {
+        let items = TreeItems {
+            pre_workspace : config.get("pre-workspace").map(Item::from_toml_ref),
+            pre_node : config.get("pre-node").map(Item::from_toml_ref),
+            window : config.get("window").map(Item::from_toml_ref),
+            post_node : config.get("post-node").map(Item::from_toml_ref),
+            pre_float : config.get("pre-float").map(Item::from_toml_ref),
+            post_float : config.get("post-float").map(Item::from_toml_ref),
+            post_workspace : config.get("post-workspace").map(Item::from_toml_ref),
+        };
+        Some(Tree {
+            value : Default::default(),
+            items : Box::new(items),
+        })
     }
 
     pub fn init(&self, _name : &str, _rt : &Runtime) {
@@ -682,27 +726,37 @@ impl Tree {
         TreeInner::refresh(self.value.clone());
     }
 
-    pub fn read_in<F : FnOnce(&str) -> R,R>(&self, _name : &str, key : &str, rt : &Runtime, f : F) -> R {
-        self.value.interested.take_in(|i| i.add(rt));
-        match key {
-            // TODO decide how to render this
-            _ => {
-                let mut rv = String::new();
-                self.value.workspaces.take_in_some(|workspaces| {
-                    for workspace in workspaces {
-                        rv.push_str(&workspace.name);
-                        rv.push_str(":");
-                        workspace.repr.show(&mut rv);
-                        for node in &workspace.floating {
-                            rv.push_str(" + ");
-                            node.show(&mut rv);
-                        }
-                        rv.push(' ');
+    pub fn read_in<F : FnOnce(&str) -> R,R>(&self, _name : &str, _key : &str, _rt : &Runtime, f : F) -> R {
+        f("")
+    }
+
+    pub fn render(&self, ctx : &Render, ev : &mut EventSink) {
+        let items = &self.items;
+        self.value.interested.take_in(|i| i.add(ctx.runtime));
+        self.value.workspaces.take_in_some(|workspaces| {
+            for workspace in workspaces {
+                let ii = Rc::new(IterationItem::SwayWorkspace(WorkspaceData {
+                    name : workspace.name.clone(),
+                    output : workspace.output.clone(),
+                    repr : String::new(), // TODO
+                }));
+                if let Some(item) = &items.pre_workspace {
+                    item.render_clamped_item(ctx, ev, &ii);
+                }
+                workspace.repr.render(items, ctx, ev);
+                for float in &workspace.floating {
+                    if let Some(item) = &items.pre_float {
+                        item.render_clamped_item(ctx, ev, &ii);
                     }
-                });
-                rv.pop();
-                f(&rv)
+                    float.render(items, ctx, ev);
+                    if let Some(item) = &items.post_float {
+                        item.render_clamped_item(ctx, ev, &ii);
+                    }
+                }
+                if let Some(item) = &items.post_workspace {
+                    item.render_clamped_item(ctx, ev, &ii);
+                }
             }
-        }
+        });
     }
 }
