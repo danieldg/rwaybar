@@ -63,30 +63,37 @@ impl Bar {
             let rt_item = runtime.items.entry("bar".into()).or_insert_with(Item::none);
             std::mem::swap(&mut self.item, rt_item);
 
-            self.sink = target.with_surface((self.pixel_width, self.pixel_height), &self.surf, |surf| {
-                let ctx = cairo::Context::new(surf);
-                let mut scale_matrix = cairo::Matrix::identity();
-                scale_matrix.scale(self.scale as f64, self.scale as f64);
-                ctx.set_matrix(scale_matrix);
-                let font = pango::FontDescription::new();
-                ctx.set_operator(cairo::Operator::Clear);
-                ctx.paint();
-                ctx.set_operator(cairo::Operator::Over);
-                let render_extents = ctx.clip_extents();
-                let render_pos = Cell::new(0.0);
+            let surf = cairo::RecordingSurface::create(cairo::Content::ColorAlpha,
+                cairo::Rectangle {
+                    x : 0.0,
+                    y : 0.0,
+                    width : self.pixel_width as f64,
+                    height : self.pixel_height as f64,
+                }).expect("Error creating bar rendering surface");
+            let ctx = cairo::Context::new(&surf);
+            let mut scale_matrix = cairo::Matrix::identity();
+            scale_matrix.scale(self.scale as f64, self.scale as f64);
+            ctx.set_matrix(scale_matrix);
+            let font = pango::FontDescription::new();
+            ctx.set_operator(cairo::Operator::Clear);
+            ctx.paint();
+            ctx.set_operator(cairo::Operator::Over);
+            let render_extents = ctx.clip_extents();
+            let render_pos = Cell::new(0.0);
 
-                let ctx = Render {
-                    cairo : &ctx,
-                    font : &font,
-                    align : Align::bar_default(),
-                    render_extents : &render_extents,
-                    render_pos : &render_pos,
-                    err_name: "bar",
-                    text_stroke : None,
-                    runtime,
-                };
-                ctx.runtime.items["bar"].render(&ctx)
-            });
+            let ctx = Render {
+                cairo : &ctx,
+                font : &font,
+                align : Align::bar_default(),
+                render_extents : &render_extents,
+                render_pos : &render_pos,
+                err_name: "bar",
+                text_stroke : None,
+                runtime,
+            };
+            self.sink = ctx.runtime.items["bar"].render(&ctx);
+
+            target.render((self.pixel_width, self.pixel_height), &self.surf, &surf);
             std::mem::swap(&mut self.item, runtime.items.get_mut("bar").unwrap());
 
             let frame = self.surf.frame();
@@ -120,18 +127,25 @@ impl Bar {
             if let Some((_,_,desc)) = self.sink.get_hover(self.popup_x, 0.0) {
                 let scale = popup.wl.scale;
                 let pixel_size = (popup.wl.size.0 * scale, popup.wl.size.1 * scale);
-                let new_size = target.with_surface(pixel_size, &popup.wl.surf, |surf| {
-                    let ctx = cairo::Context::new(&surf);
-                    ctx.set_operator(cairo::Operator::Source);
-                    ctx.paint();
-                    ctx.set_operator(cairo::Operator::Over);
-                    ctx.set_source_rgb(1.0, 1.0, 1.0);
+                let surf = cairo::RecordingSurface::create(cairo::Content::ColorAlpha,
+                    cairo::Rectangle {
+                        x : 0.0,
+                        y : 0.0,
+                        width : pixel_size.0 as f64,
+                        height : pixel_size.1 as f64,
+                    }).expect("Error creating popup rendering surface");
+                let ctx = cairo::Context::new(&surf);
+                ctx.set_operator(cairo::Operator::Source);
+                ctx.paint();
+                ctx.set_operator(cairo::Operator::Over);
+                ctx.set_source_rgb(1.0, 1.0, 1.0);
 
-                    let mut scale_matrix = cairo::Matrix::identity();
-                    scale_matrix.scale(scale as f64, scale as f64);
-                    ctx.set_matrix(scale_matrix);
-                    desc.render(&ctx, runtime)
-                });
+                let mut scale_matrix = cairo::Matrix::identity();
+                scale_matrix.scale(scale as f64, scale as f64);
+                ctx.set_matrix(scale_matrix);
+                let new_size = desc.render(&ctx, runtime);
+
+                target.render(pixel_size, &popup.wl.surf, &surf);
                 popup.wl.surf.commit();
                 if new_size.0 > popup.wl.size.0 || new_size.1 > popup.wl.size.1 {
                     target.wayland.resize_popup(&self.ls_surf, &mut popup.wl, new_size, scale);
@@ -203,20 +217,22 @@ impl<'a> RenderTarget<'a> {
         RenderTarget { wayland, pos : 0 }
     }
 
-    fn with_surface<F : FnOnce(&cairo::ImageSurface) -> R, R>(&mut self, size : (i32, i32), target : &WlSurface, cb : F) -> R {
+    fn render(&mut self, size : (i32, i32), target : &WlSurface, surf : &cairo::Surface) {
         let stride = cairo::Format::ARgb32.stride_for_width(size.0 as u32).unwrap();
         let len = (size.1 as usize) * (stride as usize);
         let buf : &mut [u8] = &mut self.wayland.shm.mmap().as_mut()[self.pos..][..len];
-        let rv;
 
         unsafe {
-            // cairo::ImageSurface::create_for_data requires a 'static type, so give it that
-            // (this could be done safely by having RenderTarget take ownership of the MemPool and impl'ing AsMut)
+            // cairo::ImageSurface::create_for_data requires a 'static type, so give it that.
+            // This could be done safely by creating a type that takes ownership of the MemPool and
+            // returns it on Drop, which would require starting with an Rc<State> handle.
             let buf : &'static mut [u8] = &mut *(buf as *mut [u8]);
-            let surf = cairo::ImageSurface::create_for_data(buf, cairo::Format::ARgb32, size.0, size.1, stride).unwrap();
-            // safety: ImageSurface never gives out direct access to D
-            rv = cb(&surf);
-            // safety: we must finish the cairo surface to end the 'static borrow
+
+            let is = cairo::ImageSurface::create_for_data(buf, cairo::Format::ARgb32, size.0, size.1, stride).unwrap();
+            let ctx = cairo::Context::new(&is);
+            ctx.set_source_surface(surf, 0.0, 0.0);
+            ctx.set_operator(cairo::Operator::Source);
+            ctx.paint();
             surf.finish();
             drop(surf);
         }
@@ -225,7 +241,6 @@ impl<'a> RenderTarget<'a> {
         target.attach(Some(&buf), 0, 0);
         target.damage_buffer(0, 0, size.0, size.1);
         self.pos += len;
-        rv
     }
 }
 
