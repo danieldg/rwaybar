@@ -67,6 +67,11 @@ pub enum Module {
         // TODO crop ordering: allow specific items to be cropped first
         // TODO use min-width to force earlier cropping
     },
+    Icon {
+        name : String,
+        fallback : String,
+        tooltip : String,
+    },
     Item { // unique variant for the reserved "item" item
         value : Cell<Option<Rc<IterationItem>>>,
     },
@@ -218,6 +223,15 @@ impl Module {
                     items,
                     spacing,
                 }
+            }
+            Some("icon") => {
+                let name = value.get("name").and_then(|v| v.as_str()).unwrap_or_else(|| {
+                    error!("Icon requires a name expression");
+                    ""
+                }).to_owned();
+                let fallback = toml_to_string(value.get("fallback")).unwrap_or_default();
+                let tooltip = value.get("tooltip").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                Module::Icon { name, fallback, tooltip }
             }
             Some("meter") => {
                 let min = toml_to_string(value.get("min")).unwrap_or_default();
@@ -498,6 +512,7 @@ impl Module {
         match self {
             Module::ItemReference { .. } |
             Module::Group { .. } |
+            Module::Icon { .. } |
             Module::FocusList { .. } |
             Module::Tray { .. } => {
                 error!("Cannot use '{}' in a text expansion", name);

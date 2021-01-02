@@ -59,6 +59,8 @@ fn open_icon(name : &str, target_size : f64) -> io::Result<PathBuf> {
     let theme = "hicolor"; // TODO configurable as list
 
     let mut sorted_dirs = Vec::new();
+    sorted_dirs.push((0, 0, PathBuf::from("/usr/share/pixmaps")));
+
     for size_dir in fs::read_dir(format!("{}/{}", base, theme))? {
         let cur_rank;
         let mut cur_size = 0;

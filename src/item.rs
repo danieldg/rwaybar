@@ -1,5 +1,6 @@
 use crate::data::{Action,Module,IterationItem};
 use crate::state::Runtime;
+use crate::icon;
 use crate::tray;
 use crate::util::Cell;
 use log::{warn,error};
@@ -689,6 +690,7 @@ impl Item {
                     }
                 };
                 ctx.render_pos.set(ctx.render_pos.get() + spacing);
+                let prev = item_var.replace(None);
                 source.data.read_focus_list(ctx.runtime, |focus, item| {
                     item_var.set(Some(item.clone()));
                     let x0 = ctx.render_pos.get();
@@ -705,7 +707,7 @@ impl Item {
                     rv.merge(ev);
                     ctx.render_pos.set(ctx.render_pos.get() + spacing);
                 });
-                item_var.set(None);
+                item_var.set(prev);
             }
             Module::Bar { items, .. } => {
                 let (clip_x0, _y0, clip_x1, _y1) = *ctx.render_extents;
@@ -772,6 +774,30 @@ impl Item {
 
                 ctx.render_pos.set(clip_x1);
             }
+            Module::Icon { name, fallback, tooltip } => {
+                let start_pos = ctx.render_pos.get();
+                let markup = self.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
+                let name = ctx.runtime.format_or(name, ctx.err_name);
+                let tooltip = ctx.runtime.format_or(tooltip, ctx.err_name);
+                match icon::render(ctx, &name) {
+                    Ok(()) => {},
+                    Err(()) => {
+                        let value = ctx.runtime.format_or(fallback, ctx.err_name);
+                        let mut item : Item = Module::new_value(&value).into();
+                        if markup {
+                            item.config = self.config.clone();
+                        }
+                        item.render(ctx);
+                    }
+                }
+                if !tooltip.is_empty() {
+                    let end_pos = ctx.render_pos.get();
+                    rv.hovers.push((start_pos, end_pos, PopupDesc::Text {
+                        value : tooltip,
+                        markup,
+                    }));
+                }
+            },
             Module::Tray { spacing } => {
                 let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
                 tray::show(ctx, rv, spacing);

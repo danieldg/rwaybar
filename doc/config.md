@@ -193,6 +193,15 @@ Key | Expanded | Value | Details
 `condition` | Yes | empty or non-empty | If this value is set but empty, the group will not be displayed
 `spacing` | Yes | number of pixels | Spacing between each item in the group.  May be negative.
 
+## icon
+
+Key | Expanded | Default | Details
+----|----------|---------|--------
+`name` | Yes | -- | The name of an icon to display
+`fallback` | Yes | -- | The string to display if no icon is found
+`tooltip` | Yes | "" | The tooltip to display when hovering over the icon
+
+
 ## meter
 
 Key | Expanded | Default | Details
