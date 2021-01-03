@@ -4,6 +4,7 @@ use log::{debug,info,warn,error};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
+use std::path::PathBuf;
 use std::time::Instant;
 use std::rc::Rc;
 use wayland_client::Attached;
@@ -202,8 +203,8 @@ impl Bar {
 
 impl Drop for Bar {
     fn drop(&mut self) {
-        self.surf.destroy();
         self.ls_surf.destroy();
+        self.surf.destroy();
     }
 }
 
@@ -440,7 +441,18 @@ impl State {
     fn load_config(&mut self, reload : bool) -> Result<(), Box<dyn Error>> {
         let mut bar_config = Vec::new();
 
-        let cfg = std::fs::read_to_string("rwaybar.toml")?;
+        let mut config_path = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                let mut home = std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(PathBuf::new);
+                home.push(".config");
+                home
+            });
+        config_path.push("rwaybar.toml");
+
+        let cfg = std::fs::read_to_string(config_path)?;
         let config : toml::Value = toml::from_str(&cfg)?;
 
         let cfg = config.as_table().unwrap();
