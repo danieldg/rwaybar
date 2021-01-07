@@ -644,7 +644,10 @@ impl State {
         let ls_surf = ls.get_layer_surface(&surf, Some(output), Layer::Top, "bar".to_owned());
 
         let size = cfg.get("size").and_then(|v| v.as_integer()).unwrap_or(20) as u32;
-        
+        let size_excl = cfg.get("size-exclusive")
+            .and_then(|v| v.as_integer())
+            .map(|v| v as u32)
+            .unwrap_or(size);
         let anchor_top;
 
         match cfg.get("side").and_then(|v| v.as_str()) {
@@ -665,7 +668,7 @@ impl State {
                 anchor_top = false;
             }
         }
-        ls_surf.set_exclusive_zone(size as i32);
+        ls_surf.set_exclusive_zone(size_excl as i32);
         ls_surf.quick_assign(move |ls_surf, event, mut data| {
             use layer_shell::zwlr_layer_surface_v1::Event;
             let state : &mut State = data.get().unwrap();

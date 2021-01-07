@@ -20,6 +20,7 @@ Key | Value | Expanded | Default
 `model` | A regex that must match the model of the monitor | No | Display on all monitors
 `description` | A regex that must match the description of the monitor | No | Display on all monitors
 `size` | The size of the bar in pixels | No | `20`
+`size-exclusive` | Number of pixels to reserve for the bar | No | (`size`)
 `side` | `top` or `bottom` | No | `bottom`
 `left` | Block or list of blocks | No | None
 `center` | Block or list of blocks | No | None
