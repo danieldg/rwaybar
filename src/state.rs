@@ -337,7 +337,7 @@ impl Runtime {
         }
     }
 
-    pub fn get_item_var(&self) -> &Cell<Option<Rc<IterationItem>>> {
+    pub fn get_item_var(&self) -> &Cell<Option<IterationItem>> {
         match self.items.get("item") {
             Some(&Item { data : Module::Item { ref value }, .. }) => value,
             _ => {

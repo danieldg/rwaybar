@@ -296,7 +296,7 @@ impl WorkspaceData {
     }
 }
 
-fn sway_sort_fn(a : &WorkspaceData, b : &WorkspaceData) -> Ordering {
+fn sway_sort_fn(a : &Rc<WorkspaceData>, b : &Rc<WorkspaceData>) -> Ordering {
     let mut a = a.name.as_str();
     let mut b = b.name.as_str();
     let a1 = a.chars().next().as_ref().map(char::is_ascii_digit);
@@ -322,7 +322,7 @@ fn sway_sort_fn(a : &WorkspaceData, b : &WorkspaceData) -> Ordering {
 #[derive(Debug,Default)]
 struct WorkspacesData {
     focus : Cell<String>,
-    list : Cell<Vec<WorkspaceData>>,
+    list : Cell<Vec<Rc<WorkspaceData>>>,
     interested : Cell<NotifierList>,
 }
 
@@ -341,7 +341,9 @@ impl WorkspacesData {
                         self.list.take_in(|list| {
                             for wks in list {
                                 if wks.name == name {
-                                    wks.repr = repr.to_owned();
+                                    let mut new = (**wks).clone();
+                                    new.repr = repr.to_owned();
+                                    *wks = Rc::new(new);
                                     return;
                                 }
                             }
@@ -362,11 +364,11 @@ impl WorkspacesData {
                 self.list.take_in(|list| {
                     for wks in &mut *list {
                         if wks.name == new.name {
-                            *wks = new;
+                            *wks = Rc::new(new);
                             return;
                         }
                     }
-                    list.push(new);
+                    list.push(Rc::new(new));
                     list.sort_by(sway_sort_fn);
                 });
             }
@@ -382,7 +384,10 @@ impl WorkspacesData {
                     self.list.take_in(|list| {
                         for wks in &mut *list {
                             if wks.name == old {
-                                wks.name = new.to_owned();
+                                let mut w = (**wks).clone();
+                                w.name = new.to_owned();
+                                *wks = Rc::new(w);
+                                break;
                             }
                         }
                         list.sort_by(sway_sort_fn);
@@ -396,7 +401,10 @@ impl WorkspacesData {
                     self.list.take_in(|list| {
                         for wks in list {
                             if wks.name == name {
-                                wks.output = output.to_owned();
+                                let mut new = (**wks).clone();
+                                new.output = output.to_owned();
+                                *wks = Rc::new(new);
+                                return;
                             }
                         }
                     });
@@ -448,7 +456,7 @@ impl Workspace {
                         if workspace["focused"].as_bool() == Some(true) {
                             value.focus.set(new.name.clone());
                         }
-                        list.push(new);
+                        list.push(Rc::new(new));
                     }
                     value.list.set(list);
                     value.interested.take().notify_data("sway:workspace");
@@ -470,13 +478,13 @@ impl Workspace {
         }
     }
 
-    pub fn read_focus_list<F : FnMut(bool, Rc<IterationItem>)>(&self, rt : &Runtime, mut f : F) {
+    pub fn read_focus_list<F : FnMut(bool, IterationItem)>(&self, rt : &Runtime, mut f : F) {
         self.value.interested.take_in(|i| i.add(rt));
         let focus = self.value.focus.take_in(|f| f.clone());
         self.value.list.take_in(|list| {
             for item in &*list {
                 let focus = item.name == focus;
-                f(focus, Rc::new(IterationItem::SwayWorkspace(item.clone())));
+                f(focus, IterationItem::SwayWorkspace(item.clone()));
             }
         });
     }
@@ -735,7 +743,7 @@ impl Tree {
         self.value.interested.take_in(|i| i.add(ctx.runtime));
         self.value.workspaces.take_in_some(|workspaces| {
             for workspace in workspaces {
-                let ii = Rc::new(IterationItem::SwayWorkspace(WorkspaceData {
+                let ii = IterationItem::SwayWorkspace(Rc::new(WorkspaceData {
                     name : workspace.name.clone(),
                     output : workspace.output.clone(),
                     repr : String::new(), // TODO

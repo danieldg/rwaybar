@@ -25,16 +25,16 @@ thread_local! {
 
 #[derive(Debug)]
 struct TrayItem {
-    owner : String,
-    path : String,
+    owner : Rc<str>,
+    path : Rc<str>,
     is_kde : bool,
     dbus_token : ImplDebug<Token>,
 
     id : String,
-    title : String,
-    icon : String,
-    icon_path : String,
-    menu_path : String,
+    title : Option<Rc<str>>,
+    icon : Box<str>,
+    icon_path : Box<str>,
+    menu_path : Option<Rc<str>>,
     menu : Rc<TrayPopupMenu>,
 }
 
@@ -45,8 +45,8 @@ impl Drop for TrayItem {
         let sni_path = if self.is_kde { "org.kde.StatusNotifierItem" } else { "org.freedesktop.StatusNotifierItem" };
         let mut rule = MatchRule::new_signal(sni_path, "x");
         rule.member = None;
-        rule.path = Some((&self.path).into());
-        rule.sender = Some((&self.owner).into());
+        rule.path = Some((&*self.path).into());
+        rule.sender = Some((&*self.owner).into());
         let rule = rule.match_str();
         spawn("TrayItem cleanup", async move {
             let dbus = get_dbus();
@@ -268,23 +268,23 @@ fn do_add_item(is_kde : bool, item : String) {
     spawn("Tray item inspection", async move {
         let dbus = get_dbus();
 
-        let (owner, path) = match item.find('/') {
-            Some(pos) => (&item[..pos], &item[pos..]),
+        let (owner, path) : (Rc<str>, Rc<str>) = match item.find('/') {
+            Some(pos) => (Rc::from(&item[..pos]), Rc::from(&item[pos..])),
             None => return Ok(()),
         };
 
-        let (oo, op) = (owner.to_owned(), path.to_owned());
+        let (oo, op) = (owner.clone(), path.clone());
         let mut rule = MatchRule::new_signal(sni_path, "x");
         rule.member = None; // we handle all signals the same way (since most of them don't include any information)
-        rule.path = Some(path.to_owned().into());
-        rule.sender = Some(owner.to_owned().into());
+        rule.path = Some((&*path).to_owned().into());
+        rule.sender = Some((&*owner).to_owned().into());
         dbus.local.add_match_no_cb(&rule.match_str()).await?;
         let token = dbus.local.start_receive(rule, Box::new(move |_msg, _local| {
             let owner = oo.clone();
             let path = op.clone();
             spawn("Tray item refresh", async move {
                 let dbus = get_dbus();
-                let proxy = Proxy::new(&owner, &path, Duration::from_secs(10), &dbus.local);
+                let proxy = Proxy::new(&*owner, &*path, Duration::from_secs(10), &dbus.local);
                 let props = proxy.get_all(&sni_path).await?;
 
                 handle_item_update(&owner, &path, &props);
@@ -294,15 +294,15 @@ fn do_add_item(is_kde : bool, item : String) {
         }));
 
         let item = TrayItem {
-            owner : owner.into(),
-            path : path.into(),
+            owner : owner.clone(),
+            path : path.clone(),
             is_kde,
             dbus_token : token.into(),
             id : String::new(),
-            title : String::new(),
-            icon : String::new(),
-            icon_path : String::new(),
-            menu_path : String::new(),
+            title : None,
+            icon : Default::default(),
+            icon_path : Default::default(),
+            menu_path : None,
             menu : Default::default(),
         };
 
@@ -311,7 +311,7 @@ fn do_add_item(is_kde : bool, item : String) {
             let tray = tray.as_ref().unwrap();
             tray.items.take_in(|items| {
                 for item in &*items {
-                    if item.owner == owner && item.path == path {
+                    if &*item.owner == &*owner && item.path == path {
                         return true;
                     }
                 }
@@ -322,10 +322,10 @@ fn do_add_item(is_kde : bool, item : String) {
             return Ok(());
         }
 
-        let proxy = Proxy::new(owner, path, Duration::from_secs(10), &dbus.local);
+        let proxy = Proxy::new(&*owner, &*path, Duration::from_secs(10), &dbus.local);
         let props = proxy.get_all(&sni_path).await?;
 
-        handle_item_update(owner, path, &props);
+        handle_item_update(&owner, &path, &props);
         Ok(())
     });
 }
@@ -340,7 +340,7 @@ fn do_del_item(item : String) {
         let tray = cell.get();
         let tray = tray.as_ref().unwrap();
         tray.items.take_in(|items| {
-            items.retain(|item| item.owner != owner || item.path != path);
+            items.retain(|item| &*item.owner != owner || &*item.path != path);
         });
         tray.interested.take().notify_data("tray:item");
     });
@@ -352,17 +352,17 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<String, Varian
         let tray = tray.as_ref().unwrap();
         tray.items.take_in(|items| {
             for item in items {
-                if item.owner != owner || item.path != path {
+                if &*item.owner != owner || &*item.path != path {
                     continue;
                 }
 
                 for (key, value) in props {
                     match key.as_str() {
                         "Id" => value.as_str().map(|v| item.id = v.into()),
-                        "Title" => value.as_str().map(|v| item.title = v.into()),
+                        "Title" => value.as_str().map(|v| item.title = Some(v.into())),
                         "IconName" => value.as_str().map(|v| item.icon = v.into()),
                         "IconThemePath" => value.as_str().map(|v| item.icon_path = v.into()),
-                        "Menu" => value.as_str().map(|v| item.menu_path = v.into()),
+                        "Menu" => value.as_str().map(|v| item.menu_path = Some(v.into())),
                         _ => None
                     };
                 }
@@ -374,9 +374,9 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<String, Varian
 
 #[derive(Clone,Debug)]
 pub struct TrayPopup {
-    owner : String,
-    menu_path : String,
-    title : String,
+    owner : Rc<str>,
+    menu_path : Option<Rc<str>>,
+    title : Option<Rc<str>>,
     menu : Rc<TrayPopupMenu>,
     rendered_ids : Vec<(f64, f64, i32)>,
 }
@@ -455,15 +455,15 @@ impl Drop for TrayPopupMenu {
     }
 }
 
-async fn refresh_menu(menu : Rc<TrayPopupMenu>, owner : String, menu_path : String) -> Result<(), Box<dyn Error>> {
+async fn refresh_menu(menu : Rc<TrayPopupMenu>, owner : Rc<str>, menu_path : Rc<str>) -> Result<(), Box<dyn Error>> {
     let dbus = get_dbus();
-    let proxy = Proxy::new(&owner, &menu_path, Duration::from_secs(10), &dbus.local);
+    let proxy = Proxy::new(&*owner, &*menu_path, Duration::from_secs(10), &dbus.local);
     let _ : (bool,) = proxy.method_call("com.canonical.dbusmenu", "AboutToShow", (0i32,)).await?;
 
     if menu.dbus_token.take_in_some(|_| ()).is_none() {
         let mut rule = MatchRule::new_signal("com.canonical.dbusmenu", "ItemsPropertiesUpdated");
-        rule.path = Some(menu_path.clone().into());
-        rule.sender = Some(owner.clone().into());
+        rule.path = Some(String::from(&*menu_path).into());
+        rule.sender = Some(String::from(&*owner).into());
         dbus.local.add_match_no_cb(&rule.match_str()).await?;
 
         rule.member = Some("LayoutUpdated".into());
@@ -508,16 +508,16 @@ impl TrayPopup {
         let tmp = cairo::RecordingSurface::create(cairo::Content::ColorAlpha, None).unwrap();
         let ctx = cairo::Context::new(&tmp);
         let layout = pangocairo::create_layout(&ctx).unwrap();
-        layout.set_text(&self.title);
+        layout.set_text(self.title.as_deref().unwrap_or_default());
         let psize = layout.get_size();
         let mut size = (pango::units_to_double(psize.0), pango::units_to_double(psize.1));
         if !self.menu.fresh.get() && self.menu.dbus_token.take_in_some(|_| ()).is_none() {
             // need to kick off the first refresh
             let menu = self.menu.clone();
             let owner = self.owner.clone();
-            let menu_path = self.menu_path.clone();
-
-            spawn("Tray menu population", refresh_menu(menu, owner, menu_path));
+            if let Some(menu_path) = self.menu_path.clone() {
+                spawn("Tray menu population", refresh_menu(menu, owner, menu_path));
+            }
         }
         self.menu.items.take_in(|items| {
             if !items.is_empty() {
@@ -546,7 +546,7 @@ impl TrayPopup {
         let clip = ctx.clip_extents(); 
         ctx.move_to(2.0, 2.0);
         let layout = pangocairo::create_layout(&ctx).unwrap();
-        layout.set_text(&self.title);
+        layout.set_text(self.title.as_deref().unwrap_or_default());
         let psize = layout.get_size();
         pangocairo::show_layout(&ctx, &layout);
         let mut pos = 2.0 + pango::units_to_double(psize.1);
@@ -594,14 +594,15 @@ impl TrayPopup {
             if y < min || y > max {
                 continue;
             }
-            let owner = self.owner.clone();
-            let menu_path = self.menu_path.clone();
-            spawn("Tray menu click", async move {
-                let dbus = get_dbus();
-                let proxy = Proxy::new(owner, menu_path, Duration::from_secs(10), &dbus.local);
-                proxy.method_call("com.canonical.dbusmenu", "Event", (id, "clicked", Variant(0i32), ts as u32)).await?;
-                Ok(())
-            });
+            if let Some(menu_path) = self.menu_path.clone() {
+                let owner = self.owner.clone();
+                spawn("Tray menu click", async move {
+                    let dbus = get_dbus();
+                    let proxy = Proxy::new(&*owner, &*menu_path, Duration::from_secs(10), &dbus.local);
+                    proxy.method_call("com.canonical.dbusmenu", "Event", (id, "clicked", Variant(0i32), ts as u32)).await?;
+                    Ok(())
+                });
+            }
         }
     }
 }
@@ -615,13 +616,13 @@ pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
             for item in items {
                 let x0 = ctx.render_pos.get();
                 let mut done = false;
-                if !done && item.icon_path != "" {
+                if !done && !item.icon_path.is_empty() {
                     let icon = format!("{}/{}.svg", item.icon_path, item.icon);
                     if icon::render(ctx, &icon).is_ok() {
                         done = true;
                     }
                 }
-                if !done && item.icon_path != "" {
+                if !done && !item.icon_path.is_empty() {
                     let icon = format!("{}/{}.png", item.icon_path, item.icon);
                     if icon::render(ctx, &icon).is_ok() {
                         done = true;
@@ -631,7 +632,7 @@ pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
                     done = true;
                 }
                 if !done {
-                    let item : Item = Module::new_value(&item.title).into();
+                    let item : Item = Module::new_value(item.title.as_deref().unwrap_or_default()).into();
                     item.render(ctx);
                 }
                 let x1 = ctx.render_pos.get();
@@ -667,7 +668,7 @@ pub fn do_click(owner : &str, path : &str, how : u32) {
         let tray = tray.as_ref().unwrap();
         tray.items.take_in(|items| {
             for item in items {
-                if item.owner != owner || item.path != path {
+                if &*item.owner != owner || &*item.path != path {
                     continue;
                 }
                 let sni_path = if item.is_kde { "org.kde.StatusNotifierItem" } else { "org.freedesktop.StatusNotifierItem" };

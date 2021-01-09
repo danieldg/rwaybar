@@ -29,88 +29,88 @@ pub enum Module {
         config : toml::Value,
     },
     Clock {
-        format : String,
-        zone : String,
+        format : Box<str>,
+        zone : Box<str>,
         time : Cell<String>,
     },
     Disk {
-        path : String,
+        path : Box<str>,
         poll : f64,
         last_read : Cell<Option<Instant>>,
         contents : Cell<libc::statvfs>,
     },
     Eval {
         expr : EvalExpr,
-        vars : Vec<(String, String)>,
+        vars : Vec<(Box<str>, Box<str>)>,
         looped : Cell<bool>,
     },
     ExecJson {
-        command : String,
+        command : Box<str>,
         stdin : Cell<Option<ChildStdin>>,
         value : Cell<Option<Rc<(Cell<JsonValue>, Cell<NotifierList>)>>>,
         handle : Cell<Option<RemoteHandle<()>>>,
     },
     FocusList {
-        source : String,
+        source : Box<str>,
         // always two items: non-focused, focused
         items : Box<(Item, Option<Item>)>,
-        spacing : String,
+        spacing : Box<str>,
     },
     Formatted {
-        format : String,
-        tooltip : String,
+        format : Box<str>,
+        tooltip : Box<str>,
         looped : Cell<bool>,
     },
     Group {
         items : Vec<Item>,
-        spacing : String,
+        spacing : Box<str>,
         // TODO crop ordering: allow specific items to be cropped first
         // TODO use min-width to force earlier cropping
     },
     Icon {
-        name : String,
-        fallback : String,
-        tooltip : String,
+        name : Box<str>,
+        fallback : Box<str>,
+        tooltip : Box<str>,
     },
     Item { // unique variant for the reserved "item" item
-        value : Cell<Option<Rc<IterationItem>>>,
+        value : Cell<Option<IterationItem>>,
     },
-    ItemReference { name : String },
-    MediaPlayer2 { target : String },
+    ItemReference { name : Box<str> },
+    MediaPlayer2 { target : Box<str> },
     Meter {
-        min : String,
-        max : String,
-        src : String,
-        values : Box<[String]>,
+        min : Box<str>,
+        max : Box<str>,
+        src : Box<str>,
+        values : Box<[Box<str>]>,
         looped : Cell<bool>,
     },
     None,
     Pulse {
-        target : String,
+        target : Box<str>,
     },
     ReadFile {
-        name : String,
+        name : Box<str>,
         poll : f64,
         last_read : Cell<Option<Instant>>,
         contents : Cell<String>,
     },
     Regex {
         regex : regex::Regex,
-        text : String,
-        replace : String,
+        text : Box<str>,
+        replace : Box<str>,
         looped : Cell<bool>,
     },
     SwayMode(sway::Mode),
     SwayTree(sway::Tree),
     SwayWorkspace(sway::Workspace),
     Switch {
-        format : String,
+        format : Box<str>,
         cases : toml::value::Table,
-        default : String,
+        default : Box<str>,
         looped : Cell<bool>,
     },
     Tray {
-        spacing : String,
+        spacing : Box<str>,
     },
     Value {
         value : Cell<String>,
@@ -118,10 +118,10 @@ pub enum Module {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub enum IterationItem {
-    MediaPlayer2 { target : String },
-    SwayWorkspace(sway::WorkspaceData),
+    MediaPlayer2 { target : Rc<str> },
+    SwayWorkspace(Rc<sway::WorkspaceData>),
     SwayTreeItem(Rc<sway::Node>),
 }
 
@@ -130,12 +130,12 @@ impl Module {
         match value.get("type").and_then(|v| v.as_str()) {
             // keep values in alphabetical order
             Some("clock") => {
-                let format = value.get("format").and_then(|v| v.as_str()).unwrap_or("%H:%M").to_owned();
-                let zone = value.get("timezone").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                let format = value.get("format").and_then(|v| v.as_str()).unwrap_or("%H:%M").into();
+                let zone = value.get("timezone").and_then(|v| v.as_str()).unwrap_or("").into();
                 Module::Clock { format, zone, time : Cell::new(String::new()) }
             }
             Some("disk") => {
-                let path = value.get("path").and_then(|v| v.as_str()).unwrap_or("/").to_owned();
+                let path = value.get("path").and_then(|v| v.as_str()).unwrap_or("/").into();
                 let poll = toml_to_f64(value.get("poll")).unwrap_or(60.0);
                 let v : libc::statvfs = unsafe { std::mem::zeroed() };
                 Module::Disk { path, poll, last_read: Cell::default(), contents : Cell::new(v) }
@@ -148,11 +148,11 @@ impl Module {
                     Some(Ok(expr)) => {
                         let mut vars = Vec::new();
                         for ident in expr.iter_variable_identifiers() {
-                            if vars.iter().find(|(k, _)| k == ident).is_some() {
+                            if vars.iter().find(|(k, _)| k as &str == ident).is_some() {
                                 continue;
                             }
                             match toml_to_string(value.get(ident)) {
-                                Some(value) => vars.push((ident.into(), value)),
+                                Some(value) => vars.push((ident.into(), value.into())),
                                 None => {
                                     error!("Undefined variable '{}' in expression", ident);
                                     return Module::None;
@@ -173,7 +173,7 @@ impl Module {
             }
             Some("exec-json") => {
                 let command = match value.get("command").and_then(|v| v.as_str()) {
-                    Some(cmd) => cmd.to_owned(),
+                    Some(cmd) => cmd.into(),
                     None => {
                         error!("Comamnd to execute is required: {}", value);
                         return Module::None;
@@ -194,7 +194,7 @@ impl Module {
                         return Module::None.into();
                     }
                 };
-                let spacing = toml_to_string(value.get("spacing")).unwrap_or_default();
+                let spacing = toml_to_string(value.get("spacing")).unwrap_or_default().into();
                 let item = value.get("item").map_or_else(Item::none, Item::from_toml_ref);
                 let fitem = value.get("focused-item").map(Item::from_toml_ref);
 
@@ -209,12 +209,12 @@ impl Module {
                 let format = value.get("format").and_then(|v| v.as_str()).unwrap_or_else(|| {
                     error!("Formatted variables require a format: {}", value);
                     ""
-                }).to_owned();
-                let tooltip = value.get("tooltip").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                }).into();
+                let tooltip = value.get("tooltip").and_then(|v| v.as_str()).unwrap_or("").into();
                 Module::Formatted { format, tooltip, looped : Cell::new(false) }
             }
             Some("group") => {
-                let spacing = toml_to_string(value.get("spacing")).unwrap_or_default();
+                let spacing = toml_to_string(value.get("spacing")).unwrap_or_default().into();
                 let items = value.get("items")
                     .and_then(|v| v.as_array())
                     .map(|a| a.iter().map(Item::from_toml_ref).collect())
@@ -229,22 +229,22 @@ impl Module {
                 let name = value.get("name").and_then(|v| v.as_str()).unwrap_or_else(|| {
                     error!("Icon requires a name expression");
                     ""
-                }).to_owned();
-                let fallback = toml_to_string(value.get("fallback")).unwrap_or_default();
-                let tooltip = value.get("tooltip").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                }).into();
+                let fallback = toml_to_string(value.get("fallback")).unwrap_or_default().into();
+                let tooltip = value.get("tooltip").and_then(|v| v.as_str()).unwrap_or("").into();
                 Module::Icon { name, fallback, tooltip }
             }
             Some("meter") => {
-                let min = toml_to_string(value.get("min")).unwrap_or_default();
-                let max = toml_to_string(value.get("max")).unwrap_or_default();
+                let min = toml_to_string(value.get("min")).unwrap_or_default().into();
+                let max = toml_to_string(value.get("max")).unwrap_or_default().into();
                 let src = value.get("src").and_then(|v| v.as_str()).unwrap_or_else(|| {
                     error!("Meter requires a src expression");
                     ""
-                }).to_owned();
+                }).into();
                 let mut values = match Some(Some("")).into_iter()
                         .chain(value.get("values").and_then(|v| v.as_array()).map(|v| v.iter().map(toml::Value::as_str)).into_iter().flatten())
                         .chain(Some(Some("")))
-                        .map(|v| v.map(String::from))
+                        .map(|v| v.map(Box::from))
                         .collect::<Option<Box<[_]>>>()
                     {
                         Some(v) if v.len() > 2 => v,
@@ -254,28 +254,28 @@ impl Module {
                         }
                     };
                 let e = values.len() - 1;
-                values[0] = value.get("below").and_then(|v| v.as_str()).unwrap_or(&values[1]).to_owned();
-                values[e] = value.get("above").and_then(|v| v.as_str()).unwrap_or(&values[e - 1]).to_owned();
+                values[0] = value.get("below").and_then(|v| v.as_str()).unwrap_or(&values[1]).into();
+                values[e] = value.get("above").and_then(|v| v.as_str()).unwrap_or(&values[e - 1]).into();
                 Module::Meter { min, max, src, values, looped : Cell::new(false) }
             }
             Some("mpris") => {
-                let target = toml_to_string(value.get("name")).unwrap_or_default();
+                let target = toml_to_string(value.get("name")).unwrap_or_default().into();
                 Module::MediaPlayer2 { target }
             }
             Some("pulse") => {
-                let target = toml_to_string(value.get("target")).unwrap_or_default();
+                let target = toml_to_string(value.get("target")).unwrap_or_default().into();
                 Module::Pulse { target }
             }
             Some("regex") => {
                 let text = value.get("text").and_then(|v| v.as_str()).unwrap_or_else(|| {
                     error!("Regex requires a text expression");
                     ""
-                }).to_owned();
-                let replace = value.get("replace").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                }).into();
+                let replace = value.get("replace").and_then(|v| v.as_str()).unwrap_or("").into();
                 let regex = value.get("regex").and_then(|v| v.as_str()).unwrap_or_else(|| {
                     error!("Regex requires a regex expression");
                     ""
-                }).to_owned();
+                });
                 match regex::RegexBuilder::new(&regex)
                     .dot_matches_new_line(true)
                     .build()
@@ -289,7 +289,7 @@ impl Module {
             }
             Some("read-file") => {
                 let name = match value.get("file").and_then(|v| v.as_str()) {
-                    Some(name) => name.to_owned(),
+                    Some(name) => name.into(),
                     None => {
                         error!("Read-file requires a file name: {}", value);
                         return Module::None;
@@ -310,7 +310,7 @@ impl Module {
                 sway::Workspace::from_toml(value).map_or(Module::None, Module::SwayWorkspace)
             }
             Some("switch") => {
-                let format = toml_to_string(value.get("format")).unwrap_or_default();
+                let format = toml_to_string(value.get("format")).unwrap_or_default().into();
                 let cases = match value.get("cases") {
                     Some(toml::Value::Table(cases)) => cases.clone(),
                     _ => {
@@ -318,12 +318,12 @@ impl Module {
                         return Module::None;
                     }
                 };
-                let default = toml_to_string(value.get("default")).unwrap_or_default();
+                let default = toml_to_string(value.get("default")).unwrap_or_default().into();
                 Module::Switch { format, cases, default, looped : Cell::new(false) }
             }
             // "text" is an alias for "formatted"
             Some("tray") => {
-                let spacing = toml_to_string(value.get("spacing")).unwrap_or_default();
+                let spacing = toml_to_string(value.get("spacing")).unwrap_or_default().into();
                 Module::Tray {
                     spacing,
                 }
@@ -338,7 +338,7 @@ impl Module {
                 if let Some(value) = value.as_str() {
                     Module::new_value(value)
                 } else if let Some(format) = value.get("format").and_then(|v| v.as_str()) {
-                    let tooltip = value.get("tooltip").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                    let tooltip = value.get("tooltip").and_then(|v| v.as_str()).unwrap_or("").into();
                     Module::Formatted { format : format.into(), tooltip, looped : Cell::new(false) }
                 } else if let Some(value) = toml_to_string(value.get("value")) {
                     Module::new_value(value)
@@ -379,7 +379,7 @@ impl Module {
 
             (Module::ExecJson { command, stdin, value, handle }, _) => {
                 match Command::new("/bin/sh")
-                    .arg("-c").arg(&command)
+                    .arg("-c").arg(&**command)
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .spawn()
@@ -483,7 +483,7 @@ impl Module {
                     return;
                 }
                 let mut v = String::with_capacity(4096);
-                match std::fs::File::open(&name).and_then(|mut f| f.read_to_string(&mut v)) {
+                match std::fs::File::open(&**name).and_then(|mut f| f.read_to_string(&mut v)) {
                     Ok(_len) => {
                         contents.set(v);
                     }
@@ -638,7 +638,7 @@ impl Module {
                 f(&value)
             }
             Module::Item { value } => value.take_in(|item| {
-                match item.as_deref() {
+                match item.as_ref() {
                     Some(IterationItem::MediaPlayer2 { target }) => mpris::read_in(name, target, key, rt, f),
                     Some(IterationItem::SwayWorkspace(data)) => data.read_in(key, rt, f),
                     Some(IterationItem::SwayTreeItem(node)) => node.read_in(key, rt, f),
@@ -685,7 +685,7 @@ impl Module {
                 let text = rt.format_or(&text, &name);
                 looped.set(false);
                 if key == "" || key == "text" {
-                    let output = regex.replace_all(&text, replace.as_str());
+                    let output = regex.replace_all(&text, &**replace);
                     f(&output)
                 } else {
                     if let Some(cap) = regex.captures(&text) {
@@ -710,7 +710,7 @@ impl Module {
                 looped.set(true);
                 let text = rt.format_or(&format, &name);
                 let case = toml_to_string(cases.get(&text));
-                let case = case.as_ref().unwrap_or(default);
+                let case = case.as_deref().unwrap_or(default);
                 let text = rt.format_or(case, &name);
                 looped.set(false);
                 f(&text)
@@ -753,7 +753,7 @@ impl Module {
                 }
             }
             Module::Item { value : v } => v.take_in(|item| {
-                match item.as_deref() {
+                match item.as_ref() {
                     Some(IterationItem::MediaPlayer2 { target }) => mpris::write(name, target, key, value, rt),
                     Some(IterationItem::SwayWorkspace(data)) => data.write(key, value, rt),
                     Some(IterationItem::SwayTreeItem(node)) => node.write(key, value, rt),
@@ -781,7 +781,7 @@ impl Module {
         Module::Item { value : Cell::new(None) }
     }
 
-    pub fn read_focus_list<F : FnMut(bool, Rc<IterationItem>)>(&self, rt : &Runtime, f : F) {
+    pub fn read_focus_list<F : FnMut(bool, IterationItem)>(&self, rt : &Runtime, f : F) {
         match self {
             Module::MediaPlayer2 { .. } => mpris::read_focus_list(rt, f),
             Module::SwayWorkspace(ws) => ws.read_focus_list(rt, f),
@@ -796,7 +796,7 @@ pub enum Action {
     Exec { format : String },
     Write { target : String, format : String },
     List(Vec<Action>),
-    Tray { owner : String, path : String },
+    Tray { owner : Rc<str>, path : Rc<str> },
     None,
 }
 
@@ -818,7 +818,7 @@ impl Action {
         Action::None
     }
 
-    pub fn from_tray(owner : String, path : String) -> Self {
+    pub fn from_tray(owner : Rc<str>, path : Rc<str>) -> Self {
         Action::Tray { owner, path }
     }
 

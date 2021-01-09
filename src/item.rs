@@ -253,7 +253,7 @@ struct EventListener {
     x_min : f64,
     x_max : f64,
     buttons : u32,
-    item : Option<Rc<IterationItem>>,
+    item : Option<IterationItem>,
     target : Action,
 }
 
@@ -295,7 +295,7 @@ impl EventSink {
         }
     }
 
-    pub fn from_tray(owner : String, path : String) -> Self {
+    pub fn from_tray(owner : Rc<str>, path : Rc<str>) -> Self {
         let mut sink = EventSink::default();
         sink.handlers.push(EventListener {
             x_min : -1e20,
@@ -420,14 +420,14 @@ impl Item {
 
     pub fn from_toml_ref(value : &toml::Value) -> Self {
         if let Some(text) = value.as_str() {
-            let name = text.to_owned();
+            let name = text.into();
             return Module::ItemReference { name }.into();
         }
 
         if let Some(array) = value.as_array() {
             return Module::Group {
                 items : array.iter().map(Item::from_toml_ref).collect(),
-                spacing : String::new(),
+                spacing : "".into(),
             }.into();
         }
 
@@ -630,7 +630,7 @@ impl Item {
         ev.merge(rv);
     }
 
-    pub fn render_clamped_item(&self, ctx : &Render, ev : &mut EventSink, item : &Rc<IterationItem>) {
+    pub fn render_clamped_item(&self, ctx : &Render, ev : &mut EventSink, item : &IterationItem) {
         let item_var = ctx.runtime.get_item_var();
         let prev = item_var.replace(Some(item.clone()));
         let x0 = ctx.render_pos.get();
@@ -659,7 +659,7 @@ impl Item {
     fn render_inner(&self, ctx : &Render, rv : &mut EventSink) {
         match &self.data {
             Module::ItemReference { name } => {
-                match ctx.runtime.items.get(name) {
+                match ctx.runtime.items.get(&**name) {
                     Some(item) => {
                         let ctx = Render {
                             err_name: name,
@@ -696,7 +696,7 @@ impl Item {
             }
             Module::FocusList { source, items, spacing } => {
                 let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                let source = match ctx.runtime.items.get(source) {
+                let source = match ctx.runtime.items.get(&**source) {
                     Some(var) => var,
                     None => return,
                 };

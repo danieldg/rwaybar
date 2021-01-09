@@ -263,19 +263,19 @@ pub fn read_in<F : FnOnce(&str) -> R, R>(_name : &str, target : &str, key : &str
     })
 }
 
-pub fn read_focus_list<F : FnMut(bool, Rc<IterationItem>)>(rt : &Runtime, mut f : F) {
+pub fn read_focus_list<F : FnMut(bool, IterationItem)>(rt : &Runtime, mut f : F) {
     let players : Vec<_> = DATA.with(|cell| {
         let state = cell.get_or_init(MediaPlayer2::new);
         state.0.take_in_some(|inner| {
             inner.interested.add(rt);
 
             let skip = "org.mpris.MediaPlayer2.".len();
-            inner.players.iter().map(|p| (p.name.get(skip..).unwrap_or_default().to_owned(), p.playing == Some(PlayState::Playing))).collect()
+            inner.players.iter().map(|p| (p.name.get(skip..).unwrap_or_default().into(), p.playing == Some(PlayState::Playing))).collect()
         }).unwrap_or_default()
     });
 
     for (player, playing) in players {
-        f(playing, Rc::new(IterationItem::MediaPlayer2 { target : player }));
+        f(playing, IterationItem::MediaPlayer2 { target : player });
     }
 }
 
