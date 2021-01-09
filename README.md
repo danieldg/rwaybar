@@ -26,6 +26,22 @@ See the [configuration documentation](doc/config.md) for details.
 
 ```bash
 cargo build --release
-cp doc/rwaybar.toml .
+cp doc/rwaybar.toml ~/.config/
 ./target/release/rwaybar
 ```
+
+## Samples
+
+![sample bar](doc/sample-black.png "Bar with black background")
+
+![sample bar](doc/sample-white.png "Same bar with white background")
+
+These two samples are using the same configuration, only the background color
+differs.  I like a transparent background on my taskbar, but I also configure
+my desktop background to be a slideshow.  This means that I need the bar to be
+readable regardless of the color of the background, which was done in this
+example by using text-outline.  The tray needs a solid background because some
+icons (kdeconnect, steam) aren't otherwise visible on light backgrounds.
+
+Note: these images were captured on a scaled (HiDPI) output, which is why they
+appear double the size defined in the sample bar configuration.

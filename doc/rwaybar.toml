@@ -22,10 +22,12 @@ name = "WL-1"
 left = "tvl"
 center = "clock"
 right = "tvr"
-size = 20
+size = 30
 fg = "white"
 bg = "black"
-bg-alpha = 0.3
+bg-alpha = 0.0
+text-outline = "black"
+text-outline-alpha = 0.8
 the-clock-font = "Liberation Sans 20"
 
 # Everything else is defined in its own section and addressed by name elsewhere.
@@ -114,6 +116,48 @@ border = "3 0 0 0"
 bg = "#197d9b"
 bg-alpha = 0.8
 
+[workspaces-repr]
+type = "sway-tree"
+font = "Liberation Sans 10"
+align = "center"
+margin = "2 0 6 0"
+markup = true
+
+[workspaces-repr.pre-node]
+format = "{item.layout}["
+
+[[workspaces-repr.window]]
+format = '{item.marks}'
+
+[[workspaces-repr.window]]
+type = 'icon'
+name = '{item-icon-path}'
+fallback = '({item.appid})'
+tooltip = '{item.title}'
+border = "0 0 2 0"
+padding = "2 0"
+border-color = "#69cbad"
+border-alpha = '{item.focus}'
+on-click = { send = "item", format = "focus" }
+on-click-middle = { send = "item", format = "kill" }
+on-scroll-right = { send = "item", format = "move right" }
+on-scroll-left = { send = "item", format = "move left" }
+
+[workspaces-repr.post-node]
+format = "]"
+
+[workspaces-repr.pre-float]
+format = " + "
+
+[item-icon-path]
+type = 'switch'
+format = '{item.appid}'
+default = '{item.appid}'
+
+[item-icon-path.cases]
+Gitk = '/usr/share/icons/breeze-dark/apps/48/git-gui.svg'
+
+
 # The right side of the bar on DP-1
 [dpr]
 type = "group"
@@ -179,6 +223,8 @@ target = 'source'
 type = "tray"
 font = "Liberation Sans 12"
 fg = "green"
+bg = "black"
+spacing = 2
 
 [weather-cmd]
 type = "exec-json"
@@ -214,29 +260,28 @@ type = "disk"
 path = "/"
 
 [hdd]
-format = "<span font='Liberation Mono'>/</span>:{hdd-use}{hdd-icon}"
+format = "<span font='Liberation Mono'>/</span>:{hdd-use} {hdd-icon}"
 markup = true
 
+#[bat-charge]
+#type = "read-file"
+#file = "/sys/class/power_supply/BAT1/charge_now"
+#poll = 20
+#
+#[bat-full]
+#type = "read-file"
+#file = "/sys/class/power_supply/BAT1/charge_full"
+#poll = 20
 
-[bat-charge]
-type = "read-file"
-file = "/sys/class/power_supply/BAT1/charge_now"
-poll = 20
-
-[bat-full]
-type = "read-file"
-file = "/sys/class/power_supply/BAT1/charge_full"
-poll = 20
-
-[bat_icon]
-type = "meter"
-min = 0
-max = "{bat-full}"
-src = "{bat-charge}"
-values = ["", "", "", "", ""]
-
-[bat]
-format = "{bat-charge} mAh {bat_icon}"
+#[bat_icon]
+#type = "meter"
+#min = 0
+#max = "{bat-full}"
+#src = "{bat-charge}"
+#values = ["", "", "", "", ""]
+#
+#[bat]
+#format = "{bat-charge} mAh {bat_icon}"
 
 [temp3_raw]
 type = "read-file"
@@ -292,12 +337,12 @@ bg = "black"
 bg-alpha = 0.5
 spacing = 1.5
 alpha = 0.7
-items = ["mode", "workspaces"]
+items = ["mode", "workspaces-repr"]
 
 [tvr]
 type = "group"
 fg = "white"
 bg = "black"
-bg-alpha = "0.4"
+bg-alpha = "0.2"
 spacing = 15
-items = ["playing", "tray", "weather" ]
+items = ["players", "tray", "hdd", "cpu" ]
