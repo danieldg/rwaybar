@@ -6,6 +6,7 @@ mod icon;
 mod item;
 mod mpris;
 mod pulse;
+mod pulse_tokio;
 mod state;
 mod sway;
 mod tray;
