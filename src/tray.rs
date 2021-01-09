@@ -1,4 +1,4 @@
-use crate::util::{Cell,spawn};
+use crate::util::{ImplDebug,Cell,spawn};
 use crate::dbus::get as get_dbus;
 use crate::dbus as dbus_util;
 use crate::data::Module;
@@ -23,11 +23,12 @@ thread_local! {
     static DATA : OnceCell<Tray> = Default::default();
 }
 
-#[derive(Debug,Default)]
+#[derive(Debug)]
 struct TrayItem {
     owner : String,
     path : String,
     is_kde : bool,
+    dbus_token : ImplDebug<Token>,
 
     id : String,
     title : String,
@@ -35,6 +36,24 @@ struct TrayItem {
     icon_path : String,
     menu_path : String,
     menu : Rc<TrayPopupMenu>,
+}
+
+impl Drop for TrayItem {
+    fn drop(&mut self) {
+        let dbus = get_dbus();
+        dbus.local.stop_receive(self.dbus_token.0);
+        let sni_path = if self.is_kde { "org.kde.StatusNotifierItem" } else { "org.freedesktop.StatusNotifierItem" };
+        let mut rule = MatchRule::new_signal(sni_path, "x");
+        rule.member = None;
+        rule.path = Some((&self.path).into());
+        rule.sender = Some((&self.owner).into());
+        let rule = rule.match_str();
+        spawn("TrayItem cleanup", async move {
+            let dbus = get_dbus();
+            dbus.local.remove_match_no_cb(&rule).await?;
+            Ok(())
+        });
+    }
 }
 
 #[derive(Debug,Default)]
@@ -254,10 +273,39 @@ fn do_add_item(is_kde : bool, item : String) {
             None => return Ok(()),
         };
 
-        let mut item = TrayItem::default();
-        item.owner = owner.into();
-        item.path = path.into();
-        item.is_kde = is_kde;
+        let (oo, op) = (owner.to_owned(), path.to_owned());
+        let mut rule = MatchRule::new_signal(sni_path, "x");
+        rule.member = None; // we handle all signals the same way (since most of them don't include any information)
+        rule.path = Some(path.to_owned().into());
+        rule.sender = Some(owner.to_owned().into());
+        dbus.local.add_match_no_cb(&rule.match_str()).await?;
+        let token = dbus.local.start_receive(rule, Box::new(move |_msg, _local| {
+            let owner = oo.clone();
+            let path = op.clone();
+            spawn("Tray item refresh", async move {
+                let dbus = get_dbus();
+                let proxy = Proxy::new(&owner, &path, Duration::from_secs(10), &dbus.local);
+                let props = proxy.get_all(&sni_path).await?;
+
+                handle_item_update(&owner, &path, &props);
+                Ok(())
+            });
+            true
+        }));
+
+        let item = TrayItem {
+            owner : owner.into(),
+            path : path.into(),
+            is_kde,
+            dbus_token : token.into(),
+            id : String::new(),
+            title : String::new(),
+            icon : String::new(),
+            icon_path : String::new(),
+            menu_path : String::new(),
+            menu : Default::default(),
+        };
+
         if DATA.with(|cell| {
             let tray = cell.get();
             let tray = tray.as_ref().unwrap();

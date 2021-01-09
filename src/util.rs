@@ -31,6 +31,34 @@ pub fn toml_to_f64(value : Option<&toml::Value>) -> Option<f64> {
     })
 }
 
+#[derive(Default,Copy,Clone,Eq,PartialEq,Ord,PartialOrd,Hash)]
+pub struct ImplDebug<T>(pub T);
+
+impl<T> fmt::Debug for ImplDebug<T> {
+    fn fmt(&self, fmt : &mut fmt::Formatter) -> fmt::Result {
+        write!(fmt, "{}", std::any::type_name::<T>())
+    }
+}
+
+impl<T> From<T> for ImplDebug<T> {
+    fn from(t : T) -> Self {
+        Self(t)
+    }
+}
+
+impl<T> std::ops::Deref for ImplDebug<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for ImplDebug<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
 /// Wrapper around [std::cell::Cell] that implements [fmt::Debug] and has a few more useful utility
 /// funcitons.
 #[derive(Default)]
