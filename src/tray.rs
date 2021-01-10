@@ -1,12 +1,13 @@
-use crate::util::{ImplDebug,Cell,spawn};
+use crate::util::{Cell,spawn};
 use crate::dbus::get as get_dbus;
+use crate::dbus::SigWatcherToken;
 use crate::dbus as dbus_util;
 use crate::data::Module;
 use crate::icon;
 use crate::item::{Item,Render,EventSink,PopupDesc};
 use crate::state::{Runtime,NotifierList};
 use dbus::arg::{ArgType,RefArg,Variant};
-use dbus::channel::{MatchingReceiver,Token,Sender};
+use dbus::channel::{MatchingReceiver,Sender};
 use dbus::message::{MatchRule,Message};
 use dbus::nonblock::LocalConnection;
 use dbus::nonblock::Proxy;
@@ -28,20 +29,16 @@ struct TrayItem {
     owner : Rc<str>,
     path : Rc<str>,
     is_kde : bool,
-    dbus_token : ImplDebug<Token>,
 
     id : String,
     title : Option<Rc<str>>,
     icon : Box<str>,
     icon_path : Box<str>,
-    menu_path : Option<Rc<str>>,
     menu : Rc<TrayPopupMenu>,
 }
 
 impl Drop for TrayItem {
     fn drop(&mut self) {
-        let dbus = get_dbus();
-        dbus.local.stop_receive(self.dbus_token.0);
         let sni_path = if self.is_kde { "org.kde.StatusNotifierItem" } else { "org.freedesktop.StatusNotifierItem" };
         let mut rule = MatchRule::new_signal(sni_path, "x");
         rule.member = None;
@@ -238,18 +235,37 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
     item_rule.member = None;
     dbus.local.add_match_no_cb(&item_rule.match_str()).await?;
 
-    dbus.local.start_receive(item_rule, Box::new(move |msg : Message, _local| {
+    dbus.add_signal_watcher(move |msg : &Message, _dbus| {
+        if msg.interface().as_deref() != Some(snw_path) {
+            return;
+        }
         let item : String = match msg.get1() {
             Some(s) => s,
-            None => return true,
+            None => return,
         };
         match msg.member().as_deref().unwrap_or("") {
             "StatusNotifierItemRegistered" => do_add_item(is_kde, item),
             "StatusNotifierItemUnregistered" => do_del_item(item),
             _ => ()
         }
-        true
-    }));
+    });
+
+    let sni_path = if is_kde { "org.kde.StatusNotifierItem" } else { "org.freedesktop.StatusNotifierItem" };
+    dbus.add_signal_watcher(move |msg, _local| {
+        if msg.interface().as_deref() != Some(sni_path) {
+            return;
+        }
+        let path = msg.path().unwrap().into_static();
+        let owner = msg.sender().unwrap().into_static();
+        spawn("Tray item refresh", async move {
+            let dbus = get_dbus();
+            let proxy = Proxy::new(&*owner, &*path, Duration::from_secs(10), &dbus.local);
+            let props = proxy.get_all(&sni_path).await?;
+
+            handle_item_update(&owner, &path, &props);
+            Ok(())
+        });
+    });
 
     let watcher = Proxy::new(snw_path, "/StatusNotifierWatcher", Duration::from_secs(10), &dbus.local);
     watcher.method_call(snw_path, "RegisterStatusNotifierHost", (&name,)).await?;
@@ -273,37 +289,27 @@ fn do_add_item(is_kde : bool, item : String) {
             None => return Ok(()),
         };
 
-        let (oo, op) = (owner.clone(), path.clone());
         let mut rule = MatchRule::new_signal(sni_path, "x");
-        rule.member = None; // we handle all signals the same way (since most of them don't include any information)
-        rule.path = Some((&*path).to_owned().into());
-        rule.sender = Some((&*owner).to_owned().into());
+        rule.member = None; // all signals with the below path/sender
+        rule.path = Some((&*path).into());
+        rule.sender = Some((&*owner).into());
         dbus.local.add_match_no_cb(&rule.match_str()).await?;
-        let token = dbus.local.start_receive(rule, Box::new(move |_msg, _local| {
-            let owner = oo.clone();
-            let path = op.clone();
-            spawn("Tray item refresh", async move {
-                let dbus = get_dbus();
-                let proxy = Proxy::new(&*owner, &*path, Duration::from_secs(10), &dbus.local);
-                let props = proxy.get_all(&sni_path).await?;
-
-                handle_item_update(&owner, &path, &props);
-                Ok(())
-            });
-            true
-        }));
-
         let item = TrayItem {
             owner : owner.clone(),
             path : path.clone(),
             is_kde,
-            dbus_token : token.into(),
             id : String::new(),
             title : None,
             icon : Default::default(),
             icon_path : Default::default(),
-            menu_path : None,
-            menu : Default::default(),
+            menu : Rc::new(TrayPopupMenu {
+                owner : owner.clone(),
+                menu_path : Default::default(),
+                fresh : Default::default(),
+                dbus_token : Default::default(),
+                items : Default::default(),
+                interested : Default::default(),
+            }),
         };
 
         if DATA.with(|cell| {
@@ -362,7 +368,27 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<String, Varian
                         "Title" => value.as_str().map(|v| item.title = Some(v.into())),
                         "IconName" => value.as_str().map(|v| item.icon = v.into()),
                         "IconThemePath" => value.as_str().map(|v| item.icon_path = v.into()),
-                        "Menu" => value.as_str().map(|v| item.menu_path = Some(v.into())),
+                        "Menu" => value.as_str().map(|v| {
+                            if item.menu.menu_path.take_in(|mp| {
+                                match mp.as_deref() {
+                                    None => {
+                                        *mp = Some(v.into());
+                                        false
+                                    }
+                                    Some(mp) if mp == v => false,
+                                    _ => true
+                                }
+                            }) {
+                                item.menu = Rc::new(TrayPopupMenu {
+                                    owner : item.owner.clone(),
+                                    menu_path : Cell::new(Some(v.into())),
+                                    fresh : Default::default(),
+                                    dbus_token : Default::default(),
+                                    items : Default::default(),
+                                    interested : Default::default(),
+                                });
+                            }
+                        }),
                         _ => None
                     };
                 }
@@ -375,16 +401,17 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<String, Varian
 #[derive(Clone,Debug)]
 pub struct TrayPopup {
     owner : Rc<str>,
-    menu_path : Option<Rc<str>>,
     title : Option<Rc<str>>,
     menu : Rc<TrayPopupMenu>,
     rendered_ids : Vec<(f64, f64, i32)>,
 }
 
-#[derive(Debug,Default)]
+#[derive(Debug)]
 struct TrayPopupMenu {
+    owner : Rc<str>,
+    menu_path : Cell<Option<Rc<str>>>,
     fresh : Cell<bool>,
-    dbus_token : Cell<Option<Token>>,
+    dbus_token : Cell<SigWatcherToken>,
     items : Cell<Vec<MenuItem>>,
     interested : Cell<NotifierList>,
 }
@@ -448,22 +475,43 @@ impl TrayPopupMenu {
 
 impl Drop for TrayPopupMenu {
     fn drop(&mut self) {
-        if let Some(token) = self.dbus_token.replace(None) {
-            let dbus = get_dbus();
-            dbus.local.stop_receive(token);
+        let mut token = self.dbus_token.take();
+        if !token.is_active() {
+            return;
+        }
+        get_dbus().stop_signal_watcher(&mut token);
+
+        if let Some(menu_path) = self.menu_path.take_in(|m| m.clone()) {
+            let mut rule = MatchRule::new_signal("com.canonical.dbusmenu", "ItemsPropertiesUpdated");
+            rule.path = Some((&*menu_path).into());
+            rule.sender = Some((&*self.owner).into());
+            let rule1 = rule.match_str();
+            rule.member = Some("LayoutUpdated".into());
+            let rule2 = rule.match_str();
+
+            spawn("TrayPopupMenu cleanup", async move {
+                let dbus = get_dbus();
+                dbus.local.remove_match_no_cb(&rule1).await?;
+                dbus.local.remove_match_no_cb(&rule2).await?;
+                Ok(())
+            });
         }
     }
 }
 
-async fn refresh_menu(menu : Rc<TrayPopupMenu>, owner : Rc<str>, menu_path : Rc<str>) -> Result<(), Box<dyn Error>> {
+async fn refresh_menu(menu : Rc<TrayPopupMenu>) -> Result<(), Box<dyn Error>> {
+    let menu_path = match menu.menu_path.take_in(|m| m.clone()) {
+        Some(mp) => mp,
+        None => return Ok(())
+    };
     let dbus = get_dbus();
-    let proxy = Proxy::new(&*owner, &*menu_path, Duration::from_secs(10), &dbus.local);
+    let proxy = Proxy::new(&*menu.owner, &*menu_path, Duration::from_secs(10), &dbus.local);
     let _ : (bool,) = proxy.method_call("com.canonical.dbusmenu", "AboutToShow", (0i32,)).await?;
 
-    if menu.dbus_token.take_in_some(|_| ()).is_none() {
+    if menu.dbus_token.take_in(|t| !t.is_active()) {
         let mut rule = MatchRule::new_signal("com.canonical.dbusmenu", "ItemsPropertiesUpdated");
-        rule.path = Some(String::from(&*menu_path).into());
-        rule.sender = Some(String::from(&*owner).into());
+        rule.path = Some((&*menu_path).into());
+        rule.sender = Some((&*menu.owner).into());
         dbus.local.add_match_no_cb(&rule.match_str()).await?;
 
         rule.member = Some("LayoutUpdated".into());
@@ -472,21 +520,21 @@ async fn refresh_menu(menu : Rc<TrayPopupMenu>, owner : Rc<str>, menu_path : Rc<
         rule.member = None;
 
         let weak = Rc::downgrade(&menu);
-        let owner = owner.clone();
-        let menu_path = menu_path.clone();
-        let token = dbus.local.start_receive(rule, Box::new(move |_msg, _local| {
+        let token = dbus.add_signal_watcher(move |msg, _local| {
             if let Some(menu) = weak.upgrade() {
-                let owner = owner.clone();
-                let menu_path = menu_path.clone();
-                if menu.fresh.replace(false) {
-                    spawn("Tray menu refresh", refresh_menu(menu, owner, menu_path));
+                if msg.interface().as_deref() != Some("com.canonical.dbusmenu") ||
+                    msg.member().as_deref() != Some("ItemsPropertiesUpdated") ||
+                    msg.sender().as_deref() != Some(&*menu.owner) ||
+                    menu.menu_path.take_in(|mp| mp.as_deref() != msg.path().as_deref())
+                {
+                    return;
                 }
-                true
-            } else {
-                false
+                if menu.fresh.replace(false) {
+                    spawn("Tray menu refresh", refresh_menu(menu));
+                }
             }
-        }));
-        menu.dbus_token.set(Some(token));
+        });
+        menu.dbus_token.set(token);
     }
 
     // ? MatchRule::new_signal("com.canonical.dbusmenu", "ItemActivationRequested");
@@ -511,13 +559,13 @@ impl TrayPopup {
         layout.set_text(self.title.as_deref().unwrap_or_default());
         let psize = layout.get_size();
         let mut size = (pango::units_to_double(psize.0), pango::units_to_double(psize.1));
-        if !self.menu.fresh.get() && self.menu.dbus_token.take_in_some(|_| ()).is_none() {
+        if !self.menu.fresh.get() &&
+            self.menu.dbus_token.take_in(|t| !t.is_active()) &&
+            self.menu.menu_path.take_in_some(|_| ()).is_some()
+        {
             // need to kick off the first refresh
             let menu = self.menu.clone();
-            let owner = self.owner.clone();
-            if let Some(menu_path) = self.menu_path.clone() {
-                spawn("Tray menu population", refresh_menu(menu, owner, menu_path));
-            }
+            spawn("Tray menu population", refresh_menu(menu));
         }
         self.menu.items.take_in(|items| {
             if !items.is_empty() {
@@ -594,7 +642,7 @@ impl TrayPopup {
             if y < min || y > max {
                 continue;
             }
-            if let Some(menu_path) = self.menu_path.clone() {
+            if let Some(menu_path) = self.menu.menu_path.take_in_some(|v| v.clone()) {
                 let owner = self.owner.clone();
                 spawn("Tray menu click", async move {
                     let dbus = get_dbus();
@@ -641,7 +689,6 @@ pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
                 es.add_hover(x0, x1, PopupDesc::Tray(TrayPopup {
                     owner : item.owner.clone(),
                     title : item.title.clone(),
-                    menu_path : item.menu_path.clone(),
                     menu : item.menu.clone(),
                     rendered_ids : Vec::new(),
                 }));
