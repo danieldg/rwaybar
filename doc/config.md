@@ -237,9 +237,31 @@ For all actions, the target of the action is either the player specified in the 
 
 ## pulse
 
+#### When used as a normal item
+
 Key | Expanded | Default | Details
 ----|----------|---------|--------
 `target` | No | `"sink"` | Either `sink:` or `source:` followed by the name of the particular sink.  Names can be obtained from `pactl list` and look like `alsa_output.pci-0000_00_1f.3.analog-stereo`.
+
+#### Values
+
+Key | Details
+----|--------
+`mute` | `0` or `1` where `1` means muted
+`volume` | Textual representation of the volume like "`80%`"
+`tooltip` | A verbose description of the volume, port, and a list of clients and volumes that are connected to the port
+
+#### When used as a focus-list source
+
+The `target` key must be one of the following values for use as focus-list:
+
+Value | Listed items
+------|-------------
+`sources` | Sources (microphones) but not monitors
+`sinks` | All sinks (speakers)
+`monitors` | Monitor sources (for recording sound your system makes)
+`all-sources` | All sources including monitors
+`all` | All sources, sinks, and monitors
 
 ## regex
 

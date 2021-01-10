@@ -1,3 +1,4 @@
+use crate::data::IterationItem;
 use crate::pulse_tokio::TokioMain;
 use crate::state::NotifierList;
 use crate::state::Runtime;
@@ -9,7 +10,7 @@ use libpulse_binding::context::{self,Context};
 use libpulse_binding::error::PAErr;
 use libpulse_binding::proplist;
 use libpulse_binding::volume::{ChannelVolumes,Volume};
-use log::{debug,info,error};
+use log::{debug,info,warn,error};
 use once_cell::unsync::OnceCell;
 use std::rc::Rc;
 
@@ -42,6 +43,7 @@ struct PortInfo {
     port : String,
     volume : ChannelVolumes,
     mute : bool,
+    monitor : bool,
 }
 
 /// Information on one playback or recording stream
@@ -242,6 +244,7 @@ impl PulseData {
                     port : info.active_port.as_ref().and_then(|port| port.description.as_deref()).unwrap_or("").to_owned(),
                     volume : info.volume,
                     mute : info.mute,
+                    monitor : false,
                 };
                 self.sinks.take_in(|sinks| {
                     for info in &mut *sinks {
@@ -269,6 +272,7 @@ impl PulseData {
                     port : info.active_port.as_ref().and_then(|port| port.description.as_deref()).unwrap_or("").to_owned(),
                     volume : info.volume,
                     mute : info.mute,
+                    monitor : info.monitor_of_sink.is_some(),
                 };
                 self.sources.take_in(|sources| {
                     for info in &mut *sources {
@@ -411,6 +415,56 @@ impl PulseData {
                 })
             })
         })
+    }
+}
+
+pub fn read_focus_list<F : FnMut(bool, IterationItem)>(rt : &Runtime, target : &str, mut f : F) {
+    let mut items = Vec::new();
+    let (do_src, do_sink, do_mon) = match target {
+        "sources" => (true, false, false),
+        "monitors" => (false, false, true),
+        "all-sources" => (true, false, true),
+        "sinks" => (false, true, false),
+        "" | "all" => (true, true, true),
+        _ => {
+            warn!("Invalid target {} for focus-list", target);
+            return;
+        }
+    };
+
+    DATA.with(|cell| {
+        let pulse = cell.get_or_init(PulseData::init);
+        pulse.interested.take_in(|interest| interest.add(&rt));
+
+        if do_src || do_mon {
+            let default_source = pulse.default_source.take_in(|v| v.clone());
+            pulse.sources.take_in(|srcs| {
+                for item in srcs {
+                    let is_def = item.name == default_source;
+                    if item.monitor && !do_mon {
+                        continue;
+                    }
+                    if !item.monitor && !do_src {
+                        continue;
+                    }
+                    items.push((is_def, format!("source:{}", item.name).into()));
+                }
+            });
+        }
+
+        if do_sink {
+            let default_sink = pulse.default_sink.take_in(|v| v.clone());
+            pulse.sinks.take_in(|sinks| {
+                for item in sinks {
+                    let is_def = item.name == default_sink;
+                    items.push((is_def, format!("sink:{}", item.name).into()));
+                }
+            });
+        }
+    });
+
+    for (def, target) in items {
+        f(def, IterationItem::Pulse { target });
     }
 }
 
