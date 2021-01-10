@@ -7,6 +7,7 @@ use libpulse_binding::callbacks::ListResult;
 use libpulse_binding::context::introspect::{Introspector,SinkInfo,SourceInfo,ClientInfo,SinkInputInfo,SourceOutputInfo};
 use libpulse_binding::context::subscribe::{Facility,Operation};
 use libpulse_binding::context::{self,Context};
+use libpulse_binding::def::DevicePortType;
 use libpulse_binding::error::PAErr;
 use libpulse_binding::proplist;
 use libpulse_binding::volume::{ChannelVolumes,Volume};
@@ -44,6 +45,7 @@ struct PortInfo {
     volume : ChannelVolumes,
     mute : bool,
     monitor : bool,
+    port_type : Option<DevicePortType>,
 }
 
 /// Information on one playback or recording stream
@@ -245,6 +247,7 @@ impl PulseData {
                     volume : info.volume,
                     mute : info.mute,
                     monitor : false,
+                    port_type : info.active_port.as_ref().map(|port| port.r#type),
                 };
                 self.sinks.take_in(|sinks| {
                     for info in &mut *sinks {
@@ -273,6 +276,7 @@ impl PulseData {
                     volume : info.volume,
                     mute : info.mute,
                     monitor : info.monitor_of_sink.is_some(),
+                    port_type : info.active_port.as_ref().map(|port| port.r#type),
                 };
                 self.sources.take_in(|sources| {
                     for info in &mut *sources {
@@ -528,6 +532,13 @@ pub fn read_in<F : FnOnce(&str) -> R, R>(cfg_name : &str, target : &str, mut key
                     } else {
                         let volume = port.volume.avg();
                         f(volume.print().trim())
+                    }
+                }
+                "type" => {
+                    if let Some(ty) = port.port_type {
+                        f(&format!("{:?}", ty))
+                    } else {
+                        f("")
                     }
                 }
                 "mute" => {

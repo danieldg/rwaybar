@@ -39,5 +39,5 @@ chrono-tz = ""
 dbus = { version = "", features = ['futures'] }
 evalexpr = ""
 gdk-pixbuf = ""
-libpulse-binding = ""
+libpulse-binding = { version = "", features = ['pa_v14'] }
 regex = ""

@@ -250,6 +250,7 @@ Key | Details
 `mute` | `0` or `1` where `1` means muted
 `volume` | Textual representation of the volume like "`80%`"
 `tooltip` | A verbose description of the volume, port, and a list of clients and volumes that are connected to the port
+`type` | The type of device connected, for example `Speaker`, `HDMI`, `Line`, `Phone`, `Mic`, ...
 
 #### When used as a focus-list source
 
