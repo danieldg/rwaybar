@@ -11,6 +11,7 @@ use wayland_client::Attached;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::protocol::wl_callback::WlCallback;
+use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client as layer_shell;
 
 use layer_shell::zwlr_layer_shell_v1::{ZwlrLayerShellV1, Layer};
@@ -434,7 +435,7 @@ impl State {
             }
             Ok(())
         });
-        
+
         Ok(rv)
     }
 
@@ -648,27 +649,35 @@ impl State {
             .and_then(|v| v.as_integer())
             .map(|v| v as u32)
             .unwrap_or(size);
-        let anchor_top;
-
-        match cfg.get("side").and_then(|v| v.as_str()) {
-            Some("top") => {
-                ls_surf.set_size(0, size);
-                ls_surf.set_anchor(Anchor::Top | Anchor::Left | Anchor::Right);
-                anchor_top = true;
-            }
-            None | Some("bottom") => {
-                ls_surf.set_size(0, size);
-                ls_surf.set_anchor(Anchor::Bottom | Anchor::Left | Anchor::Right);
-                anchor_top = false;
-            }
+        let anchor_top = match cfg.get("side").and_then(|v| v.as_str()) {
+            Some("top") => true,
+            None | Some("bottom") => false,
             Some(side) => {
                 error!("Unknown side '{}', defaulting to bottom", side);
-                ls_surf.set_size(0, size);
-                ls_surf.set_anchor(Anchor::Bottom | Anchor::Left | Anchor::Right);
-                anchor_top = false;
+                false
             }
+        };
+        if anchor_top {
+            ls_surf.set_anchor(Anchor::Top | Anchor::Left | Anchor::Right);
+        } else {
+            ls_surf.set_anchor(Anchor::Bottom | Anchor::Left | Anchor::Right);
         }
+        ls_surf.set_size(0, size);
         ls_surf.set_exclusive_zone(size_excl as i32);
+        if size != size_excl && size_excl != 0 {
+            // Only handle input in the exclusive region; clicks in the overhang region will go
+            // through to the window we cover (hopefully transparently, to avoid confusion)
+            let comp : Attached<WlCompositor> = self.wayland.env.require_global();
+            let region = comp.create_region();
+            let yoff = if anchor_top {
+                0
+            } else {
+                size.saturating_sub(size_excl) as i32
+            };
+            region.add(0, yoff, i32::MAX, size_excl as i32);
+            surf.set_input_region(Some(&region));
+            region.destroy();
+        }
         ls_surf.quick_assign(move |ls_surf, event, mut data| {
             use layer_shell::zwlr_layer_surface_v1::Event;
             let state : &mut State = data.get().unwrap();
