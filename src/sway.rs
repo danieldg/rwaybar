@@ -601,6 +601,13 @@ impl Node {
             ("appid", NodeType::Window { appid, .. }) => {
                 f(appid)
             }
+            ("icon", NodeType::Window { appid, .. }) => {
+                if appid.starts_with("org.kde.") {
+                    f(&appid[8..])
+                } else {
+                    f(appid)
+                }
+            }
             ("title", NodeType::Window { title, .. }) => {
                 f(title)
             }

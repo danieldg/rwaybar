@@ -307,6 +307,7 @@ Key | Value | Details
 `marks` | "1" | The list of marks on the container, if any
 `focus` | `0` or `1` | `1` if the window has focus.
 `appid` | `firefox` | The app\_id or Class (for Xwayland) of the window (windows only)
+`icon` | `firefox` | The icon name associated with the window (if known)
 `title` | | The window title (windows only)
 `layout` | `H` | The layout of the container.  Will be one of `H`, `V`, `T`, or `S`.
 
@@ -322,7 +323,7 @@ format = "{item.layout}["
 
 [tree-block.window]
 type = 'icon'
-name = '{item.appid}'
+name = '{item.icon}'
 fallback = '({item.appid})'
 tooltip = '{item.title}'
 on-click = { send = "item", format = "focus" }

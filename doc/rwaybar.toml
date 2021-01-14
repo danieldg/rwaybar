@@ -151,8 +151,8 @@ format = " + "
 
 [item-icon-path]
 type = 'switch'
-format = '{item.appid}'
-default = '{item.appid}'
+format = '{item.icon}'
+default = '{item.icon}'
 
 [item-icon-path.cases]
 Gitk = '/usr/share/icons/breeze-dark/apps/48/git-gui.svg'
