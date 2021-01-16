@@ -233,6 +233,9 @@ impl WaylandClient {
     pub fn new() -> Result<(Self, wayland_client::EventQueue), Box<dyn Error>> {
         let display = wayland_client::Display::connect_to_env()?;
 
+        // TODO remove when wayland-client merges #363 to fix it there
+        std::env::remove_var("WAYLAND_SOCKET");
+
         let mut wl_queue = display.create_event_queue();
         let wl_display = display.attach(wl_queue.token());
 
