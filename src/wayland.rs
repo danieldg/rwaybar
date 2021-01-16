@@ -306,6 +306,9 @@ impl WaylandClient {
             let mut over = None;
             let mut x = 0.0;
             let mut y = 0.0;
+            let mut axis_h = 0.0;
+            let mut axis_v = 0.0;
+            let mut axis_ts = 0;
             mouse.quick_assign(move |mouse, event, mut data| {
                 use wayland_client::protocol::wl_pointer::Event;
                 let state : &mut State = data.get().unwrap();
@@ -363,16 +366,47 @@ impl WaylandClient {
                         }
                         return;
                     }
-                    Event::Axis { axis, value, .. } => {
-                        dbg!(value);
-                        // TODO minimum scroll distance and/or rate?
-                        let button_id = match axis {
-                            Axis::VerticalScroll if value < 0.0 => 5, // up
-                            Axis::VerticalScroll if value > 0.0 => 6, // down
-                            Axis::HorizontalScroll if value < 0.0 => 7, // left
-                            Axis::HorizontalScroll if value > 0.0 => 8, // right
-                            _ => return,
-                        };
+                    Event::Axis { time, axis, value } => {
+                        let button_id;
+                        if value < 10.0 && value > -10.0 {
+                            // continuous scroll
+                            let decay = time.wrapping_sub(axis_ts);
+                            if decay < 4000 {
+                                // this combines the current scroll with prior scrolls, decaying
+                                // the prior distance with a half-life of about 2/3 second
+                                axis_h *= 0.999_f64.powi(decay as i32);
+                                axis_v *= 0.999_f64.powi(decay as i32);
+                            } else {
+                                // after 4 seconds, just discard the prior scroll instead (4
+                                // seconds already decays to 1.8% anyway)
+                                axis_h = 0.0;
+                                axis_v = 0.0;
+                            }
+                            axis_ts = time;
+                            let total = match axis {
+                                Axis::VerticalScroll => &mut axis_v,
+                                Axis::HorizontalScroll => &mut axis_h,
+                                _ => return,
+                            };
+                            *total += value;
+                            let value = *total;
+                            button_id = match axis {
+                                Axis::VerticalScroll if value <= -10.0 => 5, // up
+                                Axis::VerticalScroll if value >= 10.0 => 6, // down
+                                Axis::HorizontalScroll if value <= -10.0 => 7, // left
+                                Axis::HorizontalScroll if value >= 10.0 => 8, // right
+                                _ => return,
+                            };
+                            *total = 0.0;
+                        } else {
+                            button_id = match axis {
+                                Axis::VerticalScroll if value < 0.0 => 5, // up
+                                Axis::VerticalScroll if value > 0.0 => 6, // down
+                                Axis::HorizontalScroll if value < 0.0 => 7, // left
+                                Axis::HorizontalScroll if value > 0.0 => 8, // right
+                                _ => return,
+                            };
+                        }
                         for bar in &mut state.bars {
                             if Some(bar.surf.as_ref().id()) == over {
                                 bar.sink.button(x,y,button_id, &mut state.runtime);
