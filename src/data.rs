@@ -29,6 +29,13 @@ pub enum Module {
         right : Rc<Item>,
         config : toml::Value,
     },
+    Calendar {
+        day_fmt : Box<str>,
+        today_fmt : Box<str>,
+        other_fmt : Box<str>,
+        zone : Box<str>,
+        monday : bool,
+    },
     Clock {
         format : Box<str>,
         zone : Box<str>,
@@ -145,6 +152,14 @@ impl Module {
     pub fn from_toml(value : &toml::Value) -> Self {
         match value.get("type").and_then(|v| v.as_str()) {
             // keep values in alphabetical order
+            Some("calendar") => {
+                let day_fmt = value.get("day-format").and_then(|v| v.as_str()).unwrap_or(" %e").into();
+                let today_fmt = value.get("today-format").and_then(|v| v.as_str()).unwrap_or(" <span color='green'><b>%e</b></span>").into();
+                let other_fmt = value.get("other-format").and_then(|v| v.as_str()).unwrap_or(" <span color='gray'>%e</span>").into();
+                let zone = value.get("timezone").and_then(|v| v.as_str()).unwrap_or("").into();
+                let monday = value.get("start").and_then(|v| v.as_str()).map_or(false, |v| v.eq_ignore_ascii_case("monday"));
+                Module::Calendar { day_fmt, today_fmt, other_fmt, zone, monday }
+            }
             Some("clock") => {
                 let format = value.get("format").and_then(|v| v.as_str()).unwrap_or("%H:%M").into();
                 let zone = value.get("timezone").and_then(|v| v.as_str()).unwrap_or("").into();
@@ -556,6 +571,45 @@ impl Module {
                     None => f(""),
                 }
             }
+            Module::Calendar { day_fmt, today_fmt, other_fmt, zone, monday } => {
+                use chrono::Datelike;
+                use chrono::Duration;
+                use std::fmt::Write;
+                let real_zone = rt.format(&zone).unwrap_or_else(|e| {
+                    warn!("Error expanding '{}' timezone format: {}", name, e);
+                    String::new()
+                });
+                let now = match real_zone.parse::<chrono_tz::Tz>() {
+                    Ok(tz) => chrono::Utc::now().with_timezone(&tz).date().naive_utc(),
+                    Err(_) => chrono::Local::now().date().naive_utc(),
+                };
+                let day1 = now - Duration::days(now.day0() as i64);
+                let mut pre_offset = if *monday {
+                    day1.weekday().num_days_from_monday()
+                } else {
+                    day1.weekday().num_days_from_sunday()
+                } as i64;
+                if pre_offset < 3 && now.day() < 10 {
+                    pre_offset += 7;
+                }
+                let mut date = day1 - Duration::days(pre_offset);
+                let mut rv = String::with_capacity(3 * 7 * 6 + 6);
+                for _week in 0..6 {
+                    for _day in 0..7 {
+                        if date.month() != now.month() {
+                            write!(rv, "{}", date.format(&other_fmt)).unwrap();
+                        } else if date.day() != now.day() {
+                            write!(rv, "{}", date.format(&day_fmt)).unwrap();
+                        } else {
+                            write!(rv, "{}", date.format(&today_fmt)).unwrap();
+                        }
+                        date = date + Duration::days(1);
+                    }
+                    rv.push('\n');
+                }
+                rv.pop();
+                f(&rv)
+            },
             Module::Clock { time, .. } => time.take_in(|s| f(s)),
             Module::Disk { contents, .. } => {
                 let vfs = contents.get();

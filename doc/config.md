@@ -124,6 +124,21 @@ The actual text displayed is `{`modulename`.text}` with a tooltip of `{`modulena
 
 # Modules
 
+## calendar
+
+The current month's calendar.  This always shows 6 weeks, so some days of the
+prior and next months are also visible.
+
+The default formatting values assume you have specified `markup = true` and are using a monospace font.
+
+Key | Expanded | Default | Details
+----|----------|---------|--------
+`timezone` | Yes |  | Time zone to use for calendar (blank uses the system local time zone)
+`start` | No | Sunday | This can be set to "Monday" to start weeks on Monday.
+`day-format` | No | ` %e` | Format for days of the current month that are not today.
+`today-format` | No | ` <span color='green'><b>%e</b></span>` | Format for the current day.
+`other-format` | No | ` <span color='gray'>%e</span>` | Format for days of the prior and next months.
+
 ## clock
 
 Key | Expanded | Default | Details
