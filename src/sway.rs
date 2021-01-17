@@ -663,13 +663,13 @@ pub struct Tree {
 
 #[derive(Debug)]
 struct TreeItems {
-    pre_workspace : Option<Item>,
-    pre_node : Option<Item>,
-    window : Option<Item>,
-    post_node : Option<Item>,
-    pre_float : Option<Item>,
-    post_float : Option<Item>,
-    post_workspace : Option<Item>,
+    pre_workspace : Option<Rc<Item>>,
+    pre_node : Option<Rc<Item>>,
+    window : Option<Rc<Item>>,
+    post_node : Option<Rc<Item>>,
+    pre_float : Option<Rc<Item>>,
+    post_float : Option<Rc<Item>>,
+    post_workspace : Option<Rc<Item>>,
 }
 
 #[derive(Debug,Default)]
@@ -695,13 +695,13 @@ impl TreeInner {
 impl Tree {
     pub fn from_toml(config : &toml::Value) -> Option<Self> {
         let items = TreeItems {
-            pre_workspace : config.get("pre-workspace").map(Item::from_toml_ref),
-            pre_node : config.get("pre-node").map(Item::from_toml_ref),
-            window : config.get("window").map(Item::from_toml_ref),
-            post_node : config.get("post-node").map(Item::from_toml_ref),
-            pre_float : config.get("pre-float").map(Item::from_toml_ref),
-            post_float : config.get("post-float").map(Item::from_toml_ref),
-            post_workspace : config.get("post-workspace").map(Item::from_toml_ref),
+            pre_workspace : config.get("pre-workspace").map(Item::from_toml_ref).map(Rc::new),
+            pre_node : config.get("pre-node").map(Item::from_toml_ref).map(Rc::new),
+            window : config.get("window").map(Item::from_toml_ref).map(Rc::new),
+            post_node : config.get("post-node").map(Item::from_toml_ref).map(Rc::new),
+            pre_float : config.get("pre-float").map(Item::from_toml_ref).map(Rc::new),
+            post_float : config.get("post-float").map(Item::from_toml_ref).map(Rc::new),
+            post_workspace : config.get("post-workspace").map(Item::from_toml_ref).map(Rc::new),
         };
         Some(Tree {
             value : Default::default(),

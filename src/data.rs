@@ -24,8 +24,9 @@ use libc;
 #[derive(Debug)]
 pub enum Module {
     Bar {
-        // always three items: left, center, right
-        items : Box<[Item;3]>,
+        left : Rc<Item>,
+        center : Rc<Item>,
+        right : Rc<Item>,
         config : toml::Value,
     },
     Clock {
@@ -53,7 +54,8 @@ pub enum Module {
     FocusList {
         source : Box<str>,
         // always two items: non-focused, focused
-        items : Box<(Item, Option<Item>)>,
+        others : Rc<Item>,
+        focused : Rc<Item>,
         spacing : Box<str>,
     },
     Formatted {
@@ -62,7 +64,7 @@ pub enum Module {
         looped : Cell<bool>,
     },
     Group {
-        items : Vec<Item>,
+        items : Vec<Rc<Item>>,
         spacing : Box<str>,
         // TODO crop ordering: allow specific items to be cropped first
         // TODO use min-width to force earlier cropping
@@ -196,13 +198,16 @@ impl Module {
                     }
                 };
                 let spacing = toml_to_string(value.get("spacing")).unwrap_or_default().into();
-                let item = value.get("item").map_or_else(Item::none, Item::from_toml_ref);
-                let fitem = value.get("focused-item").map(Item::from_toml_ref);
+                let others = Rc::new(value.get("item").map_or_else(Item::none, Item::from_toml_ref));
+                let focused = value.get("focused-item")
+                    .map(Item::from_toml_ref)
+                    .map(Rc::new)
+                    .unwrap_or_else(|| others.clone());
 
-                let items = Box::new((item, fitem));
                 Module::FocusList {
                     source,
-                    items,
+                    others,
+                    focused,
                     spacing,
                 }
             }
@@ -218,7 +223,7 @@ impl Module {
                 let spacing = toml_to_string(value.get("spacing")).unwrap_or_default().into();
                 let items = value.get("items")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.iter().map(Item::from_toml_ref).collect())
+                    .map(|a| a.iter().map(Item::from_toml_ref).map(Rc::new).collect())
                     .unwrap_or_default();
 
                 Module::Group {
@@ -362,7 +367,7 @@ impl Module {
     }
 
     /// One-time setup, if needed
-    pub fn init(&self, name : &str, rt : &Runtime, from : Option<Self>) {
+    pub fn init(&self, name : &str, rt : &Runtime, from : Option<&Self>) {
         match (self, from) {
             (Module::ExecJson { command, stdin, value, handle },
                 Some(Module::ExecJson {
@@ -371,11 +376,11 @@ impl Module {
                     value : old_value,
                     handle : old_handle,
                 }))
-                if *command == old_cmd =>
+                if *command == *old_cmd =>
             {
-                stdin.set(old_stdin.into_inner());
-                value.set(old_value.into_inner());
-                handle.set(old_handle.into_inner());
+                stdin.set(old_stdin.take());
+                value.set(old_value.take());
+                handle.set(old_handle.take());
             }
 
             (Module::ExecJson { command, stdin, value, handle }, _) => {
@@ -514,7 +519,6 @@ impl Module {
         match self {
             Module::ItemReference { .. } |
             Module::Group { .. } |
-            Module::Icon { .. } |
             Module::FocusList { .. } |
             Module::Tray { .. } => {
                 error!("Cannot use '{}' in a text expansion", name);
@@ -637,6 +641,12 @@ impl Module {
                 };
                 looped.set(false);
                 f(&value)
+            }
+            Module::Icon { tooltip, .. } => {
+                match key {
+                    "tooltip" => f(&rt.format_or(&tooltip, &name)),
+                    _ => f("")
+                }
             }
             Module::Item { value } => value.take_in(|item| {
                 match item.as_ref() {

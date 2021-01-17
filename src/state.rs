@@ -40,7 +40,7 @@ pub struct Bar {
     pixel_height : i32,
     dirty : bool,
     throttle : Option<Attached<WlCallback>>,
-    item : Item,
+    item : Rc<Item>,
     cfg_index : usize,
 }
 
@@ -62,7 +62,7 @@ impl Bar {
 
     fn render_with(&mut self, runtime : &mut Runtime, target : &mut RenderTarget) {
         if self.dirty && self.throttle.is_none() {
-            let rt_item = runtime.items.entry("bar".into()).or_insert_with(Item::none);
+            let rt_item = runtime.items.entry("bar".into()).or_insert_with(|| Rc::new(Item::none()));
             std::mem::swap(&mut self.item, rt_item);
 
             let surf = cairo::RecordingSurface::create(cairo::Content::ColorAlpha,
@@ -159,7 +159,7 @@ impl Bar {
         }
     }
 
-    pub fn hover(&mut self, x : f64, y : f64, wayland : &WaylandClient, _runtime : &Runtime) {
+    pub fn hover(&mut self, x : f64, y : f64, wayland : &WaylandClient, runtime : &Runtime) {
         self.popup_x = x;
         if let Some(popup) = &self.popup {
             if x > popup.wl.anchor.0 as f64 && x < (popup.wl.anchor.0 + popup.wl.anchor.2) as f64 {
@@ -170,7 +170,10 @@ impl Bar {
         }
         if let Some((min_x, max_x, desc)) = self.sink.get_hover(x, y) {
             let anchor = (min_x as i32, 0, (max_x - min_x) as i32, self.pixel_height / self.scale);
-            let size = desc.get_size();
+            let size = desc.get_size(runtime);
+            if size.0 <= 0 || size.1 <= 0 {
+                return;
+            }
 
             let popup = BarPopup {
                 wl : wayland.new_popup(self, anchor, size),
@@ -289,7 +292,8 @@ impl NotifierList {
 
 /// Common state available during rendering operations
 pub struct Runtime {
-    pub items : HashMap<String, Item>,
+    pub items : HashMap<String, Rc<Item>>,
+    item_var : Rc<Item>,
     notify : Notifier,
     refresh : Rc<RefreshState>,
 }
@@ -338,9 +342,13 @@ impl Runtime {
         }
     }
 
+    pub fn copy_item_var(&self) -> Option<IterationItem> {
+        self.get_item_var().take_in_some(|v| v.clone())
+    }
+
     pub fn get_item_var(&self) -> &Cell<Option<IterationItem>> {
-        match self.items.get("item") {
-            Some(&Item { data : Module::Item { ref value }, .. }) => value,
+        match &*self.item_var {
+            &Item { data : Module::Item { ref value }, .. } => value,
             _ => {
                 panic!("The 'item' variable was not assignable");
             }
@@ -370,6 +378,7 @@ impl State {
             bar_config : Vec::new(),
             runtime : Runtime {
                 items : Default::default(),
+                item_var : Rc::new(Module::new_current_item().into()),
                 refresh : Default::default(),
                 notify : Notifier { inner : notify_inner.clone() },
             },
@@ -468,7 +477,7 @@ impl State {
                 None
             } else {
                 let key = key.to_owned();
-                let value = Item::from_item_list(&key, value);
+                let value = Rc::new(Item::from_item_list(&key, value));
                 Some((key, value))
             }
         }).collect();
@@ -482,11 +491,11 @@ impl State {
         let mut old_items = std::mem::replace(&mut self.runtime.items, new_items);
         self.bar_config = bar_config;
 
-        self.runtime.items.insert("item".into(), Module::new_current_item().into());
+        self.runtime.items.insert("item".into(), self.runtime.item_var.clone());
 
         for (k,v) in &self.runtime.items {
             if let Some(item) = old_items.remove(k) {
-                v.data.init(k, &self.runtime, Some(item.data));
+                v.data.init(k, &self.runtime, Some(&item.data));
             } else {
                 v.data.init(k, &self.runtime, None);
             }
@@ -717,7 +726,7 @@ impl State {
         Bar {
             surf,
             ls_surf : ls_surf.into(),
-            item : Item::new_bar(cfg),
+            item : Rc::new(Item::new_bar(cfg)),
             scale,
             pixel_width : 0,
             pixel_height : 0,

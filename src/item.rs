@@ -355,13 +355,7 @@ impl EventSink {
             if h.item.is_none() {
                 h.target.invoke(runtime, button);
             } else {
-                let item_var = match runtime.items.get("item") {
-                    Some(&Item { data : Module::Item { ref value }, .. }) => value,
-                    _ => {
-                        error!("The 'item' variable was not assignable");
-                        return;
-                    }
-                };
+                let item_var = runtime.get_item_var();
                 item_var.set(h.item.clone());
                 h.target.invoke(runtime, button);
                 item_var.set(None);
@@ -404,13 +398,13 @@ impl Item {
     }
 
     pub fn new_bar(cfg : toml::Value) -> Self {
-        let left = cfg.get("left").map_or_else(Item::none, Item::from_toml_ref);
-        let right = cfg.get("right").map_or_else(Item::none, Item::from_toml_ref);
-        let center = cfg.get("center").map_or_else(Item::none, Item::from_toml_ref);
+        let left = Rc::new(cfg.get("left").map_or_else(Item::none, Item::from_toml_ref));
+        let right = Rc::new(cfg.get("right").map_or_else(Item::none, Item::from_toml_ref));
+        let center = Rc::new(cfg.get("center").map_or_else(Item::none, Item::from_toml_ref));
 
         Item {
             data : Module::Bar {
-                items : Box::new([left, center, right]),
+                left, center, right,
                 config : cfg.clone(),
             },
             events : EventSink::from_toml(&cfg),
@@ -426,7 +420,7 @@ impl Item {
 
         if let Some(array) = value.as_array() {
             return Module::Group {
-                items : array.iter().map(Item::from_toml_ref).collect(),
+                items : array.iter().map(Item::from_toml_ref).map(Rc::new).collect(),
                 spacing : "".into(),
             }.into();
         }
@@ -449,7 +443,7 @@ impl Item {
         }
     }
 
-    pub fn render(&self, parent_ctx : &Render) -> EventSink {
+    pub fn render(self : &Rc<Self>, parent_ctx : &Render) -> EventSink {
         let mut rv = self.events.clone();
 
         let format;
@@ -622,7 +616,7 @@ impl Item {
         rv
     }
 
-    pub fn render_clamped(&self, ctx : &Render, ev : &mut EventSink) {
+    pub fn render_clamped(self : &Rc<Self>, ctx : &Render, ev : &mut EventSink) {
         let x0 = ctx.render_pos.get();
         let mut rv = self.render(ctx);
         let x1 = ctx.render_pos.get();
@@ -630,7 +624,7 @@ impl Item {
         ev.merge(rv);
     }
 
-    pub fn render_clamped_item(&self, ctx : &Render, ev : &mut EventSink, item : &IterationItem) {
+    pub fn render_clamped_item(self : &Rc<Self>, ctx : &Render, ev : &mut EventSink, item : &IterationItem) {
         let item_var = ctx.runtime.get_item_var();
         let prev = item_var.replace(Some(item.clone()));
         let x0 = ctx.render_pos.get();
@@ -656,7 +650,7 @@ impl Item {
     /// Note that the coordinates you use to render may not match the final coordinates in the
     /// buffer; if your item is not left-aligned, it will likely be shifted right before the final
     /// render.
-    fn render_inner(&self, ctx : &Render, rv : &mut EventSink) {
+    fn render_inner(self : &Rc<Self>, ctx : &Render, rv : &mut EventSink) {
         match &self.data {
             Module::ItemReference { name } => {
                 match ctx.runtime.items.get(&**name) {
@@ -694,7 +688,7 @@ impl Item {
                     ctx.render_pos.set(ctx.render_pos.get() + spacing);
                 }
             }
-            Module::FocusList { source, items, spacing } => {
+            Module::FocusList { source, others, focused, spacing } => {
                 let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
                 let source = match ctx.runtime.items.get(&**source) {
                     Some(var) => var,
@@ -707,9 +701,9 @@ impl Item {
                     item_var.set(Some(item.clone()));
                     let x0 = ctx.render_pos.get();
                     let mut ev = if focus {
-                        items.1.as_ref().unwrap_or(&items.0).render(ctx)
+                        focused.render(ctx)
                     } else {
-                        items.0.render(ctx)
+                        others.render(ctx)
                     };
                     let x1 = ctx.render_pos.get();
                     ev.offset_clamp(0.0, x0, x1);
@@ -721,13 +715,9 @@ impl Item {
                 });
                 item_var.set(prev);
             }
-            Module::Bar { items, .. } => {
+            Module::Bar { left, center, right, .. } => {
                 let (clip_x0, _y0, clip_x1, _y1) = *ctx.render_extents;
                 let width = clip_x1 - clip_x0;
-
-                let left = &items[0];
-                let center = &items[1];
-                let right = &items[2];
 
                 ctx.cairo.push_group();
                 let mut left_ev = left.render(&ctx);
@@ -799,14 +789,14 @@ impl Item {
                         if markup {
                             item.config = self.config.clone();
                         }
-                        item.render(ctx);
+                        Rc::new(item).render(ctx);
                     }
                 }
                 if !tooltip.is_empty() {
                     let end_pos = ctx.render_pos.get();
-                    rv.hovers.push((start_pos, end_pos, PopupDesc::Text {
-                        value : tooltip,
-                        markup,
+                    rv.hovers.push((start_pos, end_pos, PopupDesc::Item {
+                        source : self.clone(),
+                        iter : ctx.runtime.copy_item_var(),
                     }));
                 }
             },
@@ -823,7 +813,6 @@ impl Item {
             _ => {
                 let markup = self.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
                 let text = self.data.read_to_string(ctx.err_name, "text", &ctx.runtime);
-                let tooltip = self.data.read_to_string(ctx.err_name, "tooltip", &ctx.runtime);
                 let layout = pangocairo::create_layout(ctx.cairo).unwrap();
                 layout.set_font_description(Some(ctx.font));
                 if markup {
@@ -859,12 +848,10 @@ impl Item {
                 pangocairo::show_layout(ctx.cairo, &layout);
                 let width = pango::units_to_double(size.0);
                 ctx.render_pos.set(start_pos + width);
-                if !tooltip.is_empty() {
-                    rv.hovers.push((start_pos, start_pos + width, PopupDesc::Text {
-                        value : tooltip,
-                        markup,
-                    }));
-                }
+                rv.hovers.push((start_pos, start_pos + width, PopupDesc::Item {
+                    source : self.clone(),
+                    iter : ctx.runtime.copy_item_var(),
+                }));
             }
         }
     }
@@ -872,21 +859,32 @@ impl Item {
 
 #[derive(Debug,Clone)]
 pub enum PopupDesc {
-    Text { value : String, markup : bool },
+    Item {
+        source : Rc<Item>,
+        iter : Option<IterationItem>,
+    },
     Tray(tray::TrayPopup),
 }
 
 impl PopupDesc {
-    pub fn get_size(&mut self) -> (i32, i32) {
+    pub fn get_size(&mut self, runtime : &Runtime) -> (i32, i32) {
         match self {
-            PopupDesc::Text { value, markup } => {
+            PopupDesc::Item { source, iter } => {
+                let markup = source.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
+                let item_var = runtime.get_item_var();
+                item_var.set(iter.clone());
+                let value = source.data.read_to_string("tooltip", "tooltip", runtime);
+                item_var.set(None);
+                if value.is_empty() {
+                    return (0,0);
+                }
                 let tmp = cairo::RecordingSurface::create(cairo::Content::ColorAlpha, None).unwrap();
                 let ctx = cairo::Context::new(&tmp);
                 let layout = pangocairo::create_layout(&ctx).unwrap();
-                if *markup {
-                    layout.set_markup(value);
+                if markup {
+                    layout.set_markup(&value);
                 } else {
-                    layout.set_text(value);
+                    layout.set_text(&value);
                 }
                 let size = layout.get_size();
                 (pango::units_to_double(size.0) as i32 + 4, pango::units_to_double(size.1) as i32 + 4)
@@ -896,13 +894,19 @@ impl PopupDesc {
     }
     pub fn render(&mut self, ctx : &cairo::Context, runtime : &Runtime) -> (i32, i32) {
         match self {
-            PopupDesc::Text { value, markup } => {
+            PopupDesc::Item { source, iter } => {
+                let markup = source.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
+                let item_var = runtime.get_item_var();
+                item_var.set(iter.clone());
+                let value = source.data.read_to_string("tooltip", "tooltip", runtime);
+                item_var.set(None);
+
                 ctx.move_to(2.0, 2.0);
                 let layout = pangocairo::create_layout(&ctx).unwrap();
-                if *markup {
-                    layout.set_markup(value);
+                if markup {
+                    layout.set_markup(&value);
                 } else {
-                    layout.set_text(value);
+                    layout.set_text(&value);
                 }
                 pangocairo::show_layout(&ctx, &layout);
                 let size = layout.get_size();
@@ -914,8 +918,7 @@ impl PopupDesc {
 
     pub fn button(&mut self, x : f64, y : f64, button : u32, runtime : &mut Runtime) {
         match self {
-            PopupDesc::Text { .. } => {
-            }
+            PopupDesc::Item { .. } => { }
             PopupDesc::Tray(tray) => tray.button(x, y, button, runtime),
         }
     }

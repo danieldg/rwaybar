@@ -681,7 +681,7 @@ pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
                 }
                 if !done {
                     let item : Item = Module::new_value(item.title.as_deref().unwrap_or_default()).into();
-                    item.render(ctx);
+                    Rc::new(item).render(ctx);
                 }
                 let x1 = ctx.render_pos.get();
                 let mut es = EventSink::from_tray(item.owner.clone(), item.path.clone());

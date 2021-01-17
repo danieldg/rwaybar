@@ -69,6 +69,7 @@ impl<T> Cell<T> {
         Cell(std::cell::Cell::new(t))
     }
 
+    #[allow(dead_code)]
     pub fn into_inner(self) -> T {
         self.0.into_inner()
     }
