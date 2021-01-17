@@ -128,6 +128,19 @@ pub enum IterationItem {
     SwayTreeItem(Rc<sway::Node>),
 }
 
+impl PartialEq for IterationItem {
+    fn eq(&self, rhs : &Self) -> bool {
+        use IterationItem::*;
+        match (self, rhs) {
+            (MediaPlayer2 { target : a }, MediaPlayer2 { target : b }) => Rc::ptr_eq(a,b),
+            (Pulse { target : a }, Pulse { target : b }) => Rc::ptr_eq(a,b),
+            (SwayWorkspace(a), SwayWorkspace(b)) => Rc::ptr_eq(a,b),
+            (SwayTreeItem(a), SwayTreeItem(b)) => Rc::ptr_eq(a,b),
+            _ => false,
+        }
+    }
+}
+
 impl Module {
     pub fn from_toml(value : &toml::Value) -> Self {
         match value.get("type").and_then(|v| v.as_str()) {

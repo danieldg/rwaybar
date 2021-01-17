@@ -24,6 +24,7 @@ use crate::wayland::{OutputData,Popup,WaylandClient};
 
 pub struct BarPopup {
     pub wl : Popup,
+    desc : PopupDesc,
     vanish : Option<Instant>,
 }
 
@@ -34,7 +35,6 @@ pub struct Bar {
     pub popup : Option<BarPopup>,
     pub sink : EventSink,
     pub anchor_top : bool,
-    popup_x : f64,
     pub scale : i32,
     pixel_width : i32,
     pixel_height : i32,
@@ -126,57 +126,55 @@ impl Bar {
             if popup.wl.waiting_on_configure {
                 return;
             }
-            if let Some((_,_,desc)) = self.sink.get_hover(self.popup_x, 0.0) {
-                let scale = popup.wl.scale;
-                let pixel_size = (popup.wl.size.0 * scale, popup.wl.size.1 * scale);
-                let surf = cairo::RecordingSurface::create(cairo::Content::ColorAlpha,
-                    cairo::Rectangle {
-                        x : 0.0,
-                        y : 0.0,
-                        width : pixel_size.0 as f64,
-                        height : pixel_size.1 as f64,
-                    }).expect("Error creating popup rendering surface");
-                let ctx = cairo::Context::new(&surf);
-                ctx.set_operator(cairo::Operator::Source);
-                ctx.paint();
-                ctx.set_operator(cairo::Operator::Over);
-                ctx.set_source_rgb(1.0, 1.0, 1.0);
+            let scale = popup.wl.scale;
+            let pixel_size = (popup.wl.size.0 * scale, popup.wl.size.1 * scale);
+            let surf = cairo::RecordingSurface::create(cairo::Content::ColorAlpha,
+                cairo::Rectangle {
+                    x : 0.0,
+                    y : 0.0,
+                    width : pixel_size.0 as f64,
+                    height : pixel_size.1 as f64,
+                }).expect("Error creating popup rendering surface");
+            let ctx = cairo::Context::new(&surf);
+            ctx.set_operator(cairo::Operator::Source);
+            ctx.paint();
+            ctx.set_operator(cairo::Operator::Over);
+            ctx.set_source_rgb(1.0, 1.0, 1.0);
 
-                let mut scale_matrix = cairo::Matrix::identity();
-                scale_matrix.scale(scale as f64, scale as f64);
-                ctx.set_matrix(scale_matrix);
-                let new_size = desc.render(&ctx, runtime);
+            let mut scale_matrix = cairo::Matrix::identity();
+            scale_matrix.scale(scale as f64, scale as f64);
+            ctx.set_matrix(scale_matrix);
+            let new_size = popup.desc.render(&ctx, runtime);
 
-                target.render(pixel_size, &popup.wl.surf, &surf);
-                popup.wl.surf.commit();
-                if new_size.0 > popup.wl.size.0 || new_size.1 > popup.wl.size.1 {
-                    target.wayland.resize_popup(&self.ls_surf, &mut popup.wl, new_size, scale);
-                }
-            } else {
-                // contents vanished, dismiss the popup
-                self.popup = None;
+            target.render(pixel_size, &popup.wl.surf, &surf);
+            popup.wl.surf.commit();
+            if new_size.0 > popup.wl.size.0 || new_size.1 > popup.wl.size.1 {
+                target.wayland.resize_popup(&self.ls_surf, &mut popup.wl, new_size, scale);
             }
         }
     }
 
     pub fn hover(&mut self, x : f64, y : f64, wayland : &WaylandClient, runtime : &Runtime) {
-        self.popup_x = x;
-        if let Some(popup) = &self.popup {
-            if x > popup.wl.anchor.0 as f64 && x < (popup.wl.anchor.0 + popup.wl.anchor.2) as f64 {
-                return;
-            } else {
-                self.popup = None;
-            }
-        }
         if let Some((min_x, max_x, desc)) = self.sink.get_hover(x, y) {
+            if let Some(popup) = &self.popup {
+                if x < popup.wl.anchor.0 as f64 || x > (popup.wl.anchor.0 + popup.wl.anchor.2) as f64 {
+                    self.popup = None;
+                } else if popup.desc == *desc {
+                    return;
+                } else {
+                    self.popup = None;
+                }
+            }
             let anchor = (min_x as i32, 0, (max_x - min_x) as i32, self.pixel_height / self.scale);
             let size = desc.get_size(runtime);
             if size.0 <= 0 || size.1 <= 0 {
                 return;
             }
 
+            let desc = desc.clone();
             let popup = BarPopup {
                 wl : wayland.new_popup(self, anchor, size),
+                desc,
                 vanish : None,
             };
             self.popup = Some(popup);
@@ -199,8 +197,8 @@ impl Bar {
     }
 
     pub fn popup_button(&mut self, x : f64, y : f64, button : u32, runtime : &mut Runtime) {
-        if let Some((_,_,desc)) = self.sink.get_hover(self.popup_x, 0.0) {
-            desc.button(x, y, button, runtime);
+        if let Some(popup) = &mut self.popup {
+            popup.desc.button(x, y, button, runtime);
         }
     }
 }
@@ -730,7 +728,6 @@ impl State {
             scale,
             pixel_width : 0,
             pixel_height : 0,
-            popup_x : 0.0,
             anchor_top,
             sink : EventSink::default(),
             dirty : false,

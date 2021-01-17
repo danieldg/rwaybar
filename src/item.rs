@@ -866,6 +866,18 @@ pub enum PopupDesc {
     Tray(tray::TrayPopup),
 }
 
+impl PartialEq for PopupDesc {
+    fn eq(&self, rhs : &Self) -> bool {
+        match (self, rhs) {
+            (PopupDesc::Item { source : a, iter : ai }, PopupDesc::Item { source : b, iter : bi }) => {
+                Rc::ptr_eq(a,b) && ai == bi
+            }
+            (PopupDesc::Tray(a), PopupDesc::Tray(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
 impl PopupDesc {
     pub fn get_size(&mut self, runtime : &Runtime) -> (i32, i32) {
         match self {

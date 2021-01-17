@@ -406,6 +406,13 @@ pub struct TrayPopup {
     rendered_ids : Vec<(f64, f64, i32)>,
 }
 
+impl PartialEq for TrayPopup {
+    fn eq(&self, rhs : &Self) -> bool {
+        Rc::ptr_eq(&self.owner, &rhs.owner) &&
+            Rc::ptr_eq(&self.menu, &rhs.menu)
+    }
+}
+
 #[derive(Debug)]
 struct TrayPopupMenu {
     owner : Rc<str>,
