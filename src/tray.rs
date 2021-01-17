@@ -597,7 +597,8 @@ impl TrayPopup {
         (size.0 as i32 + 4, size.1 as i32 + 4)
     }
 
-    pub fn render(&mut self, ctx : &cairo::Context, runtime : &Runtime) -> (i32, i32) {
+    pub fn render(&mut self, rctx : &Render) {
+        let ctx = rctx.cairo;
         let clip = ctx.clip_extents(); 
         ctx.move_to(2.0, 2.0);
         let layout = pangocairo::create_layout(&ctx).unwrap();
@@ -607,7 +608,7 @@ impl TrayPopup {
         let mut pos = 2.0 + pango::units_to_double(psize.1);
         let rendered_ids = &mut self.rendered_ids;
 
-        self.menu.interested.take_in(|i| i.add(runtime));
+        self.menu.interested.take_in(|i| i.add(rctx.runtime));
 
         self.menu.items.take_in(|items| {
             if !items.is_empty() {
@@ -639,7 +640,9 @@ impl TrayPopup {
             }
         });
         // This is required because pango won't report render cropping due to widths being short
-        self.get_size()
+        let size = self.get_size();
+        rctx.render_pos.set(size.0 as f64);
+        rctx.render_ypos.as_ref().map(|p| p.set(size.1 as f64));
     }
 
     pub fn button(&mut self, x : f64, y : f64, button : u32, _runtime : &mut Runtime) {

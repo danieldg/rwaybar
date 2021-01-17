@@ -89,6 +89,7 @@ impl Bar {
                 align : Align::bar_default(),
                 render_extents : &render_extents,
                 render_pos : &render_pos,
+                render_ypos : None,
                 err_name: "bar",
                 text_stroke : None,
                 runtime,
@@ -136,18 +137,33 @@ impl Bar {
                     height : pixel_size.1 as f64,
                 }).expect("Error creating popup rendering surface");
             let ctx = cairo::Context::new(&surf);
+            let mut scale_matrix = cairo::Matrix::identity();
+            scale_matrix.scale(scale as f64, scale as f64);
+            ctx.set_matrix(scale_matrix);
             ctx.set_operator(cairo::Operator::Source);
             ctx.paint();
             ctx.set_operator(cairo::Operator::Over);
             ctx.set_source_rgb(1.0, 1.0, 1.0);
+            let font = pango::FontDescription::new();
+            let render_extents = ctx.clip_extents();
+            let render_pos = Cell::new(0.0);
+            let render_ypos = Cell::new(0.0);
 
-            let mut scale_matrix = cairo::Matrix::identity();
-            scale_matrix.scale(scale as f64, scale as f64);
-            ctx.set_matrix(scale_matrix);
-            let new_size = popup.desc.render(&ctx, runtime);
-
+            let ctx = Render {
+                cairo : &ctx,
+                font : &font,
+                align : Align::bar_default(),
+                render_extents : &render_extents,
+                render_pos : &render_pos,
+                render_ypos : Some(&render_ypos),
+                err_name: "popup",
+                text_stroke : None,
+                runtime,
+            };
+            popup.desc.render(&ctx);
             target.render(pixel_size, &popup.wl.surf, &surf);
             popup.wl.surf.commit();
+            let new_size = (render_pos.get() as i32, render_ypos.get() as i32);
             if new_size.0 > popup.wl.size.0 || new_size.1 > popup.wl.size.1 {
                 target.wayland.resize_popup(&self.ls_surf, &mut popup.wl, new_size, scale);
             }
@@ -166,7 +182,7 @@ impl Bar {
                 }
             }
             let anchor = (min_x as i32, 0, (max_x - min_x) as i32, self.pixel_height / self.scale);
-            let size = desc.get_size(runtime);
+            let size = desc.get_size(runtime, self.pixel_width / self.scale);
             if size.0 <= 0 || size.1 <= 0 {
                 return;
             }

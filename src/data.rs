@@ -60,7 +60,7 @@ pub enum Module {
     },
     Formatted {
         format : Box<str>,
-        tooltip : Box<str>,
+        tooltip : Option<Rc<Item>>,
         looped : Cell<bool>,
     },
     Group {
@@ -229,7 +229,13 @@ impl Module {
                     error!("Formatted variables require a format: {}", value);
                     ""
                 }).into();
-                let tooltip = value.get("tooltip").and_then(|v| v.as_str()).unwrap_or("").into();
+                let tooltip = value.get("tooltip").map(|tt| {
+                    if let Some(text) = tt.as_str() {
+                        Rc::new(Module::Formatted { format : text.into(), tooltip : None, looped : Cell::new(false) }.into())
+                    } else {
+                        Rc::new(Item::from_item_list(".tooltip", tt))
+                    }
+                });
                 Module::Formatted { format, tooltip, looped : Cell::new(false) }
             }
             Some("group") => {
@@ -357,7 +363,13 @@ impl Module {
                 if let Some(value) = value.as_str() {
                     Module::new_value(value)
                 } else if let Some(format) = value.get("format").and_then(|v| v.as_str()) {
-                    let tooltip = value.get("tooltip").and_then(|v| v.as_str()).unwrap_or("").into();
+                    let tooltip = value.get("tooltip").map(|tt| {
+                        if let Some(text) = tt.as_str() {
+                            Rc::new(Module::Formatted { format : text.into(), tooltip : None, looped : Cell::new(false) }.into())
+                        } else {
+                            Rc::new(Item::from_item_list(".tooltip", tt))
+                        }
+                    });
                     Module::Formatted { format : format.into(), tooltip, looped : Cell::new(false) }
                 } else if let Some(value) = toml_to_string(value.get("value")) {
                     Module::new_value(value)
@@ -647,13 +659,18 @@ impl Module {
                     error!("Recursion detected when expanding {}", name);
                     return f("");
                 }
-                looped.set(true);
-                let value = match key {
-                    "tooltip" => rt.format_or(&tooltip, &name),
-                    _ => rt.format_or(&format, &name),
-                };
-                looped.set(false);
-                f(&value)
+                match key {
+                    "tooltip" => match tooltip {
+                        Some(tt) => tt.data.read_in(name, "", rt, f),
+                        None => f(""),
+                    },
+                    _ => {
+                        looped.set(true);
+                        let value = rt.format_or(&format, &name);
+                        looped.set(false);
+                        f(&value)
+                    }
+                }
             }
             Module::Icon { tooltip, .. } => {
                 match key {

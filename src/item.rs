@@ -13,6 +13,7 @@ pub struct Render<'a> {
     pub text_stroke : Option<(u16, u16, u16, u16)>,
     pub render_extents : &'a (f64, f64, f64, f64),
     pub render_pos : &'a Cell<f64>,
+    pub render_ypos : Option<&'a Cell<f64>>,
     pub align : Align,
     pub err_name : &'a str,
     pub runtime : &'a Runtime,
@@ -681,12 +682,20 @@ impl Item {
                         }
                     }
                 }
+                let mut ypos = ctx.render_ypos.as_ref().map(|p| (p.get(), p.get()));
                 let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
                 ctx.render_pos.set(ctx.render_pos.get() + spacing);
                 for item in items {
                     item.render_clamped(ctx, rv);
                     ctx.render_pos.set(ctx.render_pos.get() + spacing);
+                    if let Some((min,max)) = &mut ypos {
+                        let now = ctx.render_ypos.as_ref().unwrap().replace(*min);
+                        if now > *max {
+                            *max = now;
+                        }
+                    }
                 }
+                ctx.render_ypos.as_ref().map(|p| p.set(ypos.unwrap().1));
             }
             Module::FocusList { source, others, focused, spacing } => {
                 let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
@@ -794,7 +803,7 @@ impl Item {
                 }
                 if !tooltip.is_empty() {
                     let end_pos = ctx.render_pos.get();
-                    rv.hovers.push((start_pos, end_pos, PopupDesc::Item {
+                    rv.hovers.push((start_pos, end_pos, PopupDesc::TextItem {
                         source : self.clone(),
                         iter : ctx.runtime.copy_item_var(),
                     }));
@@ -821,21 +830,26 @@ impl Item {
                     layout.set_text(&text);
                 }
                 let size = layout.get_size();
-                let yoff = match ctx.align.vert {
-                    Some(f) => {
-                        let (_x0, clip_y0, _x1, clip_y1) = *ctx.render_extents;
-                        let extra = clip_y1 - clip_y0 - pango::units_to_double(size.1);
-                        if extra >= 0.0 {
-                            extra * f
-                        } else {
-                            0.0
-                        }
+                let xpos = ctx.render_pos.get();
+                let ypos = match ctx.render_ypos {
+                    Some(v) => v.get(),
+                    None => {
+                        let yoff = match ctx.align.vert {
+                            Some(f) => {
+                                let (_x0, clip_y0, _x1, clip_y1) = *ctx.render_extents;
+                                let extra = clip_y1 - clip_y0 - pango::units_to_double(size.1);
+                                if extra >= 0.0 {
+                                    extra * f
+                                } else {
+                                    0.0
+                                }
+                            }
+                            _ => 0.0,
+                        };
+                        yoff + ctx.render_extents.1
                     }
-                    _ => 0.0,
                 };
-                let start_pos = ctx.render_pos.get();
-                let ypos = yoff + ctx.render_extents.1;
-                ctx.cairo.move_to(start_pos, ypos);
+                ctx.cairo.move_to(xpos, ypos);
                 if let Some(rgba) = ctx.text_stroke {
                     ctx.cairo.save();
                     pangocairo::layout_path(ctx.cairo, &layout);
@@ -844,14 +858,26 @@ impl Item {
                     ctx.cairo.restore();
                 }
 
-                ctx.cairo.move_to(start_pos, ypos);
+                ctx.cairo.move_to(xpos, ypos);
                 pangocairo::show_layout(ctx.cairo, &layout);
                 let width = pango::units_to_double(size.0);
-                ctx.render_pos.set(start_pos + width);
-                rv.hovers.push((start_pos, start_pos + width, PopupDesc::Item {
-                    source : self.clone(),
-                    iter : ctx.runtime.copy_item_var(),
-                }));
+                ctx.render_pos.set(xpos + width);
+                if let Some(yrec) = ctx.render_ypos {
+                    let height = pango::units_to_double(size.1);
+                    yrec.set(ypos + height);
+                }
+
+                if let Module::Formatted { tooltip : Some(item), .. } = &self.data {
+                    rv.hovers.push((xpos, xpos + width, PopupDesc::RenderItem {
+                        item : item.clone(),
+                        iter : ctx.runtime.copy_item_var(),
+                    }));
+                } else {
+                    rv.hovers.push((xpos, xpos + width, PopupDesc::TextItem {
+                        source : self.clone(),
+                        iter : ctx.runtime.copy_item_var(),
+                    }));
+                }
             }
         }
     }
@@ -859,7 +885,11 @@ impl Item {
 
 #[derive(Debug,Clone)]
 pub enum PopupDesc {
-    Item {
+    RenderItem {
+        item : Rc<Item>,
+        iter : Option<IterationItem>,
+    },
+    TextItem {
         source : Rc<Item>,
         iter : Option<IterationItem>,
     },
@@ -869,7 +899,10 @@ pub enum PopupDesc {
 impl PartialEq for PopupDesc {
     fn eq(&self, rhs : &Self) -> bool {
         match (self, rhs) {
-            (PopupDesc::Item { source : a, iter : ai }, PopupDesc::Item { source : b, iter : bi }) => {
+            (PopupDesc::RenderItem { item : a, iter : ai }, PopupDesc::RenderItem { item : b, iter : bi }) => {
+                Rc::ptr_eq(a,b) && ai == bi
+            }
+            (PopupDesc::TextItem { source : a, iter : ai }, PopupDesc::TextItem { source : b, iter : bi }) => {
                 Rc::ptr_eq(a,b) && ai == bi
             }
             (PopupDesc::Tray(a), PopupDesc::Tray(b)) => a == b,
@@ -879,9 +912,35 @@ impl PartialEq for PopupDesc {
 }
 
 impl PopupDesc {
-    pub fn get_size(&mut self, runtime : &Runtime) -> (i32, i32) {
+    pub fn get_size(&mut self, runtime : &Runtime, max_w : i32) -> (i32, i32) {
         match self {
-            PopupDesc::Item { source, iter } => {
+            PopupDesc::RenderItem { .. } => {
+                let tmp = cairo::RecordingSurface::create(cairo::Content::ColorAlpha, cairo::Rectangle {
+                    x : 0.0,
+                    y : 0.0,
+                    width : max_w as f64,
+                    height : max_w as f64 * 2.0,
+                }).unwrap();
+                let ctx = cairo::Context::new(&tmp);
+                let font = pango::FontDescription::new();
+                let render_extents = ctx.clip_extents();
+                let render_pos = Cell::new(0.0);
+                let render_ypos = Cell::new(0.0);
+                let ctx = Render {
+                    cairo : &ctx,
+                    font : &font,
+                    align : Align::bar_default(),
+                    render_extents : &render_extents,
+                    render_pos : &render_pos,
+                    render_ypos : Some(&render_ypos),
+                    err_name: "popup",
+                    text_stroke : None,
+                    runtime,
+                };
+                self.render(&ctx);
+                (render_pos.get() as i32, render_ypos.get() as i32)
+            }
+            PopupDesc::TextItem { source, iter } => {
                 let markup = source.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
                 let item_var = runtime.get_item_var();
                 item_var.set(iter.clone());
@@ -904,33 +963,41 @@ impl PopupDesc {
             PopupDesc::Tray(tray) => tray.get_size(),
         }
     }
-    pub fn render(&mut self, ctx : &cairo::Context, runtime : &Runtime) -> (i32, i32) {
+    pub fn render(&mut self, ctx : &Render) {
         match self {
-            PopupDesc::Item { source, iter } => {
-                let markup = source.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
-                let item_var = runtime.get_item_var();
+            PopupDesc::RenderItem { item, iter } => {
+                let item_var = ctx.runtime.get_item_var();
                 item_var.set(iter.clone());
-                let value = source.data.read_to_string("tooltip", "tooltip", runtime);
+                item.render(ctx);
+                item_var.set(None);
+            }
+            PopupDesc::TextItem { source, iter } => {
+                let markup = source.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
+                let item_var = ctx.runtime.get_item_var();
+                item_var.set(iter.clone());
+                let value = source.data.read_to_string("tooltip", "tooltip", ctx.runtime);
                 item_var.set(None);
 
-                ctx.move_to(2.0, 2.0);
-                let layout = pangocairo::create_layout(&ctx).unwrap();
+                ctx.cairo.move_to(2.0, 2.0);
+                let layout = pangocairo::create_layout(&ctx.cairo).unwrap();
                 if markup {
                     layout.set_markup(&value);
                 } else {
                     layout.set_text(&value);
                 }
-                pangocairo::show_layout(&ctx, &layout);
+                pangocairo::show_layout(&ctx.cairo, &layout);
                 let size = layout.get_size();
-                (pango::units_to_double(size.0) as i32 + 4, pango::units_to_double(size.1) as i32 + 4)
+                ctx.render_pos.set(pango::units_to_double(size.0) + 4.0);
+                ctx.render_ypos.as_ref().map(|p| p.set(pango::units_to_double(size.1) + 4.0));
             }
-            PopupDesc::Tray(tray) => tray.render(ctx, runtime),
+            PopupDesc::Tray(tray) => tray.render(ctx),
         }
     }
 
     pub fn button(&mut self, x : f64, y : f64, button : u32, runtime : &mut Runtime) {
         match self {
-            PopupDesc::Item { .. } => { }
+            PopupDesc::RenderItem { .. } => { }
+            PopupDesc::TextItem { .. } => { }
             PopupDesc::Tray(tray) => tray.button(x, y, button, runtime),
         }
     }
