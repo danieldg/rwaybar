@@ -39,7 +39,6 @@ pub enum Module {
     Clock {
         format : Box<str>,
         zone : Box<str>,
-        time : Cell<String>,
     },
     Disk {
         path : Box<str>,
@@ -163,7 +162,7 @@ impl Module {
             Some("clock") => {
                 let format = value.get("format").and_then(|v| v.as_str()).unwrap_or("%H:%M").into();
                 let zone = value.get("timezone").and_then(|v| v.as_str()).unwrap_or("").into();
-                Module::Clock { format, zone, time : Cell::new(String::new()) }
+                Module::Clock { format, zone }
             }
             Some("disk") => {
                 let path = value.get("path").and_then(|v| v.as_str()).unwrap_or("/").into();
@@ -471,47 +470,8 @@ impl Module {
     }
 
     /// Periodic update (triggered by timer)
-    pub fn update(&self, name : &str, rt : &Runtime) {
+    pub fn update(&self, _name : &str, rt : &Runtime) {
         match self {
-            Module::Clock { format, zone, time } => {
-                let real_format = rt.format(&format).unwrap_or_else(|e| {
-                    warn!("Error expanding '{}' format: {}", name, e);
-                    String::new()
-                });
-                let real_zone = rt.format(&zone).unwrap_or_else(|e| {
-                    warn!("Error expanding '{}' timezone format: {}", name, e);
-                    String::new()
-                });
-
-                let now = chrono::Utc::now();
-                let subsec = chrono::Timelike::nanosecond(&now) as u64;
-                let wake;
-                if real_format.contains("%S") || real_format.contains("%T") || real_format.contains("%X") {
-                    let delay = 1_000_999_999u64.checked_sub(subsec);
-                    wake = Instant::now() + delay.map_or(Duration::from_secs(1), Duration::from_nanos);
-                } else {
-                    let sec = chrono::Timelike::second(&now) as u64;
-                    let delay = (1_000_000_000 * (60 - sec) + 999_999).checked_sub(subsec);
-                    wake = Instant::now() + delay.map_or(Duration::from_secs(1), Duration::from_nanos);
-                }
-
-                // Set a timer to expire when the subsecond offset will be zero
-                // add another 1ms delay because epoll only gets 1ms granularity
-                rt.set_wake_at(wake, "clock");
-
-                if real_zone.is_empty() {
-                    time.set(format!("{}", now.with_timezone(&chrono::Local).format(&real_format)));
-                } else {
-                    match real_zone.parse::<chrono_tz::Tz>() {
-                        Ok(tz) => {
-                            time.set(format!("{}", now.with_timezone(&tz).format(&real_format)));
-                        }
-                        Err(e) => {
-                            warn!("Could not find timezone '{}': {}", real_zone, e);
-                        }
-                    }
-                }
-            }
             Module::Disk { path, poll, last_read, contents } => {
                 if !Self::should_read_now(*poll, last_read, rt, "disk") {
                     return;
@@ -610,7 +570,48 @@ impl Module {
                 rv.pop();
                 f(&rv)
             },
-            Module::Clock { time, .. } => time.take_in(|s| f(s)),
+            Module::Clock { format, zone } => {
+                let real_format = rt.format_or(&format, &name);
+                let real_zone = rt.format_or(&zone, &name);
+
+                let now = chrono::Utc::now();
+                let subsec = chrono::Timelike::nanosecond(&now) as u64;
+                let next_sec = now + chrono::Duration::seconds(1);
+                let (value, nv);
+                if real_zone.is_empty() {
+                    value = format!("{}", now.with_timezone(&chrono::Local).format(&real_format));
+                    nv = format!("{}", next_sec.with_timezone(&chrono::Local).format(&real_format));
+                } else {
+                    match real_zone.parse::<chrono_tz::Tz>() {
+                        Ok(tz) => {
+                            value = format!("{}", now.with_timezone(&tz).format(&real_format));
+                            nv = format!("{}", next_sec.with_timezone(&tz).format(&real_format));
+                        }
+                        Err(e) => {
+                            warn!("Could not find timezone '{}': {}", real_zone, e);
+                            return f("")
+                        }
+                    }
+                }
+
+                let delay;
+                if value != nv {
+                    // we need to tick every second
+                    delay = 1_000_999_999u64.checked_sub(subsec);
+                } else {
+                    // the displayed text in one second is the same; tick every minute
+                    // (really, we could continue on, but that's unlikely to help)
+                    let sec = chrono::Timelike::second(&now) as u64;
+                    delay = (1_000_000_000 * (60 - sec) + 999_999).checked_sub(subsec);
+                }
+                let wake = Instant::now() + delay.map_or(Duration::from_secs(1), Duration::from_nanos);
+
+                // Set a timer to expire when the subsecond offset will be zero
+                // add another 1ms delay because epoll only gets 1ms granularity
+                rt.set_wake_at(wake, "clock");
+
+                f(&value)
+            }
             Module::Disk { contents, .. } => {
                 let vfs = contents.get();
                 match key {
