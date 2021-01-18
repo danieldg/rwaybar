@@ -912,58 +912,37 @@ impl PartialEq for PopupDesc {
 }
 
 impl PopupDesc {
-    pub fn get_size(&mut self, runtime : &Runtime, max_w : i32) -> (i32, i32) {
-        match self {
-            PopupDesc::RenderItem { .. } => {
-                let tmp = cairo::RecordingSurface::create(cairo::Content::ColorAlpha, cairo::Rectangle {
-                    x : 0.0,
-                    y : 0.0,
-                    width : max_w as f64,
-                    height : max_w as f64 * 2.0,
-                }).unwrap();
-                let ctx = cairo::Context::new(&tmp);
-                let font = pango::FontDescription::new();
-                let render_extents = ctx.clip_extents();
-                let render_pos = Cell::new(0.0);
-                let render_ypos = Cell::new(0.0);
-                let ctx = Render {
-                    cairo : &ctx,
-                    font : &font,
-                    align : Align::bar_default(),
-                    render_extents : &render_extents,
-                    render_pos : &render_pos,
-                    render_ypos : Some(&render_ypos),
-                    err_name: "popup",
-                    text_stroke : None,
-                    runtime,
-                };
-                self.render(&ctx);
-                (render_pos.get() as i32, render_ypos.get() as i32)
-            }
-            PopupDesc::TextItem { source, iter } => {
-                let markup = source.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
-                let item_var = runtime.get_item_var();
-                item_var.set(iter.clone());
-                let value = source.data.read_to_string("tooltip", "tooltip", runtime);
-                item_var.set(None);
-                if value.is_empty() {
-                    return (0,0);
-                }
-                let tmp = cairo::RecordingSurface::create(cairo::Content::ColorAlpha, None).unwrap();
-                let ctx = cairo::Context::new(&tmp);
-                let layout = pangocairo::create_layout(&ctx).unwrap();
-                if markup {
-                    layout.set_markup(&value);
-                } else {
-                    layout.set_text(&value);
-                }
-                let size = layout.get_size();
-                (pango::units_to_double(size.0) as i32 + 4, pango::units_to_double(size.1) as i32 + 4)
-            }
-            PopupDesc::Tray(tray) => tray.get_size(),
-        }
+    pub fn render_popup(&mut self, runtime : &Runtime, contents : &cairo::Surface, scale : i32) -> (i32, i32) {
+        let ctx = cairo::Context::new(&contents);
+        let mut scale_matrix = cairo::Matrix::identity();
+        scale_matrix.scale(scale as f64, scale as f64);
+        ctx.set_matrix(scale_matrix);
+        ctx.set_operator(cairo::Operator::Source);
+        ctx.paint();
+        ctx.set_operator(cairo::Operator::Over);
+        ctx.set_source_rgb(1.0, 1.0, 1.0);
+        let font = pango::FontDescription::new();
+        let render_extents = ctx.clip_extents();
+        let render_pos = Cell::new(0.0);
+        let render_ypos = Cell::new(0.0);
+
+        let ctx = Render {
+            cairo : &ctx,
+            font : &font,
+            align : Align::bar_default(),
+            render_extents : &render_extents,
+            render_pos : &render_pos,
+            render_ypos : Some(&render_ypos),
+            err_name: "popup",
+            text_stroke : None,
+            runtime,
+        };
+
+        self.render(&ctx);
+        (render_pos.get() as i32, render_ypos.get() as i32)
     }
-    pub fn render(&mut self, ctx : &Render) {
+
+    fn render(&mut self, ctx : &Render) {
         match self {
             PopupDesc::RenderItem { item, iter } => {
                 let item_var = ctx.runtime.get_item_var();
@@ -972,12 +951,16 @@ impl PopupDesc {
                 item_var.set(None);
             }
             PopupDesc::TextItem { source, iter } => {
-                let markup = source.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
                 let item_var = ctx.runtime.get_item_var();
                 item_var.set(iter.clone());
                 let value = source.data.read_to_string("tooltip", "tooltip", ctx.runtime);
                 item_var.set(None);
 
+                if value.is_empty() {
+                    return;
+                }
+
+                let markup = source.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
                 ctx.cairo.move_to(2.0, 2.0);
                 let layout = pangocairo::create_layout(&ctx.cairo).unwrap();
                 if markup {

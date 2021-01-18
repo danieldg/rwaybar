@@ -24,6 +24,7 @@ use crate::wayland::{OutputData,Popup,WaylandClient};
 
 pub struct BarPopup {
     pub wl : Popup,
+    contents : cairo::RecordingSurface,
     desc : PopupDesc,
     vanish : Option<Instant>,
 }
@@ -129,41 +130,10 @@ impl Bar {
             }
             let scale = popup.wl.scale;
             let pixel_size = (popup.wl.size.0 * scale, popup.wl.size.1 * scale);
-            let surf = cairo::RecordingSurface::create(cairo::Content::ColorAlpha,
-                cairo::Rectangle {
-                    x : 0.0,
-                    y : 0.0,
-                    width : pixel_size.0 as f64,
-                    height : pixel_size.1 as f64,
-                }).expect("Error creating popup rendering surface");
-            let ctx = cairo::Context::new(&surf);
-            let mut scale_matrix = cairo::Matrix::identity();
-            scale_matrix.scale(scale as f64, scale as f64);
-            ctx.set_matrix(scale_matrix);
-            ctx.set_operator(cairo::Operator::Source);
-            ctx.paint();
-            ctx.set_operator(cairo::Operator::Over);
-            ctx.set_source_rgb(1.0, 1.0, 1.0);
-            let font = pango::FontDescription::new();
-            let render_extents = ctx.clip_extents();
-            let render_pos = Cell::new(0.0);
-            let render_ypos = Cell::new(0.0);
 
-            let ctx = Render {
-                cairo : &ctx,
-                font : &font,
-                align : Align::bar_default(),
-                render_extents : &render_extents,
-                render_pos : &render_pos,
-                render_ypos : Some(&render_ypos),
-                err_name: "popup",
-                text_stroke : None,
-                runtime,
-            };
-            popup.desc.render(&ctx);
-            target.render(pixel_size, &popup.wl.surf, &surf);
+            let new_size = popup.desc.render_popup(runtime, &popup.contents, scale);
+            target.render(pixel_size, &popup.wl.surf, &popup.contents);
             popup.wl.surf.commit();
-            let new_size = (render_pos.get() as i32, render_ypos.get() as i32);
             if new_size.0 > popup.wl.size.0 || new_size.1 > popup.wl.size.1 {
                 target.wayland.resize_popup(&self.ls_surf, &mut popup.wl, new_size, scale);
             }
@@ -182,7 +152,15 @@ impl Bar {
                 }
             }
             let anchor = (min_x as i32, 0, (max_x - min_x) as i32, self.pixel_height / self.scale);
-            let size = desc.get_size(runtime, self.pixel_width / self.scale);
+            let contents = cairo::RecordingSurface::create(cairo::Content::ColorAlpha,
+                cairo::Rectangle {
+                    x : 0.0,
+                    y : 0.0,
+                    width : (self.pixel_width / self.scale) as f64,
+                    height : (self.pixel_width / self.scale) as f64 * 2.0,
+                }).expect("Error creating popup rendering surface");
+
+            let size = desc.render_popup(runtime, &contents, self.scale);
             if size.0 <= 0 || size.1 <= 0 {
                 return;
             }
@@ -191,6 +169,7 @@ impl Bar {
             let popup = BarPopup {
                 wl : wayland.new_popup(self, anchor, size),
                 desc,
+                contents,
                 vanish : None,
             };
             self.popup = Some(popup);
@@ -249,11 +228,12 @@ impl<'a> RenderTarget<'a> {
 
             let is = cairo::ImageSurface::create_for_data(buf, cairo::Format::ARgb32, size.0, size.1, stride).unwrap();
             let ctx = cairo::Context::new(&is);
+            surf.flush();
             ctx.set_source_surface(surf, 0.0, 0.0);
             ctx.set_operator(cairo::Operator::Source);
             ctx.paint();
-            surf.finish();
-            drop(surf);
+            is.finish();
+            drop(is);
         }
 
         let buf = self.wayland.shm.buffer(self.pos as i32, size.0, size.1, stride, smithay_client_toolkit::shm::Format::Argb8888);
