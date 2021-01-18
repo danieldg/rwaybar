@@ -469,39 +469,6 @@ impl Module {
         true
     }
 
-    /// Periodic update (triggered by timer)
-    pub fn update(&self, _name : &str, rt : &Runtime) {
-        match self {
-            Module::Disk { path, poll, last_read, contents } => {
-                if !Self::should_read_now(*poll, last_read, rt, "disk") {
-                    return;
-                }
-                let cstr = std::ffi::CString::new(path.as_bytes()).unwrap();
-                let rv = unsafe { libc::statvfs(cstr.as_ptr(), contents.as_ptr()) };
-                if rv != 0 {
-                    warn!("Could not read disk at '{}': {}", path, std::io::Error::last_os_error());
-                }
-
-            }
-            Module::ReadFile { name, poll, last_read, contents } => {
-                use std::io::Read;
-                if !Self::should_read_now(*poll, last_read, rt, "read-file") {
-                    return;
-                }
-                let mut v = String::with_capacity(4096);
-                match std::fs::File::open(&**name).and_then(|mut f| f.read_to_string(&mut v)) {
-                    Ok(_len) => {
-                        contents.set(v);
-                    }
-                    Err(e) => {
-                        warn!("Could not read {}: {}", name, e);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
     /// Read the value of a variable
     ///
     /// This is identical to read_in, but returns a String instead of using a callback closure.
@@ -612,7 +579,14 @@ impl Module {
 
                 f(&value)
             }
-            Module::Disk { contents, .. } => {
+            Module::Disk { path, poll, last_read, contents } => {
+                if Self::should_read_now(*poll, last_read, rt, "disk") {
+                    let cstr = std::ffi::CString::new(path.as_bytes()).unwrap();
+                    let rv = unsafe { libc::statvfs(cstr.as_ptr(), contents.as_ptr()) };
+                    if rv != 0 {
+                        warn!("Could not read disk at '{}': {}", path, std::io::Error::last_os_error());
+                    }
+                }
                 let vfs = contents.get();
                 match key {
                     "size" => f(&format!("{}", vfs.f_frsize * vfs.f_blocks)),
@@ -771,8 +745,25 @@ impl Module {
             }
             Module::None => f(""),
             Module::Pulse { target } => pulse::read_in(name, target, key, rt, f),
-            Module::ReadFile { contents, .. } if key == "raw" => contents.take_in(|s| f(s)),
-            Module::ReadFile { contents, .. } => contents.take_in(|s| f(s.trim())),
+            Module::ReadFile { name, poll, last_read, contents } => {
+                use std::io::Read;
+                if Self::should_read_now(*poll, last_read, rt, "read-file") {
+                    let mut v = String::with_capacity(4096);
+                    match std::fs::File::open(&**name).and_then(|mut f| f.read_to_string(&mut v)) {
+                        Ok(_len) => {
+                            contents.set(v);
+                        }
+                        Err(e) => {
+                            warn!("Could not read {}: {}", name, e);
+                        }
+                    }
+                }
+                if key == "raw" {
+                    contents.take_in(|s| f(s))
+                } else {
+                    contents.take_in(|s| f(s.trim()))
+                }
+            }
             Module::Regex { regex, text, replace, looped } => {
                 if looped.get() {
                     error!("Recursion detected when expanding {}", name);

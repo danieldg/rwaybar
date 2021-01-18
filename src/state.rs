@@ -546,9 +546,6 @@ impl State {
         if !self.runtime.notify.inner.data_update.get() {
             return;
         }
-        for (k, v) in &self.runtime.items {
-            v.data.update(k, &self.runtime);
-        }
 
         for bar in &mut self.bars {
             bar.dirty = true;
