@@ -157,6 +157,18 @@ Key | Expanded | Default | Details
 
 #### Available Keys
 
+Key | Value
+----|-------
+`size` | Size in bytes
+`free` | Free space in bytes (including reserved space)
+`avail` | Available space in bytes (not including reserved space)
+`percent-used` | The percentage of disk space that is used
+
+You may suffix any of the byte sizes with `mb`, `gb`, or `tb` to get the sizes
+as numbers using the SI definitions, or `mib`, `gib`, `tib` to get the
+power-of-two versions.  You probably want to use a format like
+`{disk.size-gib:.1}` to avoid excessive precision in the output.
+
 ## eval
 
 Key | Expanded | Default | Details

@@ -1,4 +1,4 @@
-use crate::data::IterationItem;
+use crate::data::{IterationItem,Value};
 use crate::pulse_tokio::TokioMain;
 use crate::state::NotifierList;
 use crate::state::Runtime;
@@ -472,7 +472,7 @@ pub fn read_focus_list<F : FnMut(bool, IterationItem)>(rt : &Runtime, target : &
     }
 }
 
-pub fn read_in<F : FnOnce(&str) -> R, R>(cfg_name : &str, target : &str, mut key : &str, rt : &Runtime, f : F) -> R {
+pub fn read_in<F : FnOnce(Value) -> R, R>(cfg_name : &str, target : &str, mut key : &str, rt : &Runtime, f : F) -> R {
     let mut target = target;
     if target.is_empty() {
         if let Some(pos) = key.rfind('.') {
@@ -490,7 +490,7 @@ pub fn read_in<F : FnOnce(&str) -> R, R>(cfg_name : &str, target : &str, mut key
             let port = match port {
                 Some(port) => port,
                 None => {
-                    return f("");
+                    return f(Value::Null);
                 }
             };
             match key {
@@ -524,40 +524,36 @@ pub fn read_in<F : FnOnce(&str) -> R, R>(cfg_name : &str, target : &str, mut key
                         }
                     }
                     v.pop();
-                    f(&v)
+                    f(Value::Owned(v))
                 }
                 "text" | "volume" => {
                     if key == "text" && port.mute {
-                        f("-")
+                        f(Value::Borrow("-"))
                     } else {
                         let volume = port.volume.avg();
-                        f(volume.print().trim())
+                        f(Value::Borrow(volume.print().trim()))
                     }
                 }
                 "type" => {
                     if let Some(ty) = port.port_type {
-                        f(&format!("{:?}", ty))
+                        f(Value::Owned(format!("{:?}", ty)))
                     } else {
-                        f("")
+                        f(Value::Null)
                     }
                 }
                 "mute" => {
-                    if port.mute {
-                        f("1")
-                    } else {
-                        f("0")
-                    }
+                    f(Value::Bool(port.mute))
                 }
                 _ => {
                     info!("Unknown key '{}' in '{}'", key, cfg_name);
-                    f("")
+                    f(Value::Null)
                 }
             }
         })
     })
 }
 
-pub fn do_write(_name : &str, target : &str, mut key : &str, value : String, _rt : &Runtime) {
+pub fn do_write(_name : &str, target : &str, mut key : &str, value : Value, _rt : &Runtime) {
     let mut target = target;
     if target.is_empty() {
         if let Some(pos) = key.rfind('.') {
@@ -582,6 +578,7 @@ pub fn do_write(_name : &str, target : &str, mut key : &str, value : String, _rt
 
                 match key {
                     "volume" => {
+                        let value = value.into_text();
                         let mut amt = &value[..];
                         let dir = amt.chars().next();
                         if matches!(dir, Some('+') | Some('-')) {
@@ -613,13 +610,16 @@ pub fn do_write(_name : &str, target : &str, mut key : &str, value : String, _rt
                     }
                     "mute" => {
                         let old = port.mute;
-                        let new = match &*value {
-                            "toggle" => !old,
-                            "on" | "1" => true,
-                            "off" | "0" => false,
-                            _ => {
-                                error!("Invalid mute request '{}'", value);
-                                return;
+                        let new = match value.parse_bool() {
+                            Some(b) => b,
+                            None => match value.as_str_fast() {
+                                "toggle" => !old,
+                                "on" | "1" => true,
+                                "off" | "0" => false,
+                                _ => {
+                                    error!("Invalid mute request '{}'", value);
+                                    return;
+                                }
                             }
                         };
                         if old == new {

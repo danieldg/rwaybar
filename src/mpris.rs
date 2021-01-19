@@ -1,6 +1,6 @@
 use crate::dbus::get as get_dbus;
 use crate::dbus as dbus_util;
-use crate::data::IterationItem;
+use crate::data::{IterationItem,Value};
 use crate::state::{Runtime,NotifierList};
 use crate::util::{self,Cell};
 use dbus::message::Message;
@@ -178,7 +178,7 @@ impl MediaPlayer2 {
     }
 }
 
-pub fn read_in<F : FnOnce(&str) -> R, R>(_name : &str, target : &str, key : &str, rt : &Runtime, f : F) -> R {
+pub fn read_in<F : FnOnce(Value) -> R, R>(_name : &str, target : &str, key : &str, rt : &Runtime, f : F) -> R {
     DATA.with(|cell| {
         let state = cell.get_or_init(MediaPlayer2::new);
         state.0.take_in(|oi| {
@@ -210,27 +210,27 @@ pub fn read_in<F : FnOnce(&str) -> R, R>(_name : &str, target : &str, key : &str
 
             if field == "state" {
                 return match player.and_then(|p| p.playing) {
-                    Some(PlayState::Playing) => f("Playing"),
-                    Some(PlayState::Paused) => f("Paused"),
-                    Some(PlayState::Stopped) => f("Stopped"),
-                    None => f(""),
+                    Some(PlayState::Playing) => f(Value::Borrow("Playing")),
+                    Some(PlayState::Paused) => f(Value::Borrow("Paused")),
+                    Some(PlayState::Stopped) => f(Value::Borrow("Stopped")),
+                    None => f(Value::Null),
                 };
             }
 
             if let Some(player) = player {
                 match field {
                     "player.name" => {
-                        f(&player.name.get(skip..).unwrap_or_default())
+                        f(Value::Borrow(player.name.get(skip..).unwrap_or_default()))
                     }
                     "length" => {
                         match player.meta.as_ref().and_then(|md| md.get("mpris:length")).and_then(|v| v.as_u64()) {
-                            Some(len) => f(&format!("{}.{:06}", len / 1_000_000, len % 1_000_000)),
-                            None => f(""),
+                            Some(len) => f(Value::Float(len as f64 / 1_000_000.0)),
+                            None => f(Value::Null),
                         }
                     }
                     _ if field.contains('.') => {
                         let real_field = field.replace('.', ":");
-                        f(player.meta.as_ref().and_then(|md| md.get(&real_field).or(md.get(field))).and_then(|v| v.as_str()).unwrap_or(""))
+                        f(Value::Borrow(player.meta.as_ref().and_then(|md| md.get(&real_field).or(md.get(field))).and_then(|v| v.as_str()).unwrap_or("")))
                     }
                     // See http://www.freedesktop.org/wiki/Specifications/mpris-spec/metadata for
                     // a list of valid names
@@ -252,12 +252,12 @@ pub fn read_in<F : FnOnce(&str) -> R, R>(_name : &str, target : &str, key : &str
                                     }))
                             })
                             .unwrap_or("");
-                        f(value)
+                        f(Value::Borrow(value))
                     }
                 }
             } else {
                 debug!("No media players found");
-                f("")
+                f(Value::Null)
             }
         })
     })
@@ -279,7 +279,7 @@ pub fn read_focus_list<F : FnMut(bool, IterationItem)>(rt : &Runtime, mut f : F)
     }
 }
 
-pub fn write(_name : &str, target : &str, key : &str, command : String, _rt : &Runtime) {
+pub fn write(_name : &str, target : &str, key : &str, command : Value, _rt : &Runtime) {
     DATA.with(|cell| {
         let state = cell.get_or_init(MediaPlayer2::new);
         state.0.take_in(|oi| {
@@ -308,6 +308,7 @@ pub fn write(_name : &str, target : &str, key : &str, command : String, _rt : &R
             };
 
             let name = player.owner.clone();
+            let command = command.into_text().into_owned();
 
             util::spawn("MPRIS click", async move {
                 let dbus = get_dbus();

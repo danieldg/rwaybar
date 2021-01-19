@@ -11,6 +11,8 @@ use futures_util::future::RemoteHandle;
 use futures_util::FutureExt;
 use json::JsonValue;
 use log::{debug,info,warn,error};
+use std::borrow::Cow;
+use std::fmt;
 use std::io;
 use std::io::Write;
 use std::os::unix::io::{AsRawFd,IntoRawFd};
@@ -19,6 +21,140 @@ use std::rc::Rc;
 use std::time::{Duration,Instant};
 use tokio::io::unix::AsyncFd;
 use libc;
+
+#[derive(Debug)]
+pub enum Value<'a> {
+    Borrow(&'a str),
+    Owned(String),
+    Float(f64),
+    Bool(bool),
+    Null,
+}
+
+impl<'a> Value<'a> {
+    pub fn as_ref(&self) -> Value {
+        match self {
+            Value::Borrow(v) => Value::Borrow(v),
+            Value::Owned(v) => Value::Borrow(&v[..]),
+            Value::Float(f) => Value::Float(*f),
+            Value::Bool(b) => Value::Bool(*b),
+            Value::Null => Value::Null,
+        }
+    }
+
+    pub fn as_str_fast(&self) -> &str {
+        match self {
+            Value::Borrow(v) => v,
+            Value::Owned(v) => v,
+            _ => "",
+        }
+    }
+
+    pub fn into_owned(self) -> Value<'static> {
+        match self {
+            Value::Borrow(v) => Value::Owned(v.into()),
+            Value::Owned(v) => Value::Owned(v),
+            Value::Float(f) => Value::Float(f),
+            Value::Bool(b) => Value::Bool(b),
+            Value::Null => Value::Null,
+        }
+    }
+
+    pub fn into_text(self) -> Cow<'a, str> {
+        match self {
+            Value::Borrow(v) => Cow::Borrowed(v),
+            Value::Owned(v) => Cow::Owned(v),
+            Value::Float(f) => format!("{}", f).into(),
+            Value::Bool(true) => "1".into(),
+            Value::Bool(false) => "0".into(),
+            Value::Null => "".into(),
+        }
+    }
+
+    pub fn parse_f64(&self) -> Option<f64> {
+        match self {
+            Value::Borrow(v) => v.parse().ok(),
+            Value::Owned(v) => v.parse().ok(),
+            Value::Float(f) => Some(*f),
+            Value::Bool(true) => Some(1.0),
+            Value::Bool(false) => Some(0.0),
+            Value::Null => None,
+        }
+    }
+
+    pub fn parse_bool(&self) -> Option<bool> {
+        match self {
+            Value::Borrow(_) => None,
+            Value::Owned(_) => None,
+            Value::Float(f) if *f == 0.0 => Some(false),
+            Value::Float(f) if *f == 1.0 => Some(true),
+            Value::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    pub fn as_bool(&self) -> bool {
+        match self {
+            Value::Borrow(v) => !v.is_empty(),
+            Value::Owned(v) => !v.is_empty(),
+            Value::Float(f) => *f != 0.0,
+            Value::Bool(b) => *b,
+            Value::Null => false,
+        }
+    }
+}
+
+impl<'a> Default for Value<'a> {
+    fn default() -> Self {
+        Value::Null
+    }
+}
+
+impl<'a> fmt::Display for Value<'a> {
+    fn fmt(&self, fmt : &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Value::Borrow(v) => v.fmt(fmt),
+            Value::Owned(v) => v.fmt(fmt),
+            Value::Float(f) => f.fmt(fmt),
+            Value::Bool(true) => "1".fmt(fmt),
+            Value::Bool(false) => "0".fmt(fmt),
+            Value::Null => Ok(()),
+        }
+    }
+}
+
+impl<'a> Into<JsonValue> for Value<'a> {
+    fn into(self) -> JsonValue {
+        match self {
+            Value::Borrow(v) => v.into(),
+            Value::Owned(v) => v.into(),
+            Value::Float(f) => f.into(),
+            Value::Bool(b) => b.into(),
+            Value::Null => JsonValue::Null,
+        }
+    }
+}
+
+impl<'a> From<Cow<'a, str>> for Value<'a> {
+    fn from(v : Cow<'a, str>) -> Self {
+        match v {
+            Cow::Borrowed(v) => Value::Borrow(v),
+            Cow::Owned(v) => Value::Owned(v),
+        }
+    }
+}
+
+impl<'a> From<&'a str> for Value<'a> {
+    fn from(v : &'a str) -> Self {
+        Value::Borrow(v)
+    }
+}
+
+impl<'a> From<String> for Value<'a> {
+    fn from(v : String) -> Self {
+        Value::Owned(v)
+    }
+}
 
 /// Type-specific part of an [Item]
 #[derive(Debug)]
@@ -121,7 +257,7 @@ pub enum Module {
         spacing : Box<str>,
     },
     Value {
-        value : Cell<String>,
+        value : Cell<Value<'static>>,
         interested : Cell<NotifierList>,
     },
 }
@@ -375,7 +511,7 @@ impl Module {
             }
             None => {
                 if let Some(value) = value.as_str() {
-                    Module::new_value(value)
+                    Module::new_value(value.to_owned())
                 } else if let Some(format) = value.get("format").and_then(|v| v.as_str()) {
                     let tooltip = value.get("tooltip").map(|tt| {
                         if let Some(text) = tt.as_str() {
@@ -394,7 +530,7 @@ impl Module {
         }
     }
 
-    pub fn new_value<T : Into<String>>(t : T) -> Self {
+    pub fn new_value<T : Into<Value<'static>>>(t : T) -> Self {
         Module::Value {
             value : Cell::new(t.into()),
             interested : Default::default(),
@@ -472,8 +608,8 @@ impl Module {
     /// Read the value of a variable
     ///
     /// This is identical to read_in, but returns a String instead of using a callback closure.
-    pub fn read_to_string(&self, name : &str, key : &str, rt : &Runtime) -> String {
-        self.read_in(name, key, rt, |s| s.into())
+    pub fn read_to_owned(&self, name : &str, key : &str, rt : &Runtime) -> Value<'static> {
+        self.read_in(name, key, rt, |s| s.into_owned())
     }
 
     /// Read the value of a variable
@@ -482,30 +618,27 @@ impl Module {
     /// returning the value to avoid unneeded string copies.
     ///
     /// Note: The name is a hint and should not be assumed to uniquely identify this module.
-    pub fn read_in<F : FnOnce(&str) -> R, R>(&self, name : &str, key : &str, rt : &Runtime, f : F) -> R {
+    pub fn read_in<F : FnOnce(Value) -> R, R>(&self, name : &str, key : &str, rt : &Runtime, f : F) -> R {
         match self {
             Module::ItemReference { .. } |
             Module::Group { .. } |
             Module::FocusList { .. } |
             Module::Tray { .. } => {
                 error!("Cannot use '{}' in a text expansion", name);
-                f("")
+                f(Value::Null)
             }
 
             Module::Bar { config, .. } => {
                 match toml_to_string(config.get(key)) {
-                    Some(value) => f(&value),
-                    None => f(""),
+                    Some(value) => f(Value::Owned(value)),
+                    None => f(Value::Null),
                 }
             }
             Module::Calendar { day_fmt, today_fmt, other_fmt, zone, monday } => {
                 use chrono::Datelike;
                 use chrono::Duration;
                 use std::fmt::Write;
-                let real_zone = rt.format(&zone).unwrap_or_else(|e| {
-                    warn!("Error expanding '{}' timezone format: {}", name, e);
-                    String::new()
-                });
+                let real_zone = rt.format_or(&zone, &name).into_text();
                 let now = match real_zone.parse::<chrono_tz::Tz>() {
                     Ok(tz) => chrono::Utc::now().with_timezone(&tz).date().naive_utc(),
                     Err(_) => chrono::Local::now().date().naive_utc(),
@@ -535,11 +668,11 @@ impl Module {
                     rv.push('\n');
                 }
                 rv.pop();
-                f(&rv)
+                f(Value::Owned(rv))
             },
             Module::Clock { format, zone } => {
-                let real_format = rt.format_or(&format, &name);
-                let real_zone = rt.format_or(&zone, &name);
+                let real_format = rt.format_or(&format, &name).into_text();
+                let real_zone = rt.format_or(&zone, &name).into_text();
 
                 let now = chrono::Utc::now();
                 let subsec = chrono::Timelike::nanosecond(&now) as u64;
@@ -556,7 +689,7 @@ impl Module {
                         }
                         Err(e) => {
                             warn!("Could not find timezone '{}': {}", real_zone, e);
-                            return f("")
+                            return f(Value::Null);
                         }
                     }
                 }
@@ -577,7 +710,7 @@ impl Module {
                 // add another 1ms delay because epoll only gets 1ms granularity
                 rt.set_wake_at(wake, "clock");
 
-                f(&value)
+                f(Value::Owned(value))
             }
             Module::Disk { path, poll, last_read, contents } => {
                 if Self::should_read_now(*poll, last_read, rt, "disk") {
@@ -589,25 +722,51 @@ impl Module {
                 }
                 let vfs = contents.get();
                 match key {
-                    "size" => f(&format!("{}", vfs.f_frsize * vfs.f_blocks)),
-                    "free" => f(&format!("{}", vfs.f_bsize * vfs.f_bfree)),
-                    "avail" => f(&format!("{}", vfs.f_bsize * vfs.f_bavail)),
-                    "" | "percent-used" if vfs.f_frsize * vfs.f_blocks != 0 => {
+                    "size" => f(Value::Float((vfs.f_frsize * vfs.f_blocks) as f64)),
+                    "free" => f(Value::Float((vfs.f_bsize * vfs.f_bfree) as f64)),
+                    "avail" => f(Value::Float((vfs.f_bsize * vfs.f_bavail) as f64)),
+
+                    "size-mb" => f(Value::Float((vfs.f_frsize * vfs.f_blocks) as f64 / 1_000_000.0)),
+                    "free-mb" => f(Value::Float((vfs.f_bsize * vfs.f_bfree) as f64 / 1_000_000.0)),
+                    "avail-mb" => f(Value::Float((vfs.f_bsize * vfs.f_bavail) as f64 / 1_000_000.0)),
+
+                    "size-gb" => f(Value::Float((vfs.f_frsize * vfs.f_blocks) as f64 / 1_000_000_000.0)),
+                    "free-gb" => f(Value::Float((vfs.f_bsize * vfs.f_bfree) as f64 / 1_000_000_000.0)),
+                    "avail-gb" => f(Value::Float((vfs.f_bsize * vfs.f_bavail) as f64 / 1_000_000_000.0)),
+
+                    "size-tb" => f(Value::Float((vfs.f_frsize * vfs.f_blocks) as f64 / 1_000_000_000_000.0)),
+                    "free-tb" => f(Value::Float((vfs.f_bsize * vfs.f_bfree) as f64 / 1_000_000_000_000.0)),
+                    "avail-tb" => f(Value::Float((vfs.f_bsize * vfs.f_bavail) as f64 / 1_000_000_000_000.0)),
+
+                    "size-mib" => f(Value::Float((vfs.f_frsize * vfs.f_blocks) as f64 / 1048576.0)),
+                    "free-mib" => f(Value::Float((vfs.f_bsize * vfs.f_bfree) as f64 / 1048576.0)),
+                    "avail-mib" => f(Value::Float((vfs.f_bsize * vfs.f_bavail) as f64 / 1048576.0)),
+
+                    "size-gib" => f(Value::Float((vfs.f_frsize * vfs.f_blocks) as f64 / 1073741824.0)),
+                    "free-gib" => f(Value::Float((vfs.f_bsize * vfs.f_bfree) as f64 / 1073741824.0)),
+                    "avail-gib" => f(Value::Float((vfs.f_bsize * vfs.f_bavail) as f64 / 1073741824.0)),
+
+                    "size-tib" => f(Value::Float((vfs.f_frsize * vfs.f_blocks) as f64 / 1099511627776.0)),
+                    "free-tib" => f(Value::Float((vfs.f_bsize * vfs.f_bfree) as f64 / 1099511627776.0)),
+                    "avail-tib" => f(Value::Float((vfs.f_bsize * vfs.f_bavail) as f64 / 1099511627776.0)),
+
+                    "" | "text" | "percent-used" if vfs.f_frsize * vfs.f_blocks != 0 => {
                         let size = (vfs.f_frsize * vfs.f_blocks) as f64;
                         let free = (vfs.f_bsize * vfs.f_bfree) as f64;
-                        if key == "" {
-                            f(&format!("{:.0}%", 100.0 - 100.0 * free / size))
+                        let pct = 100.0 - 100.0 * free / size;
+                        if key == "" || key == "text" {
+                            f(Value::Owned(format!("{:.0}%", pct)))
                         } else {
-                            f(&format!("{:.0}", 100.0 - 100.0 * free / size))
+                            f(Value::Float(pct))
                         }
                     }
-                    _ => f("")
+                    _ => f(Value::Null)
                 }
             }
             Module::Eval { expr, vars, looped } => {
                 if looped.get() {
                     error!("Recursion detected when expanding {}", name);
-                    return f("");
+                    return f(Value::Null);
                 }
                 struct Context<'a> {
                     float : evalexpr::Function,
@@ -632,6 +791,9 @@ impl Module {
                 looped.set(true);
                 let ctx = Context {
                     int : evalexpr::Function::new(Box::new(move |arg| {
+                        if let Ok(f) = arg.as_float() {
+                            return Ok(evalexpr::Value::Int(f as _));
+                        }
                         let rv = arg.as_string()?;
                         match rv.trim().parse() {
                             Ok(v) => Ok(evalexpr::Value::Int(v)),
@@ -641,6 +803,9 @@ impl Module {
                         }
                     })),
                     float : evalexpr::Function::new(Box::new(move |arg| {
+                        if arg.is_float() {
+                            return Ok(arg.clone());
+                        }
                         let rv = arg.as_string()?;
                         match rv.trim().parse() {
                             Ok(v) => Ok(evalexpr::Value::Float(v)),
@@ -651,34 +816,40 @@ impl Module {
                     })),
                     vars : vars.iter()
                         .map(|(k,v)| {
-                            (&k[..], evalexpr::Value::String(rt.format_or(v, k)))
+                            (&k[..], match rt.format_or(v, k) {
+                                Value::Owned(s) => evalexpr::Value::String(s),
+                                Value::Borrow(s) => evalexpr::Value::String(s.into()),
+                                Value::Float(f) => evalexpr::Value::Float(f),
+                                Value::Bool(f) => evalexpr::Value::Boolean(f),
+                                Value::Null => evalexpr::Value::Empty,
+                            })
                         })
                         .collect(),
                 };
                 looped.set(false);
                 match expr.eval_with_context(&ctx) {
-                    Ok(evalexpr::Value::String(s)) => f(&s),
-                    Ok(evalexpr::Value::Float(n)) => f(&format!("{}", n)),
-                    Ok(evalexpr::Value::Int(n)) => f(&format!("{}", n)),
-                    Ok(evalexpr::Value::Boolean(b)) => f(if b { "1" } else { "0" }),
-                    Ok(evalexpr::Value::Empty) => f(""),
+                    Ok(evalexpr::Value::String(s)) => f(Value::Owned(s)),
+                    Ok(evalexpr::Value::Float(n)) => f(Value::Float(n)),
+                    Ok(evalexpr::Value::Int(n)) => f(Value::Float(n as _)),
+                    Ok(evalexpr::Value::Boolean(b)) => f(Value::Bool(b)),
+                    Ok(evalexpr::Value::Empty) => f(Value::Null),
                     Ok(_) => {
                         warn!("Ignoring invalid return type from eval");
-                        f("")
+                        f(Value::Null)
                     }
                     Err(e) => {
                         warn!("Eval error in {}: {}", name, e);
-                        f("")
+                        f(Value::Null)
                     }
                 }
             }
             Module::ExecJson { command, value, .. } => {
                 let value = value.take_in_some(|v| v.clone()).unwrap();
                 let v = value.0.replace(JsonValue::Null);
-                let rv = f(v[key].as_str().unwrap_or_else(|| {
+                let rv = f(Value::Borrow(v[key].as_str().unwrap_or_else(|| {
                     debug!("Could not find {}.{} in the output of {}", name, key, command);
                     ""
-                }));
+                })));
                 value.0.set(v);
                 value.1.take_in(|i| i.add(rt));
                 rv
@@ -686,25 +857,25 @@ impl Module {
             Module::Formatted { format, tooltip, looped } => {
                 if looped.get() {
                     error!("Recursion detected when expanding {}", name);
-                    return f("");
+                    return f(Value::Null);
                 }
                 match key {
                     "tooltip" => match tooltip {
                         Some(tt) => tt.data.read_in(name, "", rt, f),
-                        None => f(""),
+                        None => f(Value::Null),
                     },
                     _ => {
                         looped.set(true);
                         let value = rt.format_or(&format, &name);
                         looped.set(false);
-                        f(&value)
+                        f(value)
                     }
                 }
             }
             Module::Icon { tooltip, .. } => {
                 match key {
-                    "tooltip" => f(&rt.format_or(&tooltip, &name)),
-                    _ => f("")
+                    "tooltip" => f(rt.format_or(&tooltip, &name)),
+                    _ => f(Value::Null)
                 }
             }
             Module::Item { value } => value.take_in(|item| {
@@ -713,22 +884,19 @@ impl Module {
                     Some(IterationItem::Pulse { target }) => pulse::read_in(name, target, key, rt, f),
                     Some(IterationItem::SwayWorkspace(data)) => data.read_in(key, rt, f),
                     Some(IterationItem::SwayTreeItem(node)) => node.read_in(key, rt, f),
-                    None => f(""),
+                    None => f(Value::Null),
                 }
             }),
             Module::MediaPlayer2 { target } => mpris::read_in(name, target, key, rt, f),
             Module::Meter { min, max, src, values, looped } => {
                 if looped.get() {
                     error!("Recursion detected when expanding {}", name);
-                    return f("");
+                    return f(Value::Null);
                 }
                 looped.set(true);
-                let value = rt.format_or(&src, &name);
-                let min = rt.format_or(&min, &name);
-                let max = rt.format_or(&max, &name);
-                let value = value.parse::<f64>().unwrap_or(0.0);
-                let min = min.parse::<f64>().unwrap_or(0.0);
-                let max = max.parse::<f64>().unwrap_or(100.0);
+                let value = rt.format_or(&src, &name).parse_f64().unwrap_or(0.0);
+                let min = rt.format_or(&min, &name).parse_f64().unwrap_or(0.0);
+                let max = rt.format_or(&max, &name).parse_f64().unwrap_or(100.0);
                 let steps = values.len() - 2;
                 let step = (max - min) / (steps as f64);
                 let expr = if value < min {
@@ -741,9 +909,9 @@ impl Module {
                 };
                 let res = rt.format_or(&expr, &name);
                 looped.set(false);
-                f(&res)
+                f(res)
             }
-            Module::None => f(""),
+            Module::None => f(Value::Null),
             Module::Pulse { target } => pulse::read_in(name, target, key, rt, f),
             Module::ReadFile { name, poll, last_read, contents } => {
                 use std::io::Read;
@@ -759,31 +927,31 @@ impl Module {
                     }
                 }
                 if key == "raw" {
-                    contents.take_in(|s| f(s))
+                    contents.take_in(|s| f(Value::Borrow(s)))
                 } else {
-                    contents.take_in(|s| f(s.trim()))
+                    contents.take_in(|s| f(Value::Borrow(s.trim())))
                 }
             }
             Module::Regex { regex, text, replace, looped } => {
                 if looped.get() {
                     error!("Recursion detected when expanding {}", name);
-                    return f("");
+                    return f(Value::Null);
                 }
                 looped.set(true);
-                let text = rt.format_or(&text, &name);
+                let text = rt.format_or(&text, &name).into_text();
                 looped.set(false);
                 if key == "" || key == "text" {
                     let output = regex.replace_all(&text, &**replace);
-                    f(&output)
+                    f(output.into())
                 } else {
                     if let Some(cap) = regex.captures(&text) {
                         if let Ok(i) = key.parse() {
-                            f(cap.get(i).map_or("", |m| m.as_str()))
+                            f(Value::Borrow(cap.get(i).map_or("", |m| m.as_str())))
                         } else {
-                            f(cap.name(key).map_or("", |m| m.as_str()))
+                            f(Value::Borrow(cap.name(key).map_or("", |m| m.as_str())))
                         }
                     } else {
-                        f("")
+                        f(Value::Null)
                     }
                 }
             }
@@ -793,25 +961,25 @@ impl Module {
             Module::Switch { format, cases, default, looped } => {
                 if looped.get() {
                     error!("Recursion detected when expanding {}", name);
-                    return f("");
+                    return f(Value::Null);
                 }
                 looped.set(true);
-                let text = rt.format_or(&format, &name);
-                let case = toml_to_string(cases.get(&text));
+                let text = rt.format_or(&format, &name).into_text();
+                let case = toml_to_string(cases.get(&text[..]));
                 let case = case.as_deref().unwrap_or(default);
-                let text = rt.format_or(case, &name);
+                let res = rt.format_or(case, &name);
                 looped.set(false);
-                f(&text)
+                f(res)
             }
             Module::Value { value, interested } => {
                 interested.take_in(|i| i.add(rt));
-                value.take_in(|s| f(s))
+                value.take_in(|s| f(s.as_ref()))
             }
         }
     }
 
     /// Handle a write or send to the variable
-    pub fn write(&self, name : &str, key : &str, value : String, rt : &Runtime) {
+    pub fn write(&self, name : &str, key : &str, value : Value, rt : &Runtime) {
         debug!("Writing {} to {}.{}", value, name, key);
         match self {
             Module::ExecJson { stdin, .. } => {
@@ -854,7 +1022,7 @@ impl Module {
             Module::SwayWorkspace(ws) => ws.write(name, key, value, rt),
             Module::Value { value : v, interested } if key == "" => {
                 interested.take().notify_data("value");
-                v.set(value);
+                v.set(value.into_owned());
             }
             _ => {
                 error!("Ignoring write to {}.{}", name, key);
@@ -943,8 +1111,9 @@ impl Action {
             Action::Exec { format } => {
                 match runtime.format(&format) {
                     Ok(cmd) => {
+                        let cmd = cmd.into_text();
                         info!("Executing '{}'", cmd);
-                        match Command::new("/bin/sh").arg("-c").arg(&cmd).spawn() {
+                        match Command::new("/bin/sh").arg("-c").arg(&cmd[..]).spawn() {
                             Ok(child) => drop(child),
                             Err(e) => error!("Could not execute {}: {}", cmd, e),
                         }

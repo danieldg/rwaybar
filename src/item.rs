@@ -1,9 +1,10 @@
-use crate::data::{Action,Module,IterationItem};
+use crate::data::{Action,Module,IterationItem,Value};
 use crate::state::Runtime;
 use crate::icon;
 use crate::tray;
 use crate::util::Cell;
 use log::{warn,error};
+use std::borrow::Cow;
 use std::rc::Rc;
 
 /// State available to an [Item] render function
@@ -28,9 +29,9 @@ enum Width {
 }
 
 impl Width {
-    pub fn from_str(mut value : String) -> Option<Self> {
+    pub fn from_str(value : Cow<str>) -> Option<Self> {
         if value.ends_with('%') {
-            value.pop();
+            let value = &value[..value.len() - 1];
             let pct = value.parse::<f64>().ok()?;
             return Some(Width::Fraction(pct / 100.0));
         }
@@ -58,16 +59,16 @@ impl Align {
         }
     }
 
-    pub fn parse_hv(mut value : String) -> Option<f64> {
+    pub fn parse_hv(value : Cow<str>) -> Option<f64> {
         if value.ends_with('%') {
-            value.pop();
+            let value = &value[..value.len() - 1];
             let pct = value.parse::<f64>().ok()?;
             return Some(pct / 100.0);
         }
         value.parse().ok()
     }
 
-    pub fn from_name(&mut self, value : Option<String>) {
+    pub fn from_name(&mut self, value : Option<Cow<str>>) {
         match value.as_deref() {
             Some("north")  => *self = Align { horiz : Some(MIDDLE), vert : Some(0.0) },
             Some("south")  => *self = Align { horiz : Some(MIDDLE), vert : Some(1.0) },
@@ -121,8 +122,8 @@ impl Formatting {
                 Some(fmt) => runtime.format(&fmt).or_else(|e| {
                     warn!("Error expanding '{}' when rendering: {}", fmt, e);
                     Err(())
-                }).ok(),
-                None => Some(v.to_string())
+                }).ok().map(Value::into_text),
+                None => Some(v.to_string().into())
             })
         };
 
@@ -131,7 +132,7 @@ impl Formatting {
                 Some(fmt) => runtime.format(&fmt).or_else(|e| {
                     warn!("Error expanding '{}' when rendering: {}", fmt, e);
                     Err(())
-                }).ok().and_then(|v| v.parse().ok()),
+                }).ok().and_then(|v| v.parse_f64()),
                 None => v.as_float().or_else(|| v.as_integer().map(|i| i as f64)),
             })
         };
@@ -173,7 +174,7 @@ impl Formatting {
         }
     }
 
-    fn parse_trbl(v : String) -> Option<(f64, f64, f64, f64)> {
+    fn parse_trbl(v : Cow<str>) -> Option<(f64, f64, f64, f64)> {
         let mut rv = (0.0, 0.0, 0.0, 0.0);
         for (i,x) in v.split_whitespace().enumerate() {
             match (i, x.parse()) {
@@ -195,7 +196,7 @@ impl Formatting {
         Some(rv)
     }
 
-    fn parse_rgba(color : Option<String>, alpha : Option<f64>) -> Option<(u16, u16, u16, u16)> {
+    fn parse_rgba(color : Option<impl AsRef<str>>, alpha : Option<f64>) -> Option<(u16, u16, u16, u16)> {
         if color.is_none() && alpha.is_none() {
             return None;
         }
@@ -203,7 +204,7 @@ impl Formatting {
             red : 0, blue : 0, green : 0
         };
         if let Some(color) = color {
-            let cstr = std::ffi::CString::new(color).unwrap();
+            let cstr = std::ffi::CString::new(color.as_ref()).unwrap();
             unsafe { pango_sys::pango_color_parse(&mut pc, cstr.as_ptr()); }
         }
         let alpha_f = alpha.unwrap_or(1.0) * 65535.0;
@@ -674,8 +675,8 @@ impl Item {
                 {
                     if !cond.is_empty() {
                         match ctx.runtime.format(cond) {
-                            Ok(v) if v.is_empty() => return,
-                            Ok(_) => {}
+                            Ok(v) if v.as_bool() => {},
+                            Ok(_) => return,
                             Err(e) => {
                                 warn!("Error evaluating condition '{}': {}", cond, e);
                             }
@@ -683,7 +684,7 @@ impl Item {
                     }
                 }
                 let mut ypos = ctx.render_ypos.as_ref().map(|p| (p.get(), p.get()));
-                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse_f64()).unwrap_or(0.0);
                 ctx.render_pos.set(ctx.render_pos.get() + spacing);
                 for item in items {
                     item.render_clamped(ctx, rv);
@@ -698,7 +699,7 @@ impl Item {
                 ctx.render_ypos.as_ref().map(|p| p.set(ypos.unwrap().1));
             }
             Module::FocusList { source, others, focused, spacing } => {
-                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse_f64()).unwrap_or(0.0);
                 let source = match ctx.runtime.items.get(&**source) {
                     Some(var) => var,
                     None => return,
@@ -788,13 +789,12 @@ impl Item {
             Module::Icon { name, fallback, tooltip } => {
                 let start_pos = ctx.render_pos.get();
                 let markup = self.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
-                let name = ctx.runtime.format_or(name, ctx.err_name);
-                let tooltip = ctx.runtime.format_or(tooltip, ctx.err_name);
+                let name = ctx.runtime.format_or(name, ctx.err_name).into_text();
                 match icon::render(ctx, &name) {
                     Ok(()) => {},
                     Err(()) => {
-                        let value = ctx.runtime.format_or(fallback, ctx.err_name);
-                        let mut item : Item = Module::new_value(&value).into();
+                        let value = ctx.runtime.format_or(fallback, ctx.err_name).into_owned();
+                        let mut item : Item = Module::new_value(value).into();
                         if markup {
                             item.config = self.config.clone();
                         }
@@ -813,7 +813,7 @@ impl Item {
                 tree.render(ctx, rv);
             }
             Module::Tray { spacing } => {
-                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse_f64()).unwrap_or(0.0);
                 tray::show(ctx, rv, spacing);
             }
             Module::None => {}
@@ -821,7 +821,7 @@ impl Item {
             // All other modules are rendered as text
             _ => {
                 let markup = self.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
-                let text = self.data.read_to_string(ctx.err_name, "text", &ctx.runtime);
+                let text = self.data.read_to_owned(ctx.err_name, "text", &ctx.runtime).into_text();
                 let layout = pangocairo::create_layout(ctx.cairo).unwrap();
                 layout.set_font_description(Some(ctx.font));
                 if markup {
@@ -953,7 +953,7 @@ impl PopupDesc {
             PopupDesc::TextItem { source, iter } => {
                 let item_var = ctx.runtime.get_item_var();
                 item_var.set(iter.clone());
-                let value = source.data.read_to_string("tooltip", "tooltip", ctx.runtime);
+                let value = source.data.read_to_owned("tooltip", "tooltip", ctx.runtime).into_text();
                 item_var.set(None);
 
                 if value.is_empty() {

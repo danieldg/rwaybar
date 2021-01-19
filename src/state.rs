@@ -18,7 +18,7 @@ use layer_shell::zwlr_layer_shell_v1::{ZwlrLayerShellV1, Layer};
 use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
 
 use crate::item::*;
-use crate::data::{Module,IterationItem};
+use crate::data::{Module,IterationItem,Value};
 use crate::util::{Cell,spawn,spawn_noerr};
 use crate::wayland::{OutputData,Popup,WaylandClient};
 
@@ -311,7 +311,22 @@ impl Runtime {
         self.refresh.notify.notify_one();
     }
 
-    pub fn format(&self, fmt : &str) -> Result<String, strfmt::FmtError> {
+    pub fn format<'a>(&'a self, fmt : &'a str) -> Result<Value<'a>, strfmt::FmtError> {
+        if !fmt.contains("{") {
+            return Ok(Value::Borrow(fmt));
+        }
+        if fmt.starts_with("{") && fmt.ends_with("}") && !fmt[1..fmt.len() - 1].contains("{") {
+            let q = &fmt[1..fmt.len() - 1];
+            let (name, key) = match q.find('.') {
+                Some(p) => (&q[..p], &q[p + 1..]),
+                None => (&q[..], ""),
+            };
+            if let Some(item) = self.items.get(name) {
+                return Ok(item.data.read_to_owned(name, key, self));
+            } else {
+                return Err(strfmt::FmtError::KeyError(name.to_string()));
+            }
+        }
         strfmt::strfmt_map(fmt, &|mut q| {
             let (name, key) = match q.key.find('.') {
                 Some(p) => (&q.key[..p], &q.key[p + 1..]),
@@ -319,19 +334,26 @@ impl Runtime {
             };
             match self.items.get(name) {
                 Some(item) => {
-                    item.data.read_in(name, key, self, |s| q.str(s))
+                    item.data.read_in(name, key, self, |s| match s {
+                        Value::Borrow(s) => q.str(s),
+                        Value::Owned(s) => q.str(&s),
+                        Value::Float(f) => q.f64(f),
+                        Value::Bool(true) => q.str("1"),
+                        Value::Bool(false) => q.str("0"),
+                        Value::Null => q.str(""),
+                    })
                 }
                 None => Err(strfmt::FmtError::KeyError(name.to_string()))
             }
-        })
+        }).map(Value::Owned)
     }
 
-    pub fn format_or(&self, fmt : &str, context : &str) -> String {
+    pub fn format_or<'a>(&'a self, fmt : &'a str, context : &str) -> Value<'a> {
         match self.format(fmt) {
             Ok(v) => v,
             Err(e) => {
                 warn!("Error formatting '{}': {}", context, e);
-                String::new()
+                Value::Null
             }
         }
     }

@@ -2,7 +2,7 @@ use crate::util::{Cell,spawn};
 use crate::dbus::get as get_dbus;
 use crate::dbus::SigWatcherToken;
 use crate::dbus as dbus_util;
-use crate::data::Module;
+use crate::data::{Module,Value};
 use crate::icon;
 use crate::item::{Item,Render,EventSink,PopupDesc};
 use crate::state::{Runtime,NotifierList};
@@ -690,7 +690,8 @@ pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
                     done = true;
                 }
                 if !done {
-                    let item : Item = Module::new_value(item.title.as_deref().unwrap_or_default()).into();
+                    let title = item.title.as_deref().map_or(Value::Null, Value::Borrow);
+                    let item : Item = Module::new_value(title.into_owned()).into();
                     Rc::new(item).render(ctx);
                 }
                 let x1 = ctx.render_pos.get();

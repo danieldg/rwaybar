@@ -1,6 +1,6 @@
 use bytes::{Buf,BytesMut};
 use crate::item::{Item,Render,EventSink};
-use crate::data::IterationItem;
+use crate::data::{IterationItem,Value};
 use crate::state::Runtime;
 use crate::state::NotifierList;
 use crate::util::{Cell,spawn_noerr};
@@ -243,17 +243,17 @@ impl Mode {
         });
     }
 
-    pub fn read_in<F : FnOnce(&str) -> R,R>(&self, _name : &str, key : &str, rt : &Runtime, f : F) -> R {
+    pub fn read_in<F : FnOnce(Value) -> R,R>(&self, _name : &str, key : &str, rt : &Runtime, f : F) -> R {
         self.value.interested.take_in(|i| i.add(rt));
         self.value.mode.take_in(|s| {
             match key {
-                "" | "text" if s == "default" => f(""),
-                "" | "text" => f(s),
-                "raw" => f(s),
-                "tooltip" => f(""),
+                "" | "text" if s == "default" => f(Value::Null),
+                "" | "text" => f(Value::Borrow(s)),
+                "raw" => f(Value::Borrow(s)),
+                "tooltip" => f(Value::Null),
                 _ => {
                     warn!("Unknown key in sway-mode");
-                    f(s)
+                    f(Value::Borrow(s))
                 }
             }
         })
@@ -268,25 +268,25 @@ pub struct WorkspaceData {
 }
 
 impl WorkspaceData {
-    pub fn read_in<F : FnOnce(&str) -> R,R>(&self, key : &str, _rt : &Runtime, f : F) -> R {
+    pub fn read_in<F : FnOnce(Value) -> R,R>(&self, key : &str, _rt : &Runtime, f : F) -> R {
         match key {
             "name" | "text" | "" => {
-                f(&self.name)
+                f(Value::Borrow(&self.name))
             }
             "output" | "tooltip" => {
-                f(&self.output)
+                f(Value::Borrow(&self.output))
             }
             "repr" => {
-                f(&self.repr)
+                f(Value::Borrow(&self.repr))
             }
-            _ => f("")
+            _ => f(Value::Null)
         }
     }
 
-    pub fn write(&self, key : &str, value : String, _rt : &Runtime) {
+    pub fn write(&self, key : &str, value : Value, _rt : &Runtime) {
         match key {
             "switch" => SwaySocket::send(0, format!(r#"workspace --no-auto-back-and-forth "{}""#, value).as_bytes(), |_| ()),
-            "" if value == "switch" => {
+            "" if value.into_text() == "switch" => {
                 SwaySocket::send(0, format!(r#"workspace --no-auto-back-and-forth "{}""#, self.name).as_bytes(), |_| ());
             }
             _ => {
@@ -466,14 +466,14 @@ impl Workspace {
         });
     }
 
-    pub fn read_in<F : FnOnce(&str) -> R,R>(&self, _name : &str, key : &str, rt : &Runtime, f : F) -> R {
+    pub fn read_in<F : FnOnce(Value) -> R,R>(&self, _name : &str, key : &str, rt : &Runtime, f : F) -> R {
         self.value.interested.take_in(|i| i.add(rt));
         match key {
-            "text" | "focus" => self.value.focus.take_in(|focus| f(&focus)),
-            "tooltip" => f(""),
+            "text" | "focus" => self.value.focus.take_in(|focus| f(Value::Borrow(&focus))),
+            "tooltip" => f(Value::Null),
             _ => {
                 warn!("Unknown key in sway-workspace");
-                f("")
+                f(Value::Null)
             }
         }
     }
@@ -489,7 +489,7 @@ impl Workspace {
         });
     }
 
-    pub fn write(&self, name : &str, key : &str, value : String, _rt : &Runtime) {
+    pub fn write(&self, name : &str, key : &str, value : Value, _rt : &Runtime) {
         match key {
             "switch" => SwaySocket::send(0, format!(r#"workspace --no-auto-back-and-forth "{}""#, value).as_bytes(), |_| ()),
             _ => {
@@ -587,29 +587,29 @@ impl Node {
         }
     }
 
-    pub fn read_in<F : FnOnce(&str) -> R,R>(&self, key : &str, _rt : &Runtime, f : F) -> R {
+    pub fn read_in<F : FnOnce(Value) -> R,R>(&self, key : &str, _rt : &Runtime, f : F) -> R {
         match (key, &self.contents) {
             ("id", _) => {
-                f(&format!("{}", self.id))
+                f(Value::Float(self.id as f64))
             }
             ("marks", _) => {
-                f(&self.marks)
+                f(Value::Borrow(&self.marks))
             }
             ("focus", _) => {
-                f(if self.focus { "1" } else { "0" })
+                f(Value::Bool(self.focus))
             }
             ("appid", NodeType::Window { appid, .. }) => {
-                f(appid)
+                f(Value::Borrow(appid))
             }
             ("icon", NodeType::Window { appid, .. }) => {
                 if appid.starts_with("org.kde.") {
-                    f(&appid[8..])
+                    f(Value::Borrow(&appid[8..]))
                 } else {
-                    f(appid)
+                    f(Value::Borrow(appid))
                 }
             }
             ("title", NodeType::Window { title, .. }) => {
-                f(title)
+                f(Value::Borrow(title))
             }
             ("layout", NodeType::Container { layout, ..}) => {
                 f(match layout {
@@ -617,13 +617,13 @@ impl Node {
                     Layout::Vert => "V",
                     Layout::Tabbed => "T",
                     Layout::Stacked => "S",
-                })
+                }.into())
             }
-            _ => f("")
+            _ => f(Value::Null)
         }
     }
 
-    pub fn write(&self, _key : &str, value : String, _rt : &Runtime) {
+    pub fn write(&self, _key : &str, value : Value, _rt : &Runtime) {
         SwaySocket::send(0, format!("[con_id={}] {}", self.id, value).as_bytes(), |_| ());
     }
 }
@@ -741,8 +741,8 @@ impl Tree {
         TreeInner::refresh(self.value.clone());
     }
 
-    pub fn read_in<F : FnOnce(&str) -> R,R>(&self, _name : &str, _key : &str, _rt : &Runtime, f : F) -> R {
-        f("")
+    pub fn read_in<F : FnOnce(Value) -> R,R>(&self, _name : &str, _key : &str, _rt : &Runtime, f : F) -> R {
+        f(Value::Null)
     }
 
     pub fn render(&self, ctx : &Render, ev : &mut EventSink) {
