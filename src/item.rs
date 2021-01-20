@@ -700,10 +700,6 @@ impl Item {
             }
             Module::FocusList { source, others, focused, spacing } => {
                 let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse_f64()).unwrap_or(0.0);
-                let source = match ctx.runtime.items.get(&**source) {
-                    Some(var) => var,
-                    None => return,
-                };
                 let item_var = ctx.runtime.get_item_var();
                 ctx.render_pos.set(ctx.render_pos.get() + spacing);
                 let prev = item_var.replace(None);

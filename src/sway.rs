@@ -202,6 +202,7 @@ pub struct Mode {
 #[derive(Debug,Default)]
 struct ModeInner {
     mode : Cell<String>,
+    running : Cell<bool>,
     interested : Cell<NotifierList>,
 }
 
@@ -210,7 +211,12 @@ impl Mode {
         Some(Mode::default())
     }
 
-    pub fn init(&self, _name : &str, _rt : &Runtime) {
+    fn interest(&self, rt : &Runtime) {
+        self.value.interested.take_in(|i| i.add(rt));
+        if self.value.running.replace(true) {
+            return;
+        }
+
         let weak = Rc::downgrade(&self.value);
         SwaySocket::subscribe("mode", 0x80000002, Box::new(move |buf| {
             let remove_callback;
@@ -244,7 +250,7 @@ impl Mode {
     }
 
     pub fn read_in<F : FnOnce(Value) -> R,R>(&self, _name : &str, key : &str, rt : &Runtime, f : F) -> R {
-        self.value.interested.take_in(|i| i.add(rt));
+        self.interest(rt);
         self.value.mode.take_in(|s| {
             match key {
                 "" | "text" if s == "default" => f(Value::Null),
@@ -323,6 +329,7 @@ fn sway_sort_fn(a : &Rc<WorkspaceData>, b : &Rc<WorkspaceData>) -> Ordering {
 struct WorkspacesData {
     focus : Cell<String>,
     list : Cell<Vec<Rc<WorkspaceData>>>,
+    running : Cell<bool>,
     interested : Cell<NotifierList>,
 }
 
@@ -420,7 +427,12 @@ impl Workspace {
         Some(Workspace::default())
     }
 
-    pub fn init(&self, _name : &str, _rt : &Runtime) {
+    fn interest(&self, rt : &Runtime) {
+        self.value.interested.take_in(|i| i.add(rt));
+        if self.value.running.replace(true) {
+            return;
+        }
+
         let weak = Rc::downgrade(&self.value);
         SwaySocket::subscribe("workspace", 0x80000000, Box::new(move |buf| {
             let remove_callback;
@@ -467,7 +479,7 @@ impl Workspace {
     }
 
     pub fn read_in<F : FnOnce(Value) -> R,R>(&self, _name : &str, key : &str, rt : &Runtime, f : F) -> R {
-        self.value.interested.take_in(|i| i.add(rt));
+        self.interest(rt);
         match key {
             "text" | "focus" => self.value.focus.take_in(|focus| f(Value::Borrow(&focus))),
             "tooltip" => f(Value::Null),
@@ -479,7 +491,7 @@ impl Workspace {
     }
 
     pub fn read_focus_list<F : FnMut(bool, IterationItem)>(&self, rt : &Runtime, mut f : F) {
-        self.value.interested.take_in(|i| i.add(rt));
+        self.interest(rt);
         let focus = self.value.focus.take_in(|f| f.clone());
         self.value.list.take_in(|list| {
             for item in &*list {
@@ -675,6 +687,7 @@ struct TreeItems {
 #[derive(Debug,Default)]
 struct TreeInner {
     workspaces : Cell<Option<Vec<WorkspaceNode>>>,
+    running : Cell<bool>,
     interested : Cell<NotifierList>,
 }
 
@@ -709,7 +722,12 @@ impl Tree {
         })
     }
 
-    pub fn init(&self, _name : &str, _rt : &Runtime) {
+    fn interest(&self, rt : &Runtime) {
+        self.value.interested.take_in(|i| i.add(rt));
+        if self.value.running.replace(true) {
+            return;
+        }
+
         let weak = Rc::downgrade(&self.value);
         SwaySocket::subscribe("window", 0x80000003, Box::new(move |buf| {
             let remove_callback;
@@ -747,7 +765,7 @@ impl Tree {
 
     pub fn render(&self, ctx : &Render, ev : &mut EventSink) {
         let items = &self.items;
-        self.value.interested.take_in(|i| i.add(ctx.runtime));
+        self.interest(ctx.runtime);
         self.value.workspaces.take_in_some(|workspaces| {
             for workspace in workspaces {
                 let ii = IterationItem::SwayWorkspace(Rc::new(WorkspaceData {

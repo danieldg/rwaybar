@@ -195,9 +195,15 @@ on-click-backward = { "send" = "music", "format" = "Raise" }
 [players]
 type = "focus-list"
 source = 'music'
+# It is also valid to declare the source inline, like this:
+#source = { type = "mpris" }
+# Or like this:
+#[players.source]
+#type = 'mpris'
 
 [players.focused-item]
 format = ""
+# Depending on your system fonts, ⏸ and ⏵ might look better
 tooltip = "{item.player.name}: {item.title}"
 margin = "0 4 4 4"
 on-click = { "send" = "item", "format" = "Pause" }

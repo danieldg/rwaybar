@@ -194,7 +194,7 @@ pub enum Module {
         handle : Cell<Option<RemoteHandle<()>>>,
     },
     FocusList {
-        source : Box<str>,
+        source : Rc<Item>,
         // always two items: non-focused, focused
         others : Rc<Item>,
         focused : Rc<Item>,
@@ -353,8 +353,8 @@ impl Module {
                 }
             }
             Some("focus-list") => {
-                let source = match value.get("source").and_then(|v| v.as_str()) {
-                    Some(s) => s.into(),
+                let source = match value.get("source") {
+                    Some(s) => Rc::new(Item::from_toml_ref(s)),
                     None => {
                         error!("A source is required for focus-list");
                         return Module::None.into();
@@ -542,7 +542,7 @@ impl Module {
     }
 
     /// One-time setup, if needed
-    pub fn init(&self, name : &str, rt : &Runtime, from : Option<&Self>) {
+    pub fn init(&self, name : &str, _rt : &Runtime, from : Option<&Self>) {
         match (self, from) {
             (Module::ExecJson { command, stdin, value, handle },
                 Some(Module::ExecJson {
@@ -578,9 +578,6 @@ impl Module {
                     }
                 }
             }
-            (Module::SwayMode(mode), _) => mode.init(name, rt),
-            (Module::SwayTree(tree), _) => tree.init(name, rt),
-            (Module::SwayWorkspace(ws), _) => ws.init(name, rt),
             _ => {}
         }
     }
@@ -1043,6 +1040,16 @@ impl Module {
             Module::MediaPlayer2 { .. } => mpris::read_focus_list(rt, f),
             Module::SwayWorkspace(ws) => ws.read_focus_list(rt, f),
             Module::Pulse { target } => pulse::read_focus_list(rt, target, f),
+            Module::ItemReference { name } => {
+                match rt.items.get(&**name) {
+                    Some(item) => {
+                        item.data.read_focus_list(rt, f);
+                    }
+                    None => {
+                        error!("Unresolved reference to item {}", name);
+                    }
+                }
+            }
             _ => ()
         }
     }
