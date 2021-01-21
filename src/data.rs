@@ -184,7 +184,7 @@ pub enum Module {
     },
     Eval {
         expr : EvalExpr,
-        vars : Vec<(Box<str>, Box<str>)>,
+        vars : Vec<(Box<str>, Rc<Item>)>,
         looped : Cell<bool>,
     },
     ExecJson {
@@ -224,7 +224,7 @@ pub enum Module {
     Meter {
         min : Box<str>,
         max : Box<str>,
-        src : Box<str>,
+        src : Rc<Item>,
         values : Box<[Box<str>]>,
         looped : Cell<bool>,
     },
@@ -248,7 +248,7 @@ pub enum Module {
     SwayTree(sway::Tree),
     SwayWorkspace(sway::Workspace),
     Switch {
-        format : Box<str>,
+        format : Rc<Item>,
         cases : toml::value::Table,
         default : Box<str>,
         looped : Cell<bool>,
@@ -317,8 +317,11 @@ impl Module {
                             if vars.iter().find(|(k, _)| k as &str == ident).is_some() {
                                 continue;
                             }
-                            match toml_to_string(value.get(ident)) {
-                                Some(value) => vars.push((ident.into(), value.into())),
+                            match value.get(ident) {
+                                Some(value) => {
+                                    let value = Rc::new(Item::from_item_list(ident, value));
+                                    vars.push((ident.into(), value));
+                                }
                                 None => {
                                     error!("Undefined variable '{}' in expression", ident);
                                     return Module::None;
@@ -412,10 +415,13 @@ impl Module {
             Some("meter") => {
                 let min = toml_to_string(value.get("min")).unwrap_or_default().into();
                 let max = toml_to_string(value.get("max")).unwrap_or_default().into();
-                let src = value.get("src").and_then(|v| v.as_str()).unwrap_or_else(|| {
-                    error!("Meter requires a src expression");
-                    ""
-                }).into();
+                let src = match value.get("src").or_else(|| value.get("source")) {
+                    Some(item) => Rc::new(Item::from_item_list("meter-source", item)),
+                    None => {
+                        error!("Meter requires a source expression");
+                        return Module::None;
+                    }
+                };
                 let mut values = match Some(Some("")).into_iter()
                         .chain(value.get("values").and_then(|v| v.as_array()).map(|v| v.iter().map(toml::Value::as_str)).into_iter().flatten())
                         .chain(Some(Some("")))
@@ -485,7 +491,15 @@ impl Module {
                 sway::Workspace::from_toml(value).map_or(Module::None, Module::SwayWorkspace)
             }
             Some("switch") => {
-                let format = toml_to_string(value.get("format")).unwrap_or_default().into();
+                let format = match value.get("format").or_else(|| value.get("source")) {
+                    Some(item) => {
+                        Rc::new(Item::from_item_list("switch-source", item))
+                    }
+                    None => {
+                        error!("'switch' requires a 'format' or 'source' item");
+                        return Module::None;
+                    }
+                };
                 let cases = match value.get("cases") {
                     Some(toml::Value::Table(cases)) => cases.clone(),
                     _ => {
@@ -511,7 +525,7 @@ impl Module {
             }
             None => {
                 if let Some(value) = value.as_str() {
-                    Module::new_value(value.to_owned())
+                    Module::Formatted { format : value.into(), tooltip : None, looped : Cell::new(false) }.into()
                 } else if let Some(format) = value.get("format").and_then(|v| v.as_str()) {
                     let tooltip = value.get("tooltip").map(|tt| {
                         if let Some(text) = tt.as_str() {
@@ -813,7 +827,7 @@ impl Module {
                     })),
                     vars : vars.iter()
                         .map(|(k,v)| {
-                            (&k[..], match rt.format_or(v, k) {
+                            (&k[..], match v.data.read_to_owned(k, "", rt) {
                                 Value::Owned(s) => evalexpr::Value::String(s),
                                 Value::Borrow(s) => evalexpr::Value::String(s.into()),
                                 Value::Float(f) => evalexpr::Value::Float(f),
@@ -891,7 +905,7 @@ impl Module {
                     return f(Value::Null);
                 }
                 looped.set(true);
-                let value = rt.format_or(&src, &name).parse_f64().unwrap_or(0.0);
+                let value = src.data.read_to_owned(&name, "", rt).parse_f64().unwrap_or(0.0);
                 let min = rt.format_or(&min, &name).parse_f64().unwrap_or(0.0);
                 let max = rt.format_or(&max, &name).parse_f64().unwrap_or(100.0);
                 let steps = values.len() - 2;
@@ -961,7 +975,7 @@ impl Module {
                     return f(Value::Null);
                 }
                 looped.set(true);
-                let text = rt.format_or(&format, &name).into_text();
+                let text = format.data.read_to_owned(&name, "", rt).into_text();
                 let case = toml_to_string(cases.get(&text[..]));
                 let case = case.as_deref().unwrap_or(default);
                 let res = rt.format_or(case, &name);
