@@ -17,11 +17,12 @@ use once_cell::unsync::OnceCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::rc::Rc;
+use std::mem::ManuallyDrop;
 use std::time::{SystemTime,Duration,UNIX_EPOCH};
 use log::{debug,warn};
 
 thread_local! {
-    static DATA : OnceCell<Tray> = Default::default();
+    static DATA : ManuallyDrop<OnceCell<Tray>> = Default::default();
 }
 
 #[derive(Debug)]
