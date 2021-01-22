@@ -526,8 +526,8 @@ enum NodeType {
         children : Vec<Rc<Node>>,
     },
     Window {
-        title : String,
-        appid : String, // or Class if null
+        title : Cell<Box<str>>,
+        appid : Box<str>, // or Class if null
     },
 }
 
@@ -557,10 +557,10 @@ impl Node {
                 Some("stacked") => Layout::Stacked,
                 _ => {
                     break NodeType::Window {
-                        title : value["name"].take_string().unwrap_or_default(),
+                        title : Cell::new(value["name"].take_string().unwrap_or_default().into()),
                         appid : value["app_id"].take_string()
                             .or_else(|| value["window_properties"]["class"].take_string())
-                            .unwrap_or_default(),
+                            .unwrap_or_default().into(),
                     };
                 }
             };
@@ -621,7 +621,7 @@ impl Node {
                 }
             }
             ("title", NodeType::Window { title, .. }) => {
-                f(Value::Borrow(title))
+                f(Value::Owned(title.take_in(|t| String::from(&**t))))
             }
             ("layout", NodeType::Container { layout, ..}) => {
                 f(match layout {
@@ -637,6 +637,24 @@ impl Node {
 
     pub fn write(&self, _key : &str, value : Value, _rt : &Runtime) {
         SwaySocket::send(0, format!("[con_id={}] {}", self.id, value).as_bytes(), |_| ());
+    }
+
+    pub fn find_node<'a>(self : &'a Rc<Self>, id : u32) -> Option<&'a Rc<Self>> {
+        if self.id == id {
+            return Some(self);
+        }
+        match &self.contents {
+            NodeType::Container { children, .. } => {
+                for child in children {
+                    match child.find_node(id) {
+                        rv @ Some(_) => return rv,
+                        None => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        None
     }
 }
 
@@ -703,6 +721,24 @@ impl TreeInner {
             }
         });
     }
+
+    fn find_node(&self, id : u32) -> Option<Rc<Node>> {
+        self.workspaces.take_in_some(|ws| {
+            for wks in ws {
+                match wks.repr.find_node(id) {
+                    rv @ Some(_) => return rv.cloned(),
+                    None => {}
+                }
+                for node in &wks.floating {
+                    match node.find_node(id) {
+                        rv @ Some(_) => return rv.cloned(),
+                        None => {}
+                    }
+                }
+            }
+            None
+        }).flatten()
+    }
 }
 
 impl Tree {
@@ -735,7 +771,15 @@ impl Tree {
                 match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                     Ok(Ok(msg)) => {
                         if msg["change"].as_str() == Some("title") {
-                            // TODO find and update the node without rerunning get_tree
+                            mi.interested.take().notify_data("sway:title");
+                            let id = msg["container"]["id"].as_u32().unwrap_or(!0);
+                            if let Some(new_title) = msg["container"]["name"].as_str() {
+                                if let Some(Node { contents : NodeType::Window { title, .. }, .. }) =
+                                    mi.find_node(id).as_deref()
+                                {
+                                    title.set(new_title.into());
+                                }
+                            }
                         } else {
                             // Other update messages don't have enough information to determine the
                             // new layout, so we need to rerun get_tree.  This needs to be done
