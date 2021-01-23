@@ -17,7 +17,7 @@ use std::io;
 use std::io::Write;
 use std::os::unix::io::{AsRawFd,IntoRawFd};
 use std::process::{Command,Stdio,ChildStdin};
-use std::rc::Rc;
+use std::rc::{Rc,Weak};
 use std::time::{Duration,Instant};
 use tokio::io::unix::AsyncFd;
 use libc;
@@ -156,6 +156,43 @@ impl<'a> From<String> for Value<'a> {
     }
 }
 
+#[derive(Debug,Clone)]
+pub enum ItemReference {
+    New(Box<str>),
+    Looped,
+    Found(Weak<Item>),
+    NotFound,
+}
+
+impl ItemReference {
+    pub fn with<F : FnOnce(Option<&Rc<Item>>) -> R, R>(this : &Cell<Self>, rt : &Runtime, f : F) -> R {
+        let mut me = this.replace(ItemReference::Looped);
+        let rv = match me {
+            ItemReference::New(name) => {
+                match rt.items.get(&*name) {
+                    Some(item) => {
+                        me = ItemReference::Found(Rc::downgrade(item));
+                        f(Some(item))
+                    }
+                    None => {
+                        error!("Unresolved reference to item {}", name);
+                        me = ItemReference::NotFound;
+                        f(None)
+                    }
+                }
+            }
+            ItemReference::Found(ref v) => f(v.upgrade().as_ref()),
+            ItemReference::NotFound => f(None),
+            ItemReference::Looped => {
+                error!("Loop found when resolving reference");
+                f(None)
+            }
+        };
+        this.set(me);
+        rv
+    }
+}
+
 /// Type-specific part of an [Item]
 #[derive(Debug)]
 pub enum Module {
@@ -219,7 +256,9 @@ pub enum Module {
     Item { // unique variant for the reserved "item" item
         value : Cell<Option<IterationItem>>,
     },
-    ItemReference { name : Box<str> },
+    ItemReference {
+        value : Cell<ItemReference>,
+    },
     MediaPlayer2 { target : Box<str> },
     Meter {
         min : Box<str>,
@@ -532,7 +571,7 @@ impl Module {
                             Module::Formatted { format : value.into(), tooltip : None, looped : Cell::new(false) }
                         }
                         ModuleContext::Source => {
-                            Module::ItemReference { name : value.into() }
+                            Module::ItemReference { value : Cell::new(ItemReference::New(value.into())) }
                         }
                         ModuleContext::Item => {
                             Module::Formatted { format : value.into(), tooltip : None, looped : Cell::new(false) }
@@ -903,11 +942,11 @@ impl Module {
                     None => f(Value::Null),
                 }
             }),
-            Module::ItemReference { name } => {
-                match rt.items.get(&**name) {
+            Module::ItemReference { value } => {
+                ItemReference::with(value, rt, |item| match item {
                     Some(item) => item.data.read_in(name, key, rt, f),
                     None => f(Value::Null),
-                }
+                })
             }
             Module::MediaPlayer2 { target } => mpris::read_in(name, target, key, rt, f),
             Module::Meter { min, max, src, values, looped } => {
@@ -1065,15 +1104,13 @@ impl Module {
             Module::MediaPlayer2 { .. } => mpris::read_focus_list(rt, f),
             Module::SwayWorkspace(ws) => ws.read_focus_list(rt, f),
             Module::Pulse { target } => pulse::read_focus_list(rt, target, f),
-            Module::ItemReference { name } => {
-                match rt.items.get(&**name) {
+            Module::ItemReference { value } => {
+                ItemReference::with(value, rt, |v| match v {
                     Some(item) => {
                         item.data.read_focus_list(rt, f);
                     }
-                    None => {
-                        error!("Unresolved reference to item {}", name);
-                    }
-                }
+                    None => {}
+                });
             }
             _ => ()
         }

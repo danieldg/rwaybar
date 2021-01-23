@@ -1,4 +1,4 @@
-use crate::data::{Action,Module,ModuleContext,IterationItem,Value};
+use crate::data::{Action,Module,ModuleContext,ItemReference,IterationItem,Value};
 use crate::state::Runtime;
 use crate::icon;
 use crate::tray;
@@ -415,9 +415,8 @@ impl Item {
     }
 
     pub fn from_toml_ref(value : &toml::Value) -> Self {
-        if let Some(text) = value.as_str() {
-            let name = text.into();
-            return Module::ItemReference { name }.into();
+        if value.as_str().is_some() {
+            return Module::from_toml_in(value, ModuleContext::Source).into();
         }
 
         Self::from_item_list("<ref>", value)
@@ -658,19 +657,11 @@ impl Item {
     /// render.
     fn render_inner(self : &Rc<Self>, ctx : &Render, rv : &mut EventSink) {
         match &self.data {
-            Module::ItemReference { name } => {
-                match ctx.runtime.items.get(&**name) {
-                    Some(item) => {
-                        let ctx = Render {
-                            err_name: name,
-                            ..*ctx
-                        };
-                        rv.merge(item.render(&ctx));
-                    }
-                    None => {
-                        error!("Unresolved reference to item {}", name);
-                    }
-                }
+            Module::ItemReference { value } => {
+                ItemReference::with(value, &ctx.runtime, |item| match item {
+                    Some(item) => rv.merge(item.render(&ctx)),
+                    None => {}
+                });
             }
             Module::Group { items, spacing } => {
                 if let Some(cond) = self.config.as_ref()
