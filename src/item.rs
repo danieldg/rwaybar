@@ -1,4 +1,4 @@
-use crate::data::{Action,Module,IterationItem,Value};
+use crate::data::{Action,Module,ModuleContext,IterationItem,Value};
 use crate::state::Runtime;
 use crate::icon;
 use crate::tray;
@@ -420,6 +420,14 @@ impl Item {
             return Module::ItemReference { name }.into();
         }
 
+        Self::from_item_list("<ref>", value)
+    }
+
+    pub fn from_toml_format(value : &toml::Value) -> Self {
+        Self::from_item_list("<ref>", value)
+    }
+
+    pub fn from_item_list(key : &str, value : &toml::Value) -> Self {
         if let Some(array) = value.as_array() {
             return Module::Group {
                 items : array.iter().map(Item::from_toml_ref).map(Rc::new).collect(),
@@ -427,11 +435,7 @@ impl Item {
             }.into();
         }
 
-        Self::from_item_list("<ref>", value)
-    }
-
-    pub fn from_item_list(key : &str, value : &toml::Value) -> Self {
-        let data = Module::from_toml(value);
+        let data = Module::from_toml_in(value, ModuleContext::Item);
         if data.is_none() {
             match value.get("type").and_then(|v| v.as_str()) {
                 Some(tipe) => error!("Unknown item type '{}' in '{}'", tipe, key),
@@ -703,7 +707,7 @@ impl Item {
                 let item_var = ctx.runtime.get_item_var();
                 ctx.render_pos.set(ctx.render_pos.get() + spacing);
                 let prev = item_var.replace(None);
-                source.data.read_focus_list(ctx.runtime, |focus, item| {
+                source.read_focus_list(ctx.runtime, |focus, item| {
                     item_var.set(Some(item.clone()));
                     let x0 = ctx.render_pos.get();
                     let mut ev = if focus {

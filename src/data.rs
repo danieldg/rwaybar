@@ -184,7 +184,7 @@ pub enum Module {
     },
     Eval {
         expr : EvalExpr,
-        vars : Vec<(Box<str>, Rc<Item>)>,
+        vars : Vec<(Box<str>, Module)>,
         looped : Cell<bool>,
     },
     ExecJson {
@@ -194,7 +194,7 @@ pub enum Module {
         handle : Cell<Option<RemoteHandle<()>>>,
     },
     FocusList {
-        source : Rc<Item>,
+        source : Box<Module>,
         // always two items: non-focused, focused
         others : Rc<Item>,
         focused : Rc<Item>,
@@ -224,7 +224,7 @@ pub enum Module {
     Meter {
         min : Box<str>,
         max : Box<str>,
-        src : Rc<Item>,
+        src : Box<Module>,
         values : Box<[Box<str>]>,
         looped : Cell<bool>,
     },
@@ -248,7 +248,7 @@ pub enum Module {
     SwayTree(sway::Tree),
     SwayWorkspace(sway::Workspace),
     Switch {
-        format : Rc<Item>,
+        format : Box<Module>,
         cases : toml::value::Table,
         default : Box<str>,
         looped : Cell<bool>,
@@ -283,8 +283,13 @@ impl PartialEq for IterationItem {
     }
 }
 
+pub enum ModuleContext {
+    Source,
+    Item,
+}
+
 impl Module {
-    pub fn from_toml(value : &toml::Value) -> Self {
+    pub fn from_toml_in(value : &toml::Value, ctx : ModuleContext) -> Self {
         match value.get("type").and_then(|v| v.as_str()) {
             // keep values in alphabetical order
             Some("calendar") => {
@@ -319,7 +324,7 @@ impl Module {
                             }
                             match value.get(ident) {
                                 Some(value) => {
-                                    let value = Rc::new(Item::from_item_list(ident, value));
+                                    let value = Module::from_toml_in(value, ModuleContext::Source);
                                     vars.push((ident.into(), value));
                                 }
                                 None => {
@@ -357,7 +362,7 @@ impl Module {
             }
             Some("focus-list") => {
                 let source = match value.get("source") {
-                    Some(s) => Rc::new(Item::from_toml_ref(s)),
+                    Some(s) => Box::new(Module::from_toml_in(s, ModuleContext::Source)),
                     None => {
                         error!("A source is required for focus-list");
                         return Module::None.into();
@@ -382,21 +387,19 @@ impl Module {
                     error!("Formatted variables require a format: {}", value);
                     ""
                 }).into();
-                let tooltip = value.get("tooltip").map(|tt| {
-                    if let Some(text) = tt.as_str() {
-                        Rc::new(Module::Formatted { format : text.into(), tooltip : None, looped : Cell::new(false) }.into())
-                    } else {
-                        Rc::new(Item::from_item_list(".tooltip", tt))
-                    }
-                });
+                let tooltip = value.get("tooltip").map(Item::from_toml_format).map(Rc::new);
                 Module::Formatted { format, tooltip, looped : Cell::new(false) }
             }
             Some("group") => {
                 let spacing = toml_to_string(value.get("spacing")).unwrap_or_default().into();
-                let items = value.get("items")
-                    .and_then(|v| v.as_array())
-                    .map(|a| a.iter().map(Item::from_toml_ref).map(Rc::new).collect())
-                    .unwrap_or_default();
+                let items = [value.get("item"), value.get("items")]
+                    .iter()
+                    .filter_map(Option::as_deref)
+                    .filter_map(|v| v.as_array())
+                    .flatten()
+                    .map(Item::from_toml_ref)
+                    .map(Rc::new)
+                    .collect();
 
                 Module::Group {
                     items,
@@ -416,7 +419,7 @@ impl Module {
                 let min = toml_to_string(value.get("min")).unwrap_or_default().into();
                 let max = toml_to_string(value.get("max")).unwrap_or_default().into();
                 let src = match value.get("src").or_else(|| value.get("source")) {
-                    Some(item) => Rc::new(Item::from_item_list("meter-source", item)),
+                    Some(item) => Box::new(Module::from_toml_in(item, ModuleContext::Source)),
                     None => {
                         error!("Meter requires a source expression");
                         return Module::None;
@@ -491,14 +494,13 @@ impl Module {
                 sway::Workspace::from_toml(value).map_or(Module::None, Module::SwayWorkspace)
             }
             Some("switch") => {
-                let format = match value.get("format").or_else(|| value.get("source")) {
-                    Some(item) => {
-                        Rc::new(Item::from_item_list("switch-source", item))
-                    }
-                    None => {
-                        error!("'switch' requires a 'format' or 'source' item");
-                        return Module::None;
-                    }
+                let format = if let Some(item) = value.get("format") {
+                    Box::new(Module::from_toml_in(item, ModuleContext::Item))
+                } else if let Some(item) = value.get("source") {
+                    Box::new(Module::from_toml_in(item, ModuleContext::Source))
+                } else {
+                    error!("'switch' requires a 'format' or 'source' item");
+                    return Module::None;
                 };
                 let cases = match value.get("cases") {
                     Some(toml::Value::Table(cases)) => cases.clone(),
@@ -525,15 +527,19 @@ impl Module {
             }
             None => {
                 if let Some(value) = value.as_str() {
-                    Module::Formatted { format : value.into(), tooltip : None, looped : Cell::new(false) }.into()
-                } else if let Some(format) = value.get("format").and_then(|v| v.as_str()) {
-                    let tooltip = value.get("tooltip").map(|tt| {
-                        if let Some(text) = tt.as_str() {
-                            Rc::new(Module::Formatted { format : text.into(), tooltip : None, looped : Cell::new(false) }.into())
-                        } else {
-                            Rc::new(Item::from_item_list(".tooltip", tt))
+                    match ctx {
+                        ModuleContext::Source if value.contains('{') => {
+                            Module::Formatted { format : value.into(), tooltip : None, looped : Cell::new(false) }
                         }
-                    });
+                        ModuleContext::Source => {
+                            Module::ItemReference { name : value.into() }
+                        }
+                        ModuleContext::Item => {
+                            Module::Formatted { format : value.into(), tooltip : None, looped : Cell::new(false) }
+                        }
+                    }
+                } else if let Some(format) = value.get("format").and_then(|v| v.as_str()) {
+                    let tooltip = value.get("tooltip").map(Item::from_toml_format).map(Rc::new);
                     Module::Formatted { format : format.into(), tooltip, looped : Cell::new(false) }
                 } else if let Some(value) = toml_to_string(value.get("value")) {
                     Module::new_value(value)
@@ -631,7 +637,6 @@ impl Module {
     /// Note: The name is a hint and should not be assumed to uniquely identify this module.
     pub fn read_in<F : FnOnce(Value) -> R, R>(&self, name : &str, key : &str, rt : &Runtime, f : F) -> R {
         match self {
-            Module::ItemReference { .. } |
             Module::Group { .. } |
             Module::FocusList { .. } |
             Module::Tray { .. } => {
@@ -827,7 +832,7 @@ impl Module {
                     })),
                     vars : vars.iter()
                         .map(|(k,v)| {
-                            (&k[..], match v.data.read_to_owned(k, "", rt) {
+                            (&k[..], match v.read_to_owned(k, "", rt) {
                                 Value::Owned(s) => evalexpr::Value::String(s),
                                 Value::Borrow(s) => evalexpr::Value::String(s.into()),
                                 Value::Float(f) => evalexpr::Value::Float(f),
@@ -872,7 +877,7 @@ impl Module {
                 }
                 match key {
                     "tooltip" => match tooltip {
-                        Some(tt) => tt.data.read_in(name, "", rt, f),
+                        Some(tt) => tt.data.read_in(name, "text", rt, f),
                         None => f(Value::Null),
                     },
                     _ => {
@@ -898,6 +903,12 @@ impl Module {
                     None => f(Value::Null),
                 }
             }),
+            Module::ItemReference { name } => {
+                match rt.items.get(&**name) {
+                    Some(item) => item.data.read_in(name, key, rt, f),
+                    None => f(Value::Null),
+                }
+            }
             Module::MediaPlayer2 { target } => mpris::read_in(name, target, key, rt, f),
             Module::Meter { min, max, src, values, looped } => {
                 if looped.get() {
@@ -905,7 +916,7 @@ impl Module {
                     return f(Value::Null);
                 }
                 looped.set(true);
-                let value = src.data.read_to_owned(&name, "", rt).parse_f64().unwrap_or(0.0);
+                let value = src.read_to_owned(&name, "", rt).parse_f64().unwrap_or(0.0);
                 let min = rt.format_or(&min, &name).parse_f64().unwrap_or(0.0);
                 let max = rt.format_or(&max, &name).parse_f64().unwrap_or(100.0);
                 let steps = values.len() - 2;
@@ -975,7 +986,7 @@ impl Module {
                     return f(Value::Null);
                 }
                 looped.set(true);
-                let text = format.data.read_to_owned(&name, "", rt).into_text();
+                let text = format.read_to_owned(&name, "", rt).into_text();
                 let case = toml_to_string(cases.get(&text[..]));
                 let case = case.as_deref().unwrap_or(default);
                 let res = rt.format_or(case, &name);
