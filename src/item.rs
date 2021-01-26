@@ -372,7 +372,7 @@ impl EventSink {
     pub fn get_hover(&mut self, x : f64, y : f64) -> Option<(f64, f64, &mut PopupDesc)> {
         let _ = y;
         for &mut (min, max, ref mut text) in &mut self.hovers {
-            if x >= min && x <= max {
+            if x >= min && x < max {
                 return Some((min, max, text));
             }
         }
@@ -430,6 +430,7 @@ impl Item {
         if let Some(array) = value.as_array() {
             return Module::Group {
                 items : array.iter().map(Item::from_toml_ref).map(Rc::new).collect(),
+                tooltip : None,
                 spacing : "".into(),
             }.into();
         }
@@ -663,7 +664,7 @@ impl Item {
                     None => {}
                 });
             }
-            Module::Group { items, spacing } => {
+            Module::Group { items, tooltip, spacing } => {
                 if let Some(cond) = self.config.as_ref()
                     .and_then(|c| c.get("condition"))
                     .and_then(|v| v.as_str())
@@ -680,7 +681,8 @@ impl Item {
                 }
                 let mut ypos = ctx.render_ypos.as_ref().map(|p| (p.get(), p.get()));
                 let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse_f64()).unwrap_or(0.0);
-                ctx.render_pos.set(ctx.render_pos.get() + spacing);
+                let xstart = ctx.render_pos.get();
+                ctx.render_pos.set(xstart + spacing);
                 for item in items {
                     item.render_clamped(ctx, rv);
                     ctx.render_pos.set(ctx.render_pos.get() + spacing);
@@ -692,6 +694,13 @@ impl Item {
                     }
                 }
                 ctx.render_ypos.as_ref().map(|p| p.set(ypos.unwrap().1));
+                if let Some(item) = tooltip {
+                    let xend = ctx.render_pos.get();
+                    rv.hovers.push((xstart, xend, PopupDesc::RenderItem {
+                        item : item.clone(),
+                        iter : ctx.runtime.copy_item_var(),
+                    }));
+                }
             }
             Module::FocusList { source, others, focused, spacing } => {
                 let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse_f64()).unwrap_or(0.0);
@@ -858,16 +867,23 @@ impl Item {
                     yrec.set(ypos + height);
                 }
 
-                if let Module::Formatted { tooltip : Some(item), .. } = &self.data {
-                    rv.hovers.push((xpos, xpos + width, PopupDesc::RenderItem {
-                        item : item.clone(),
-                        iter : ctx.runtime.copy_item_var(),
-                    }));
-                } else {
-                    rv.hovers.push((xpos, xpos + width, PopupDesc::TextItem {
-                        source : self.clone(),
-                        iter : ctx.runtime.copy_item_var(),
-                    }));
+                match &self.data {
+                    Module::Formatted { tooltip : Some(item), .. } => {
+                        rv.hovers.push((xpos, xpos + width, PopupDesc::RenderItem {
+                            item : item.clone(),
+                            iter : ctx.runtime.copy_item_var(),
+                        }));
+                    }
+                    Module::Formatted { tooltip : None, .. } => {}
+                    _ => {
+                        let tt = self.data.read_to_owned(ctx.err_name, "tooltip", &ctx.runtime).into_text();
+                        if !tt.is_empty() {
+                            rv.hovers.push((xpos, xpos + width, PopupDesc::TextItem {
+                                source : self.clone(),
+                                iter : ctx.runtime.copy_item_var(),
+                            }));
+                        }
+                    }
                 }
             }
         }

@@ -244,6 +244,7 @@ pub enum Module {
     },
     Group {
         items : Vec<Rc<Item>>,
+        tooltip : Option<Rc<Item>>,
         spacing : Box<str>,
         // TODO crop ordering: allow specific items to be cropped first
         // TODO use min-width to force earlier cropping
@@ -431,6 +432,7 @@ impl Module {
             }
             Some("group") => {
                 let spacing = toml_to_string(value.get("spacing")).unwrap_or_default().into();
+                let tooltip = value.get("tooltip").map(Item::from_toml_format).map(Rc::new);
                 let items = [value.get("item"), value.get("items")]
                     .iter()
                     .filter_map(Option::as_deref)
@@ -442,6 +444,7 @@ impl Module {
 
                 Module::Group {
                     items,
+                    tooltip,
                     spacing,
                 }
             }
