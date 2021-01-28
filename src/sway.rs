@@ -837,3 +837,7 @@ impl Tree {
         });
     }
 }
+
+pub fn write(value : Value, _rt : &Runtime) {
+    SwaySocket::send(0, format!("{}", value).as_bytes(), |_| ());
+}

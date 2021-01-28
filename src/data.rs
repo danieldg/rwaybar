@@ -1083,6 +1083,8 @@ impl Module {
             }),
             Module::MediaPlayer2 { target } => mpris::write(name, target, key, value, rt),
             Module::Pulse { target } => pulse::do_write(name, target, key, value, rt),
+            Module::SwayMode(_) => sway::write(value, rt),
+            Module::SwayTree(_) => sway::write(value, rt),
             Module::SwayWorkspace(ws) => ws.write(name, key, value, rt),
             Module::Value { value : v, interested } if key == "" => {
                 interested.take().notify_data("value");
