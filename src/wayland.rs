@@ -132,7 +132,7 @@ impl MultiGlobalHandler<WlOutput> for OutputHandler {
     fn removed(&mut self, id: u32, _data: wayland_client::DispatchData) {
         self.outputs.take_in(|outputs| {
             outputs.retain(|out| {
-                if out.output.as_ref().id() == id {
+                if out.output.as_ref().id() == id || !out.output.as_ref().is_alive() {
                     if let Some(xdg) = &out.xdg {
                         xdg.destroy();
                     }
