@@ -1,6 +1,9 @@
 use futures_util::future::select;
 use futures_util::pin_mut;
 use log::{debug,info,warn,error};
+use smithay_client_toolkit::output::with_output_info;
+use smithay_client_toolkit::output::OutputInfo;
+use smithay_client_toolkit::output::OutputStatusListener;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
@@ -20,7 +23,7 @@ use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
 use crate::item::*;
 use crate::data::{Module,IterationItem,Value};
 use crate::util::{Cell,spawn,spawn_noerr};
-use crate::wayland::{OutputData,Popup,WaylandClient};
+use crate::wayland::{Popup,WaylandClient};
 
 pub struct BarPopup {
     pub wl : Popup,
@@ -372,20 +375,27 @@ impl Runtime {
     }
 }
 
-/// The singleton global state object bound to the calloop runner
+/// The singleton global state object
 pub struct State {
     pub wayland : WaylandClient,
     pub bars : Vec<Bar>,
     bar_config : Vec<toml::Value>,
     pub runtime : Runtime,
+    #[allow(unused)] // need to hold this handle for the callback to remain alive
+    output_status_listener : OutputStatusListener,
     draw_waiting_on_shm : bool,
 }
 
 impl State {
-    pub fn new(wayland : WaylandClient) -> Result<Rc<RefCell<Self>>, Box<dyn Error>> {
+    pub fn new(mut wayland : WaylandClient) -> Result<Rc<RefCell<Self>>, Box<dyn Error>> {
         let notify_inner = Rc::new(NotifierInner {
             notify : tokio::sync::Notify::new(),
             data_update : Cell::new(true),
+        });
+
+        let output_status_listener = wayland.add_output_listener(move |output, oi, mut data| {
+            let state : &mut State = data.get().unwrap();
+            state.output_ready(&output, oi);
         });
 
         let mut state = Self {
@@ -398,6 +408,7 @@ impl State {
                 refresh : Default::default(),
                 notify : Notifier { inner : notify_inner.clone() },
             },
+            output_status_listener,
             draw_waiting_on_shm : false,
         };
 
@@ -432,12 +443,12 @@ impl State {
                 return;
             }
             error!("No bars matched this outptut configuration.  Available outputs:");
-            state.wayland.get_outputs().take_in(|outputs| {
-                for data in outputs {
-                    error!(" name='{}' description='{}' make='{}' model='{}' at {},{} {}x{}",
-                        data.name, data.description, data.make, data.model, data.position.0, data.position.1, data.size.0, data.size.1);
-                }
-            });
+            for output in state.wayland.env.get_all_outputs() {
+                with_output_info(&output, |oi| {
+                    error!(" name='{}' description='{}' make='{}' model='{}'",
+                        oi.name, oi.description, oi.make, oi.model);
+                });
+            }
         });
 
         let rv = Rc::new(RefCell::new(state));
@@ -518,21 +529,21 @@ impl State {
         }
         self.runtime.notify.inner.data_update.set(true);
 
-        if reload {
-            self.bars.clear();
-            self.wayland.get_outputs().take_in(|outputs| {
-                for output in outputs {
-                    self.output_ready(output);
-                }
+        self.bars.clear();
+        for output in self.wayland.env.get_all_outputs() {
+            with_output_info(&output, |oi| {
+                self.output_ready(&output, oi);
             });
+        }
+        if reload {
             if self.bars.is_empty() {
                 error!("No bars matched this outptut configuration.  Available outputs:");
-                self.wayland.get_outputs().take_in(|outputs| {
-                    for data in outputs {
-                        error!(" name='{}' description='{}' make='{}' model='{}' at {},{} {}x{}",
-                            data.name, data.description, data.make, data.model, data.position.0, data.position.1, data.size.0, data.size.1);
-                    }
-                });
+                for output in self.wayland.env.get_all_outputs() {
+                    with_output_info(&output, |oi| {
+                        error!(" name='{}' description='{}' make='{}' model='{}'",
+                            oi.name, oi.description, oi.make, oi.model);
+                    });
+                }
             }
             self.request_draw();
         } else {
@@ -597,9 +608,9 @@ impl State {
         Ok(())
     }
 
-    pub fn output_ready(&mut self, data : &OutputData) {
-        info!("Output name='{}' description='{}' make='{}' model='{}' at {},{} {}x{}",
-            data.name, data.description, data.make, data.model, data.position.0, data.position.1, data.size.0, data.size.1);
+    pub fn output_ready(&mut self, output : &WlOutput, data : &OutputInfo) {
+        info!("Output name='{}' description='{}' make='{}' model='{}'",
+            data.name, data.description, data.make, data.model);
         for (i, cfg) in self.bar_config.iter().enumerate() {
             if let Some(name) = cfg.get("name").and_then(|v| v.as_str()) {
                 if name != &data.name {
@@ -647,7 +658,7 @@ impl State {
                 table.insert("name".into(), data.name.clone().into());
             }
 
-            let bar = self.new_bar(&data.output, data.scale, cfg, i);
+            let bar = self.new_bar(&output, data.scale_factor, cfg, i);
             self.bars.retain(|bar| {
                 bar.cfg_index != i ||
                     bar.item.config

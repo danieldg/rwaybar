@@ -5,23 +5,25 @@ use std::error::Error;
 use std::io;
 use std::rc::Rc;
 use std::task;
-use smithay_client_toolkit::environment::{SimpleGlobal,MultiGlobalHandler};
+use smithay_client_toolkit::environment::SimpleGlobal;
 use smithay_client_toolkit::environment::Environment;
 use smithay_client_toolkit::environment;
 use smithay_client_toolkit::seat::SeatData;
 use smithay_client_toolkit::shm::MemPool;
+use smithay_client_toolkit::output::OutputInfo;
+use smithay_client_toolkit::output::OutputHandling;
+use smithay_client_toolkit::output::OutputStatusListener;
 use tokio::io::unix::AsyncFd;
 use wayland_client::Attached;
+use wayland_client::DispatchData;
 use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_display::WlDisplay;
-use wayland_client::protocol::wl_output::{WlOutput,Transform};
+use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_pointer::{ButtonState,Axis};
-use wayland_client::protocol::wl_registry::WlRegistry;
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::protocol::wl_shm::WlShm;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1;
-use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_v1::ZxdgOutputV1;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 use wayland_protocols::xdg_shell::client::xdg_popup::XdgPopup;
@@ -29,128 +31,7 @@ use wayland_protocols::xdg_shell::client::xdg_surface::XdgSurface;
 use wayland_protocols::xdg_shell::client::xdg_wm_base::XdgWmBase;
 
 use crate::state::{Bar,State};
-use crate::util::{self,Cell};
-
-/// Helper for populating [OutputData]
-#[derive(Debug,Default)]
-struct OutputHandler {
-    outputs : Rc<Cell<Vec<OutputData>>>,
-}
-
-/// Metadata on a [WlOutput]
-#[derive(Debug)]
-pub struct OutputData {
-    pub output : Attached<WlOutput>,
-    pub xdg : Option<Attached<ZxdgOutputV1>>,
-
-    pub scale : i32,
-    pub transform : Transform,
-
-    pub geometry : (i32, i32),  // real pixels
-    pub position : (i32, i32),  // logical_position from xdg_output
-    pub size : (i32, i32),      // logical_size from xdg_output
-    pub name : String,          // from xdg_output
-    pub make : String,
-    pub model : String,
-    pub description: String,
-}
-
-
-impl MultiGlobalHandler<WlOutput> for OutputHandler {
-    fn created(&mut self, registry: Attached<WlRegistry>, id: u32, version: u32, _: wayland_client::DispatchData) {
-        assert!(version > 1);
-        let version = std::cmp::min(version, 3);
-        let output = registry.bind::<WlOutput>(version, id);
-        let outputs = self.outputs.clone();
-        output.quick_assign(move |output, event, mut data| {
-            use wayland_client::protocol::wl_output::Event;
-            match event {
-                Event::Geometry { x, y, make, model, transform, .. } => {
-                    outputs.take_in(|outputs| {
-                        for data in outputs {
-                            if data.output != *output {
-                                continue;
-                            }
-                            data.geometry.0 = x;
-                            data.geometry.1 = y;
-                            data.make = make;
-                            data.model = model;
-                            data.transform = transform;
-                            return;
-                        }
-                        debug!("Got a Geometry event for an output we don't know about");
-                    });
-                }
-                Event::Scale { factor } => {
-                    outputs.take_in(|outputs| {
-                        for data in outputs {
-                            if data.output != *output {
-                                continue;
-                            }
-                            data.scale = factor;
-                        }
-                    });
-                }
-                Event::Done => {
-                    if let Some(state) = data.get::<State>() {
-                        outputs.take_in(|outputs| {
-                            for data in outputs {
-                                if data.output != *output {
-                                    continue;
-                                }
-                                if data.xdg.is_some() {
-                                    state.output_ready(data);
-                                } else {
-                                    state.wayland.output_finish_setup(data);
-                                }
-                                return;
-                            }
-                            debug!("Strange, got a Done for an output we don't know about");
-                        });
-                    }
-                }
-                _ => ()
-            }
-        });
-        self.outputs.take_in(|outputs| {
-            outputs.push(OutputData {
-                output : output.into(),
-                xdg : None,
-                scale : 1,
-                transform : Transform::Normal,
-                geometry : (0, 0),
-                position : (0, 0),
-                size : (0, 0),
-                name : String::new(),
-                make : String::new(),
-                model : String::new(),
-                description: String::new(),
-            });
-        });
-    }
-
-    fn removed(&mut self, id: u32, _data: wayland_client::DispatchData) {
-        self.outputs.take_in(|outputs| {
-            outputs.retain(|out| {
-                if out.output.as_ref().id() == id || !out.output.as_ref().is_alive() {
-                    if let Some(xdg) = &out.xdg {
-                        xdg.destroy();
-                    }
-                    out.output.release();
-                    false
-                } else {
-                    true
-                }
-            });
-        });
-    }
-
-    fn get_all(&self) -> Vec<Attached<WlOutput>> {
-        self.outputs.take_in(|outputs| {
-            outputs.iter().map(|data| data.output.clone()).collect()
-        })
-    }
-}
+use crate::util;
 
 /// Wayland globals (access via [Environment::require_global])
 pub struct Globals {
@@ -158,10 +39,10 @@ pub struct Globals {
     sctk_shm: smithay_client_toolkit::shm::ShmHandler,
     sctk_seats: smithay_client_toolkit::seat::SeatHandler,
     sctk_shell: smithay_client_toolkit::shell::ShellHandler,
-    outputs: OutputHandler,
+    sctk_outputs: smithay_client_toolkit::output::OutputHandler,
+    sctk_xdg_out: smithay_client_toolkit::output::XdgOutputHandler,
 
     layer_shell : SimpleGlobal<ZwlrLayerShellV1>,
-    xdg_out : SimpleGlobal<ZxdgOutputManagerV1>,
 }
 
 impl smithay_client_toolkit::seat::SeatHandling for Globals {
@@ -182,11 +63,11 @@ environment!(Globals,
 
         ZwlrLayerShellV1 => layer_shell,
         XdgWmBase => sctk_shell,
-        ZxdgOutputManagerV1 => xdg_out,
+        ZxdgOutputManagerV1 => sctk_xdg_out,
     ],
     multis = [
         smithay_client_toolkit::reexports::client::protocol::wl_seat::WlSeat => sctk_seats,
-        WlOutput => outputs,
+        WlOutput => sctk_outputs,
     ],
 );
 
@@ -239,14 +120,16 @@ impl WaylandClient {
         let mut wl_queue = display.create_event_queue();
         let wl_display = display.attach(wl_queue.token());
 
+        let (sctk_outputs, sctk_xdg_out) = smithay_client_toolkit::output::XdgOutputHandler::new_output_handlers();
+
         let env = smithay_client_toolkit::environment::Environment::new(&wl_display, &mut wl_queue, Globals {
             sctk_compositor: SimpleGlobal::new(),
             sctk_shm: smithay_client_toolkit::shm::ShmHandler::new(),
             sctk_seats : smithay_client_toolkit::seat::SeatHandler::new(),
             sctk_shell : smithay_client_toolkit::shell::ShellHandler::new(),
-            outputs: OutputHandler::default(),
+            sctk_outputs,
+            sctk_xdg_out,
             layer_shell : SimpleGlobal::new(),
-            xdg_out : SimpleGlobal::new(),
         })?;
 
         let shm = env.create_simple_pool(|mut data| {
@@ -255,13 +138,14 @@ impl WaylandClient {
         })?;
 
         let mut cursor_scale = 1;
-        env.with_inner(|g| g.outputs.outputs.take_in(|outputs| {
-            for output in outputs {
-                if output.scale > cursor_scale {
-                    cursor_scale = output.scale;
+
+        for output in env.get_all_outputs() {
+            smithay_client_toolkit::output::with_output_info(&output, |oi| {
+                if oi.scale_factor > cursor_scale {
+                    cursor_scale = oi.scale_factor;
                 }
-            }
-        }));
+            });
+        }
         let cursor = Cursor::new(&env, cursor_scale);
 
         let mut client = WaylandClient {
@@ -272,12 +156,6 @@ impl WaylandClient {
             flush : None,
             need_flush : true,
         };
-
-        client.get_outputs().take_in(|outputs| {
-            for output in outputs {
-                client.output_finish_setup(output);
-            }
-        });
 
         let _seat_watcher = client.env.listen_for_seats(|seat, si, mut data| {
             let state : &mut State = data.get().unwrap();
@@ -291,8 +169,12 @@ impl WaylandClient {
         Ok((client, wl_queue))
     }
 
-    pub fn get_outputs(&self) -> Rc<Cell<Vec<OutputData>>> {
-        self.env.with_inner(|g| g.outputs.outputs.clone())
+    pub fn add_output_listener<F>(&mut self, f : F) -> OutputStatusListener
+        where F : FnMut(WlOutput, &OutputInfo, DispatchData) + 'static
+    {
+        self.env.with_inner(|globals| {
+            globals.sctk_outputs.listen(f)
+        })
     }
 
     pub fn flush(&mut self) {
@@ -455,45 +337,6 @@ impl WaylandClient {
                 }
             });
         }
-    }
-
-    pub fn output_finish_setup(&mut self, output : &mut OutputData) {
-        let mgr : Attached<ZxdgOutputManagerV1> = self.env.require_global();
-        let xdg_out = mgr.get_xdg_output(&output.output);
-
-        xdg_out.quick_assign(move |xdg_out, event, mut data| {
-            use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_v1::Event;
-            let state : &mut State = data.get().unwrap();
-            let outputs = state.wayland.get_outputs();
-            outputs.take_in(|outputs| {
-                for data in outputs {
-                    if data.xdg.as_ref() != Some(&*xdg_out) {
-                        continue;
-                    }
-                    match event {
-                        Event::LogicalPosition { x, y } => {
-                            data.position = (x, y);
-                        }
-                        Event::LogicalSize { width, height } => {
-                            data.size = (width, height);
-                        }
-                        Event::Name { name } => {
-                            data.name = name;
-                        }
-                        Event::Description { description } => {
-                            data.description = description;
-                        }
-                        Event::Done => {
-                            state.output_ready(&data);
-                        }
-                        _ => ()
-                    }
-                    return;
-                }
-            });
-        });
-
-        output.xdg = Some(xdg_out.into());
     }
 
     pub fn new_popup(&self, bar : &Bar, anchor : (i32, i32, i32, i32), size : (i32, i32)) -> Popup {
