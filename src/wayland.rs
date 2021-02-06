@@ -9,6 +9,7 @@ use smithay_client_toolkit::environment::SimpleGlobal;
 use smithay_client_toolkit::environment::Environment;
 use smithay_client_toolkit::environment;
 use smithay_client_toolkit::seat::SeatData;
+use smithay_client_toolkit::seat::SeatListener;
 use smithay_client_toolkit::shm::MemPool;
 use smithay_client_toolkit::output::OutputInfo;
 use smithay_client_toolkit::output::OutputHandling;
@@ -77,6 +78,8 @@ pub struct WaylandClient {
     pub wl_display : Attached<WlDisplay>,
     pub shm : MemPool,
     cursor : Cursor,
+    #[allow(unused)] // need to hold this handle for the callback to remain alive
+    seat_watcher : SeatListener,
     flush : Option<task::Waker>,
     need_flush : bool,
 }
@@ -148,19 +151,20 @@ impl WaylandClient {
         }
         let cursor = Cursor::new(&env, cursor_scale);
 
+        let seat_watcher = env.listen_for_seats(|seat, si, mut data| {
+            let state : &mut State = data.get().unwrap();
+            state.wayland.add_seat(&seat, si);
+        });
+
         let mut client = WaylandClient {
             env,
             shm,
             wl_display,
             cursor,
+            seat_watcher,
             flush : None,
             need_flush : true,
         };
-
-        let _seat_watcher = client.env.listen_for_seats(|seat, si, mut data| {
-            let state : &mut State = data.get().unwrap();
-            state.wayland.add_seat(&seat, si);
-        });
 
         for seat in client.env.get_all_seats() {
             smithay_client_toolkit::seat::with_seat_data(&seat, |si| client.add_seat(&seat, si));
