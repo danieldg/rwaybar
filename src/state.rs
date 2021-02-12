@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
 use std::time::Instant;
-use std::rc::Rc;
+use std::rc::{self,Rc};
 use wayland_client::Attached;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -381,6 +381,7 @@ pub struct State {
     pub bars : Vec<Bar>,
     bar_config : Vec<toml::Value>,
     pub runtime : Runtime,
+    this : rc::Weak<RefCell<State>>,
     #[allow(unused)] // need to hold this handle for the callback to remain alive
     output_status_listener : OutputStatusListener,
     draw_waiting_on_shm : bool,
@@ -393,9 +394,15 @@ impl State {
             data_update : Cell::new(true),
         });
 
-        let output_status_listener = wayland.add_output_listener(move |output, oi, mut data| {
+        let output_status_listener = wayland.add_output_listener(move |output, _oi, mut data| {
             let state : &mut State = data.get().unwrap();
-            state.output_ready(&output, oi);
+            let state = state.this.upgrade().unwrap();
+            spawn_noerr(async move {
+                let mut state = state.borrow_mut();
+                with_output_info(&output, |oi| {
+                    state.output_ready(&output, oi);
+                });
+            });
         });
 
         let mut state = Self {
@@ -408,6 +415,7 @@ impl State {
                 refresh : Default::default(),
                 notify : Notifier { inner : notify_inner.clone() },
             },
+            this : rc::Weak::new(),
             output_status_listener,
             draw_waiting_on_shm : false,
         };
@@ -452,6 +460,8 @@ impl State {
         });
 
         let rv = Rc::new(RefCell::new(state));
+        rv.borrow_mut().this = Rc::downgrade(&rv);
+
         let state = rv.clone();
         spawn_noerr(async move {
             loop {
