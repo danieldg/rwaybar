@@ -8,12 +8,12 @@ use std::task;
 use smithay_client_toolkit::environment::SimpleGlobal;
 use smithay_client_toolkit::environment::Environment;
 use smithay_client_toolkit::environment;
-use smithay_client_toolkit::seat::SeatData;
-use smithay_client_toolkit::seat::SeatListener;
-use smithay_client_toolkit::shm::MemPool;
-use smithay_client_toolkit::output::OutputInfo;
 use smithay_client_toolkit::output::OutputHandling;
+use smithay_client_toolkit::output::OutputInfo;
 use smithay_client_toolkit::output::OutputStatusListener;
+use smithay_client_toolkit::seat::SeatData;
+use smithay_client_toolkit::seat::SeatHandling;
+use smithay_client_toolkit::seat::SeatListener;
 use tokio::io::unix::AsyncFd;
 use wayland_client::Attached;
 use wayland_client::DispatchData;
@@ -31,6 +31,7 @@ use wayland_protocols::xdg_shell::client::xdg_popup::XdgPopup;
 use wayland_protocols::xdg_shell::client::xdg_surface::XdgSurface;
 use wayland_protocols::xdg_shell::client::xdg_wm_base::XdgWmBase;
 
+use crate::render::Renderer;
 use crate::state::{Bar,State};
 use crate::util;
 
@@ -46,17 +47,6 @@ pub struct Globals {
     layer_shell : SimpleGlobal<ZwlrLayerShellV1>,
 }
 
-impl smithay_client_toolkit::seat::SeatHandling for Globals {
-    fn listen<F>(&mut self, f: F) -> smithay_client_toolkit::seat::SeatListener
-    where F: FnMut(Attached<smithay_client_toolkit::reexports::client::protocol::wl_seat::WlSeat>,
-        &smithay_client_toolkit::seat::SeatData,
-        wayland_client::DispatchData
-    ) + 'static
-    {
-        self.sctk_seats.listen(f)
-    }
-}
-
 environment!(Globals,
     singles = [
         WlCompositor => sctk_compositor,
@@ -67,7 +57,7 @@ environment!(Globals,
         ZxdgOutputManagerV1 => sctk_xdg_out,
     ],
     multis = [
-        smithay_client_toolkit::reexports::client::protocol::wl_seat::WlSeat => sctk_seats,
+        WlSeat => sctk_seats,
         WlOutput => sctk_outputs,
     ],
 );
@@ -76,41 +66,11 @@ environment!(Globals,
 pub struct WaylandClient {
     pub env : Environment<Globals>,
     pub wl_display : Attached<WlDisplay>,
-    pub shm : MemPool,
-    cursor : Cursor,
+    pub renderer : Renderer,
     #[allow(unused)] // need to hold this handle for the callback to remain alive
     seat_watcher : SeatListener,
     flush : Option<task::Waker>,
     need_flush : bool,
-}
-
-struct Cursor {
-    cursor_surf : Attached<WlSurface>,
-    spot : (i32, i32),
-}
-
-impl Cursor {
-    fn new(env : &Environment<Globals>, scale : i32) -> Self {
-        let shm = env.require_global();
-        let base_theme = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".into());
-        let base_size = std::env::var("XCURSOR_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(24u32);
-
-        let mut cursor_theme = wayland_cursor::CursorTheme::load_from_name(&base_theme, base_size * scale as u32, &shm);
-        let cursor = cursor_theme.get_cursor("default").expect("Could not load cursor, check XCURSOR_THEME").clone();
-
-        let cursor_surf = env.create_surface();
-        let cursor_img = &cursor[0];
-        let dim = cursor_img.dimensions();
-        let spot = cursor[0].hotspot();
-        cursor_surf.set_buffer_scale(scale);
-        cursor_surf.attach(Some(&cursor_img), 0, 0);
-        cursor_surf.damage_buffer(0, 0, dim.0 as _, dim.1 as _);
-        cursor_surf.commit();
-        Cursor {
-            spot : (spot.0 as i32 / scale, spot.1 as i32 / scale),
-            cursor_surf,
-        }
-    }
 }
 
 impl WaylandClient {
@@ -124,51 +84,30 @@ impl WaylandClient {
         let wl_display = display.attach(wl_queue.token());
 
         let (sctk_outputs, sctk_xdg_out) = smithay_client_toolkit::output::XdgOutputHandler::new_output_handlers();
+        let mut sctk_seats = smithay_client_toolkit::seat::SeatHandler::new();
+
+        let seat_watcher = sctk_seats.listen(|seat, si, _data| {
+            Self::add_seat(&seat, si);
+        });
 
         let env = smithay_client_toolkit::environment::Environment::new(&wl_display, &mut wl_queue, Globals {
             sctk_compositor: SimpleGlobal::new(),
             sctk_shm: smithay_client_toolkit::shm::ShmHandler::new(),
-            sctk_seats : smithay_client_toolkit::seat::SeatHandler::new(),
             sctk_shell : smithay_client_toolkit::shell::ShellHandler::new(),
+            sctk_seats,
             sctk_outputs,
             sctk_xdg_out,
             layer_shell : SimpleGlobal::new(),
         })?;
 
-        let shm = env.create_simple_pool(|mut data| {
-            let state : &mut State = data.get().unwrap();
-            state.shm_ok_callback();
-        })?;
-
-        let mut cursor_scale = 1;
-
-        for output in env.get_all_outputs() {
-            smithay_client_toolkit::output::with_output_info(&output, |oi| {
-                if oi.scale_factor > cursor_scale {
-                    cursor_scale = oi.scale_factor;
-                }
-            });
-        }
-        let cursor = Cursor::new(&env, cursor_scale);
-
-        let seat_watcher = env.listen_for_seats(|seat, si, mut data| {
-            let state : &mut State = data.get().unwrap();
-            state.wayland.add_seat(&seat, si);
-        });
-
-        let mut client = WaylandClient {
+        let client = WaylandClient {
+            renderer : Renderer::new(&env)?,
             env,
-            shm,
             wl_display,
-            cursor,
             seat_watcher,
             flush : None,
             need_flush : true,
         };
-
-        for seat in client.env.get_all_seats() {
-            smithay_client_toolkit::seat::with_seat_data(&seat, |si| client.add_seat(&seat, si));
-        }
 
         Ok((client, wl_queue))
     }
@@ -186,7 +125,7 @@ impl WaylandClient {
         self.flush.take().map(|f| f.wake());
     }
 
-    pub fn add_seat(&mut self, seat : &Attached<WlSeat>, si : &SeatData) {
+    fn add_seat(seat : &Attached<WlSeat>, si : &SeatData) {
         if si.has_pointer {
             let mouse = seat.get_pointer();
             let mut over = None;
@@ -200,9 +139,7 @@ impl WaylandClient {
                 let state : &mut State = data.get().unwrap();
                 match event {
                     Event::Enter { serial, surface, surface_x, surface_y, .. } => {
-                        let spot = state.wayland.cursor.spot;
-                        mouse.set_cursor(serial, Some(&state.wayland.cursor.cursor_surf), spot.0, spot.1);
-
+                        state.wayland.renderer.cursor.set(&mouse, serial);
                         over = Some(surface.as_ref().id());
                         x = surface_x;
                         y = surface_y;

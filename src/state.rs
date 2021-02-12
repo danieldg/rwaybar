@@ -20,8 +20,9 @@ use wayland_protocols::wlr::unstable::layer_shell::v1::client as layer_shell;
 use layer_shell::zwlr_layer_shell_v1::{ZwlrLayerShellV1, Layer};
 use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
 
-use crate::item::*;
 use crate::data::{Module,IterationItem,Value};
+use crate::item::*;
+use crate::render::RenderTarget;
 use crate::util::{Cell,spawn,spawn_noerr};
 use crate::wayland::{Popup,WaylandClient};
 
@@ -208,44 +209,6 @@ impl Drop for Bar {
     }
 }
 
-struct RenderTarget<'a> {
-    wayland : &'a mut WaylandClient,
-    pos : usize,
-}
-impl<'a> RenderTarget<'a> {
-    fn new(wayland : &'a mut WaylandClient, len : usize) -> Self {
-        wayland.shm.resize(len).expect("OOM");
-        RenderTarget { wayland, pos : 0 }
-    }
-
-    fn render(&mut self, size : (i32, i32), target : &WlSurface, surf : &cairo::Surface) {
-        let stride = cairo::Format::ARgb32.stride_for_width(size.0 as u32).unwrap();
-        let len = (size.1 as usize) * (stride as usize);
-        let buf : &mut [u8] = &mut self.wayland.shm.mmap().as_mut()[self.pos..][..len];
-
-        unsafe {
-            // cairo::ImageSurface::create_for_data requires a 'static type, so give it that.
-            // This could be done safely by creating a type that takes ownership of the MemPool and
-            // returns it on Drop, which would require starting with an Rc<State> handle.
-            let buf : &'static mut [u8] = &mut *(buf as *mut [u8]);
-
-            let is = cairo::ImageSurface::create_for_data(buf, cairo::Format::ARgb32, size.0, size.1, stride).unwrap();
-            let ctx = cairo::Context::new(&is);
-            surf.flush();
-            ctx.set_source_surface(surf, 0.0, 0.0);
-            ctx.set_operator(cairo::Operator::Source);
-            ctx.paint();
-            is.finish();
-            drop(is);
-        }
-
-        let buf = self.wayland.shm.buffer(self.pos as i32, size.0, size.1, stride, smithay_client_toolkit::shm::Format::Argb8888);
-        target.attach(Some(&buf), 0, 0);
-        target.damage_buffer(0, 0, size.0, size.1);
-        self.pos += len;
-    }
-}
-
 #[derive(Debug)]
 struct Notifier {
     inner : Rc<NotifierInner>,
@@ -384,7 +347,6 @@ pub struct State {
     this : rc::Weak<RefCell<State>>,
     #[allow(unused)] // need to hold this handle for the callback to remain alive
     output_status_listener : OutputStatusListener,
-    draw_waiting_on_shm : bool,
 }
 
 impl State {
@@ -417,7 +379,6 @@ impl State {
             },
             this : rc::Weak::new(),
             output_status_listener,
-            draw_waiting_on_shm : false,
         };
 
         state.load_config(false)?;
@@ -466,7 +427,10 @@ impl State {
         spawn_noerr(async move {
             loop {
                 notify_inner.notify.notified().await;
-                state.borrow_mut().request_draw_internal();
+                let mut state = state.borrow_mut();
+                if state.wayland.renderer.request_draw() {
+                    state.draw_now();
+                }
             }
         });
 
@@ -567,23 +531,6 @@ impl State {
         self.runtime.notify.notify_draw_only();
     }
 
-    fn request_draw_internal(&mut self) {
-        if self.wayland.shm.is_used() {
-            self.draw_waiting_on_shm = true;
-        } else {
-            self.set_data();
-            self.draw_now().expect("Render error");
-        }
-    }
-
-    pub fn shm_ok_callback(&mut self) {
-        if self.draw_waiting_on_shm {
-            self.draw_waiting_on_shm = false;
-            self.set_data();
-            self.draw_now().expect("Render error");
-        }
-    }
-
     fn set_data(&mut self) {
         // Propagate the data_update field to all bar dirty fields
         if !self.runtime.notify.inner.data_update.get() {
@@ -596,7 +543,9 @@ impl State {
         self.runtime.notify.inner.data_update.set(false);
     }
 
-    fn draw_now(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn draw_now(&mut self) {
+        self.set_data();
+
         let mut shm_size = 0;
         let begin = Instant::now();
         for bar in &self.bars {
@@ -604,7 +553,7 @@ impl State {
         }
 
         if shm_size == 0 {
-            return Ok(());
+            return;
         }
 
         let mut target = RenderTarget::new(&mut self.wayland, shm_size);
@@ -615,7 +564,6 @@ impl State {
         self.wayland.flush();
         let render_time = begin.elapsed().as_nanos();
         log::debug!("Frame took {}.{:06} ms", render_time / 1_000_000, render_time % 1_000_000);
-        Ok(())
     }
 
     pub fn output_ready(&mut self, output : &WlOutput, data : &OutputInfo) {
