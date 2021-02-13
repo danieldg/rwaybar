@@ -326,6 +326,7 @@ Key | Type | Default | Details
 `post-float` | Block | -- | Block shown after displaying a floating container.
 `post-workspace` | Block | -- | Block shown after displaying the contents of a workspace. `{item.name}` and `{item.output}` are available.
 `output` | String | -- | If non-empty, only show workspaces on the given output.  Set to `{bar.name}` for the current output (this works even if you didn't set a name in `[[bar]]`)
+`workspace` | String | -- | If non-empty, only show the workspace with the given name.  This could be used to restrict to the focused workspace or to nest in a focus-list of workspaces.
 
 Within a node (either a container or a window), the following item keys are available:
 

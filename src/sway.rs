@@ -701,6 +701,7 @@ pub struct Tree {
     value : Rc<TreeInner>,
     items : Box<TreeItems>,
     output : Option<Box<str>>,
+    workspace : Option<Box<str>>,
 }
 
 #[derive(Debug)]
@@ -765,10 +766,12 @@ impl Tree {
             post_workspace : config.get("post-workspace").map(Item::from_toml_ref).map(Rc::new),
         };
         let output = config.get("output").and_then(|v| v.as_str()).map(Into::into);
+        let workspace = config.get("workspace").and_then(|v| v.as_str()).map(Into::into);
         Some(Tree {
             value : Default::default(),
             items : Box::new(items),
             output,
+            workspace,
         })
     }
 
@@ -826,10 +829,16 @@ impl Tree {
         let output = self.output.as_ref()
             .map(|v| ctx.runtime.format_or(&v, ctx.err_name).into_text())
             .unwrap_or_default();
+        let name_filter = self.workspace.as_ref()
+            .map(|v| ctx.runtime.format_or(&v, ctx.err_name).into_text())
+            .unwrap_or_default();
         self.interest(ctx.runtime);
         self.value.workspaces.take_in_some(|workspaces| {
             for workspace in workspaces {
                 if !output.is_empty() && workspace.output != output {
+                    continue;
+                }
+                if !name_filter.is_empty() && workspace.name != name_filter {
                     continue;
                 }
                 let ii = IterationItem::SwayWorkspace(Rc::new(WorkspaceData {
