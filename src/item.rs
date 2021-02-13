@@ -638,7 +638,7 @@ impl Item {
         let x1 = ctx.render_pos.get();
         rv.offset_clamp(0.0, x0, x1);
         for h in &mut rv.handlers {
-            h.item = Some(item.clone());
+            h.item.get_or_insert_with(|| item.clone());
         }
         ev.merge(rv);
         item_var.set(prev);
@@ -718,7 +718,7 @@ impl Item {
                     let x1 = ctx.render_pos.get();
                     ev.offset_clamp(0.0, x0, x1);
                     for h in &mut ev.handlers {
-                        h.item = Some(item.clone());
+                        h.item.get_or_insert_with(|| item.clone());
                     }
                     rv.merge(ev);
                     ctx.render_pos.set(ctx.render_pos.get() + spacing);
