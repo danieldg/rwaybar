@@ -21,6 +21,7 @@ See the [configuration documentation](doc/config.md) for details.
 - Support for showing meters () and alerts.
 - Regular expressions
 - Simple expression evaluation
+- Config reload on SIGHUP
 
 ## Building
 

@@ -333,8 +333,9 @@ struct WorkspacesData {
     interested : Cell<NotifierList>,
 }
 
-#[derive(Debug,Default)]
+#[derive(Debug)]
 pub struct Workspace {
+    output : Option<Box<str>>,
     value : Rc<WorkspacesData>,
 }
 
@@ -423,8 +424,12 @@ impl WorkspacesData {
 }
 
 impl Workspace {
-    pub fn from_toml(_config : &toml::Value) -> Option<Self> {
-        Some(Workspace::default())
+    pub fn from_toml(config : &toml::Value) -> Option<Self> {
+        let output = config.get("output").and_then(|v| v.as_str()).map(Into::into);
+        Some(Workspace {
+            output,
+            value : Default::default(),
+        })
     }
 
     fn interest(&self, rt : &Runtime) {
@@ -492,10 +497,16 @@ impl Workspace {
 
     pub fn read_focus_list<F : FnMut(bool, IterationItem)>(&self, rt : &Runtime, mut f : F) {
         self.interest(rt);
+        let output = self.output.as_ref()
+            .map(|v| rt.format_or(&v, "sway-workspace").into_text())
+            .unwrap_or_default();
         let focus = self.value.focus.take_in(|f| f.clone());
         self.value.list.take_in(|list| {
             for item in &*list {
                 let focus = item.name == focus;
+                if !output.is_empty() && item.output != output {
+                    continue;
+                }
                 f(focus, IterationItem::SwayWorkspace(item.clone()));
             }
         });

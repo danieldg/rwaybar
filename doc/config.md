@@ -357,16 +357,20 @@ on-click = { send = "item", format = "focus" }
 on-click-backward = { send = "item", format = "kill" }
 on-scroll-right = { send = "item", format = "move right" }
 on-scroll-left = { send = "item", format = "move left" }
-```
 
 [tree-block.post-node]
 format = "]"
+```
 
 ## sway-workspace
 
 The currently selected workspace
 
 This module is valid as a target for format-list; when used there, it shows all available workspaces.
+
+Key | Expanded | Default | Details
+----|----------|---------|--------
+`output` | Yes | -- | If non-empty, only show workspaces on the given output.  Set to `{bar.name}` for the current output (this works even if you didn't set a name in `[[bar]]`)
 
 ## switch
 
