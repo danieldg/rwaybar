@@ -31,8 +31,9 @@ use wayland_protocols::xdg_shell::client::xdg_popup::XdgPopup;
 use wayland_protocols::xdg_shell::client::xdg_surface::XdgSurface;
 use wayland_protocols::xdg_shell::client::xdg_wm_base::XdgWmBase;
 
+use crate::bar::Bar;
 use crate::render::Renderer;
-use crate::state::{Bar,State};
+use crate::state::State;
 use crate::util;
 
 /// Wayland globals (access via [Environment::require_global])

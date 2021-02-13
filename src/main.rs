@@ -1,5 +1,6 @@
 use std::error::Error;
 
+mod bar;
 mod data;
 mod dbus;
 mod icon;
