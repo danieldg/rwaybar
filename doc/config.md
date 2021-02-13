@@ -325,6 +325,7 @@ Key | Type | Default | Details
 `pre-float` | Block | -- | Block shown before displaying a floating container.
 `post-float` | Block | -- | Block shown after displaying a floating container.
 `post-workspace` | Block | -- | Block shown after displaying the contents of a workspace. `{item.name}` and `{item.output}` are available.
+`output` | String | -- | If non-empty, only show workspaces on the given output.  Set to `{bar.name}` for the current output (this works even if you didn't set a name in `[[bar]]`)
 
 Within a node (either a container or a window), the following item keys are available:
 
