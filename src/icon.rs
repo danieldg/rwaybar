@@ -146,6 +146,9 @@ pub fn render(ctx : &Render, name : &str) -> Result<(), ()> {
     let (xsize, ysize) = m.transform_distance(clip_y1 - clip_y0, clip_x1 - clip_x0);
     let logic_size = f64::min(clip_y1 - clip_y0, clip_x1 - clip_x0);
     let pixel_size = f64::min(xsize, ysize);
+    if pixel_size < 1.0 {
+        return Err(());
+    }
 
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();

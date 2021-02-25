@@ -377,6 +377,9 @@ impl State {
     }
 
     pub fn output_ready(&mut self, output : &WlOutput, data : &OutputInfo) {
+        if data.obsolete {
+            return;
+        }
         info!("Output name='{}' description='{}' make='{}' model='{}'",
             data.name, data.description, data.make, data.model);
         for (i, cfg) in self.bar_config.iter().enumerate() {
