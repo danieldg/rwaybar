@@ -7,7 +7,6 @@ use smithay_client_toolkit::output::OutputStatusListener;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
-use std::path::PathBuf;
 use std::time::Instant;
 use std::rc::{self,Rc};
 use wayland_client::protocol::wl_output::WlOutput;
@@ -62,6 +61,7 @@ impl NotifierList {
 
 /// Common state available during rendering operations
 pub struct Runtime {
+    pub xdg : xdg::BaseDirectories,
     pub items : HashMap<String, Rc<Item>>,
     item_var : Rc<Item>,
     notify : Notifier,
@@ -182,6 +182,7 @@ impl State {
             bars : Vec::new(),
             bar_config : Vec::new(),
             runtime : Runtime {
+                xdg : xdg::BaseDirectories::new()?,
                 items : Default::default(),
                 item_var : Rc::new(Module::new_current_item().into()),
                 refresh : Default::default(),
@@ -262,16 +263,8 @@ impl State {
     fn load_config(&mut self, reload : bool) -> Result<(), Box<dyn Error>> {
         let mut bar_config = Vec::new();
 
-        let mut config_path = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let mut home = std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(PathBuf::new);
-                home.push(".config");
-                home
-            });
-        config_path.push("rwaybar.toml");
+        let config_path = self.runtime.xdg.find_config_file("rwaybar.toml")
+            .ok_or("Could not find configuration: create ~/.config/rwaybar.toml")?;
 
         let cfg = std::fs::read_to_string(config_path)?;
         let config : toml::Value = toml::from_str(&cfg)?;

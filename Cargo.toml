@@ -22,6 +22,7 @@ once_cell = ""
 strfmt = ""
 tokio = { version = "1", features = ['rt', 'net', 'signal', 'sync', 'io-util', 'time'] }
 toml = ""
+xdg = ""
 
 # GUI
 cairo-rs = { version = "", features = ['png'] }

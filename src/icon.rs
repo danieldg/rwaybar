@@ -50,13 +50,17 @@ impl CairoStylePixbuf {
     }
 }
 
-fn open_icon(name : &str, target_size : f64) -> io::Result<PathBuf> {
+fn open_icon(xdg : &xdg::BaseDirectories, name : &str, target_size : f64) -> io::Result<PathBuf> {
     if name.contains('/') {
         return Ok(PathBuf::from(name.to_owned()));
     }
 
-    let base = "/usr/share/icons"; // TODO other paths?
-    let theme = "hicolor"; // TODO configurable as list
+    // return paths in order from highest to lowest priority, unlike how the xdg crate does it
+    // (sadly that crate doesn't support DoubleEndedIterator yet)
+    let find_data = |path : &str| {
+        let dirs : Vec<_> = xdg.find_data_files(path).collect();
+        dirs.into_iter().rev()
+    };
 
     let f = |mut path: PathBuf| {
         path.push(name);
@@ -77,18 +81,24 @@ fn open_icon(name : &str, target_size : f64) -> io::Result<PathBuf> {
         None
     };
 
-    match f(PathBuf::from("/usr/share/pixmaps")) {
-        Some(rv) => return Ok(rv),
-        None => {}
+    for path in find_data("pixmaps") {
+        match f(path) {
+            Some(rv) => return Ok(rv),
+            None => {}
+        }
     }
-    match iter_icons(&format!("{}/{}", base, theme), target_size, f)? {
-        Some(rv) => return Ok(rv),
-        None => {}
+
+    // TODO take a theme (instead of "hicolor") as an argument
+    for path in find_data("icons/hicolor") {
+        match iter_icons(&path, target_size, f)? {
+            Some(rv) => return Ok(rv),
+            None => {}
+        }
     }
     Err(io::ErrorKind::NotFound.into())
 }
 
-fn iter_icons<F,R>(base : &str, target_size : f64, mut f : F) -> io::Result<Option<R>>
+fn iter_icons<F,R>(base : &PathBuf, target_size : f64, mut f : F) -> io::Result<Option<R>>
     where F : FnMut(PathBuf) -> Option<R>
 {
     let mut sorted_dirs = Vec::new();
@@ -154,7 +164,7 @@ pub fn render(ctx : &Render, name : &str) -> Result<(), ()> {
         let mut cache = cache.borrow_mut();
         let tsize = pixel_size as i32;
         match cache.entry((name.into(), tsize)).or_insert_with(|| {
-                open_icon(name, pixel_size).ok()
+                open_icon(&ctx.runtime.xdg, name, pixel_size).ok()
                 .and_then(|path| gdk_pixbuf::Pixbuf::from_file_at_size(path, tsize, tsize).ok())
                 .and_then(|pixbuf| pixbuf.add_alpha(false, 0,0,0))
                 .and_then(CairoStylePixbuf::parse)
