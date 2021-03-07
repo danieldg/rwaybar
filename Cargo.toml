@@ -29,8 +29,7 @@ cairo-rs = { version = "", features = ['png'] }
 pango = ""
 pango-sys = "" # for pango_color_parse
 pangocairo = ""
-#smithay-client-toolkit = { version = "0.13", default-features = false }
-smithay-client-toolkit = { git = "https://github.com/Smithay/client-toolkit.git",  default-features = false }
+smithay-client-toolkit = { version = "0.13", default-features = false }
 wayland-client = ""
 wayland-cursor = ""
 wayland-protocols = ""
