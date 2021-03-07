@@ -19,26 +19,26 @@ json = ""
 libc = ""
 log = ""
 once_cell = ""
-strfmt = ""
+strfmt = "=0.1.6"
 tokio = { version = "1", features = ['rt', 'net', 'signal', 'sync', 'io-util', 'time'] }
 toml = ""
 xdg = ""
 
 # GUI
-cairo-rs = { version = "", features = ['png'] }
-pango = ""
-pango-sys = "" # for pango_color_parse
-pangocairo = ""
+cairo-rs = "0.9"
+pango = "0.9"
+pango-sys = "0.10" # for pango_color_parse
+pangocairo = "0.10"
 smithay-client-toolkit = { version = "0.13", default-features = false }
-wayland-client = ""
-wayland-cursor = ""
-wayland-protocols = ""
+wayland-client = "0.28.5"
+wayland-cursor = "0.28"
+wayland-protocols = "0.28"
 
 # Module specific (could be optional deps)
 chrono = ""
 chrono-tz = ""
 dbus = { version = "", features = ['futures'] }
 evalexpr = ""
-gdk-pixbuf = ""
+gdk-pixbuf = "" # for SVG icons, else we could use image
 libpulse-binding = { version = "", features = ['pa_v14'] }
 regex = ""
