@@ -1,6 +1,7 @@
 # rwaybar
 
-A bar for Wayland (for wlroots compositors like sway) written in Rust.
+A taskbar for Wayland written in Rust.  Works on any compositor supporting
+the layer\_shell protocol (sway, most wlroots window managers, kwin).
 
 ## Available Modules
 

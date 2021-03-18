@@ -29,7 +29,7 @@ cairo-rs = "0.9"
 pango = "0.9"
 pango-sys = "0.10" # for pango_color_parse
 pangocairo = "0.10"
-smithay-client-toolkit = { version = "0.13", default-features = false }
+smithay-client-toolkit = { version = "0.13", default-features = false, git = "https://github.com/Smithay/client-toolkit.git" }
 wayland-client = "0.28.5"
 wayland-cursor = "0.28"
 wayland-protocols = "0.28"

@@ -132,21 +132,6 @@ impl Bar {
         }
     }
 
-    pub fn get_render_size(&self) -> usize {
-        let mut rv = 0;
-        if self.dirty && self.throttle.is_none() {
-            let stride = cairo::Format::ARgb32.stride_for_width(self.pixel_width as u32).unwrap();
-            rv += (self.pixel_height as usize) * (stride as usize);
-        }
-        if let Some(popup) = &self.popup {
-            if !popup.wl.waiting_on_configure {
-                let stride = cairo::Format::ARgb32.stride_for_width((popup.wl.size.0 * popup.wl.scale) as u32).unwrap();
-                rv += (popup.wl.size.1 * popup.wl.scale) as usize * (stride as usize);
-            }
-        }
-        rv
-    }
-
     pub fn render_with(&mut self, runtime : &mut Runtime, target : &mut RenderTarget) {
         if self.dirty && self.throttle.is_none() {
             let rt_item = runtime.items.entry("bar".into()).or_insert_with(|| Rc::new(Item::none()));

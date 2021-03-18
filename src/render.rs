@@ -1,28 +1,20 @@
 use std::io;
 use smithay_client_toolkit::environment::Environment;
-use smithay_client_toolkit::shm::MemPool;
+use smithay_client_toolkit::shm::AutoMemPool;
 use wayland_client::Attached;
 use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_client::protocol::wl_surface::WlSurface;
 
-use crate::state::State;
 use crate::wayland::{Globals,WaylandClient};
 
 pub struct Renderer {
-    shm : MemPool,
+    shm : AutoMemPool,
     pub cursor : Cursor,
-    draw_waiting_on_shm : bool,
 }
 
 impl Renderer {
     pub fn new(env : &Environment<Globals>) -> io::Result<Self> {
-        let shm = env.create_simple_pool(|mut data| {
-            let state : &mut State = data.get().unwrap();
-            if state.wayland.renderer.draw_waiting_on_shm {
-                state.wayland.renderer.draw_waiting_on_shm = false;
-                state.draw_now();
-            }
-        })?;
+        let shm = env.create_auto_pool()?;
 
         let mut cursor_scale = 1;
 
@@ -38,17 +30,7 @@ impl Renderer {
         Ok(Renderer {
             cursor,
             shm,
-            draw_waiting_on_shm : false,
         })
-    }
-
-    pub fn request_draw(&mut self) -> bool {
-        if self.draw_waiting_on_shm || self.shm.is_used() {
-            self.draw_waiting_on_shm = true;
-            false
-        } else {
-            true
-        }
     }
 }
 
@@ -88,19 +70,18 @@ impl Cursor {
 
 pub struct RenderTarget<'a> {
     pub wayland : &'a mut WaylandClient,
-    pos : usize,
 }
 
 impl<'a> RenderTarget<'a> {
-    pub fn new(wayland : &'a mut WaylandClient, len : usize) -> Self {
-        wayland.renderer.shm.resize(len).expect("OOM");
-        RenderTarget { wayland, pos : 0 }
+    pub fn new(wayland : &'a mut WaylandClient) -> Self {
+        RenderTarget { wayland }
     }
 
     pub fn render(&mut self, size : (i32, i32), target : &WlSurface, surf : &cairo::Surface) {
         let stride = cairo::Format::ARgb32.stride_for_width(size.0 as u32).unwrap();
-        let len = (size.1 as usize) * (stride as usize);
-        let buf : &mut [u8] = &mut self.wayland.renderer.shm.mmap().as_mut()[self.pos..][..len];
+        let (buf, wl_buf) = self.wayland.renderer.shm
+            .buffer(size.0, size.1, stride, smithay_client_toolkit::shm::Format::Argb8888)
+            .expect("OOM");
 
         unsafe {
             // cairo::ImageSurface::create_for_data requires a 'static type, so give it that.
@@ -117,10 +98,7 @@ impl<'a> RenderTarget<'a> {
             is.finish();
             drop(is);
         }
-
-        let buf = self.wayland.renderer.shm.buffer(self.pos as i32, size.0, size.1, stride, smithay_client_toolkit::shm::Format::Argb8888);
-        target.attach(Some(&buf), 0, 0);
+        target.attach(Some(&wl_buf), 0, 0);
         target.damage_buffer(0, 0, size.0, size.1);
-        self.pos += len;
     }
 }

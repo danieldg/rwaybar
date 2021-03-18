@@ -239,9 +239,7 @@ impl State {
             loop {
                 notify_inner.notify.notified().await;
                 let mut state = state.borrow_mut();
-                if state.wayland.renderer.request_draw() {
-                    state.draw_now();
-                }
+                state.draw_now();
             }
         });
 
@@ -349,17 +347,8 @@ impl State {
     pub fn draw_now(&mut self) {
         self.set_data();
 
-        let mut shm_size = 0;
         let begin = Instant::now();
-        for bar in &self.bars {
-            shm_size += bar.get_render_size();
-        }
-
-        if shm_size == 0 {
-            return;
-        }
-
-        let mut target = RenderTarget::new(&mut self.wayland, shm_size);
+        let mut target = RenderTarget::new(&mut self.wayland);
 
         for bar in &mut self.bars {
             bar.render_with(&mut self.runtime, &mut target);
