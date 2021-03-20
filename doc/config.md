@@ -22,6 +22,7 @@ Key | Value | Expanded | Default
 `size` | The size of the bar in pixels | No | `20`
 `size-exclusive` | Number of pixels to reserve for the bar | No | (`size`)
 `side` | `top` or `bottom` | No | `bottom`
+`sparse-clicks` | `true` if clicks should only be captured where active | No | `true`
 `left` | Block or list of blocks | No | None
 `center` | Block or list of blocks | No | None
 `right` | Block or list of blocks | No | None
@@ -111,6 +112,9 @@ on-click = { send = "mpris-block", msg = "PlayPause" }
 ```
 
 Either `msg` or `format` are valid; both are text-expanded before sending to the module.
+
+If the bar-level setting `sparse-clicks` is true, then any element without a
+tooltip or an on-click handler will be transparent to clicks and touches.
 
 ## Text Module
 

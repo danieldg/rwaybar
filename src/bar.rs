@@ -33,8 +33,10 @@ pub struct Bar {
     pub anchor_top : bool,
     pub scale : i32,
     pixel_width : i32,
-    pixel_height : i32,
+    size : i32,
+    size_excl : u32,
     pub dirty : bool,
+    sparse : bool,
     throttle : Option<Attached<WlCallback>>,
     pub item : Rc<Item>,
     pub cfg_index : usize,
@@ -66,7 +68,8 @@ impl Bar {
         }
         ls_surf.set_size(0, size);
         ls_surf.set_exclusive_zone(size_excl as i32);
-        if size != size_excl && size_excl != 0 {
+        let sparse = cfg.get("sparse-clicks").and_then(|v| v.as_bool()).unwrap_or(true);
+        if !sparse && size != size_excl && size_excl != 0 {
             // Only handle input in the exclusive region; clicks in the overhang region will go
             // through to the window we cover (hopefully transparently, to avoid confusion)
             let comp : Attached<WlCompositor> = wayland.env.require_global();
@@ -91,7 +94,7 @@ impl Bar {
                         }
 
                         bar.pixel_width = width as i32 * bar.scale;
-                        bar.pixel_height = height as i32 * bar.scale;
+                        bar.size = height as i32;
 
                         ls_surf.ack_configure(serial);
                         bar.dirty = true;
@@ -122,10 +125,12 @@ impl Bar {
             item : Rc::new(Item::new_bar(cfg)),
             scale,
             pixel_width : 0,
-            pixel_height : 0,
+            size : size as i32,
+            size_excl,
             anchor_top,
             sink : EventSink::default(),
             dirty : false,
+            sparse,
             throttle : None,
             popup : None,
             cfg_index,
@@ -142,7 +147,7 @@ impl Bar {
                     x : 0.0,
                     y : 0.0,
                     width : self.pixel_width as f64,
-                    height : self.pixel_height as f64,
+                    height : (self.size * self.scale) as f64,
                 }).expect("Error creating bar rendering surface");
             let ctx = cairo::Context::new(&surf);
             let mut scale_matrix = cairo::Matrix::identity();
@@ -168,7 +173,22 @@ impl Bar {
             };
             self.sink = ctx.runtime.items["bar"].render(&ctx);
 
-            target.render((self.pixel_width, self.pixel_height), &self.surf, &surf);
+            if self.sparse {
+                let comp : Attached<WlCompositor> = target.wayland.env.require_global();
+                let region = comp.create_region();
+                let yoff = if self.anchor_top {
+                    0
+                } else {
+                    (self.size as u32).saturating_sub(self.size_excl) as i32
+                };
+                self.sink.for_active_regions(|lo, hi| {
+                    region.add(lo as i32, yoff, (hi - lo) as i32, self.size_excl as i32);
+                });
+                self.surf.set_input_region(Some(&region));
+                region.destroy();
+            }
+
+            target.render((self.pixel_width, self.size * self.scale), &self.surf, &surf);
             std::mem::swap(&mut self.item, runtime.items.get_mut("bar").unwrap());
 
             let frame = self.surf.frame();
@@ -222,13 +242,13 @@ impl Bar {
                     self.popup = None;
                 }
             }
-            let anchor = (min_x as i32, 0, (max_x - min_x) as i32, self.pixel_height / self.scale);
+            let anchor = (min_x as i32, 0, (max_x - min_x) as i32, self.size as i32);
             let contents = cairo::RecordingSurface::create(cairo::Content::ColorAlpha,
                 cairo::Rectangle {
                     x : 0.0,
                     y : 0.0,
-                    width : (self.pixel_width / self.scale) as f64,
-                    height : (self.pixel_width / self.scale) as f64 * 2.0,
+                    width : self.pixel_width as f64,
+                    height : self.pixel_width as f64 * 2.0,
                 }).expect("Error creating popup rendering surface");
 
             let size = desc.render_popup(runtime, &contents, self.scale);

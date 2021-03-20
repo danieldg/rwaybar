@@ -378,6 +378,35 @@ impl EventSink {
         }
         None
     }
+
+    pub fn for_active_regions(&self, mut f : impl FnMut(f64, f64)) {
+        let mut ha = self.handlers.iter().peekable();
+        let mut ho = self.hovers.iter().peekable();
+        loop {
+            let a_min = ha.peek().map_or(f64::NAN, |e| e.x_min);
+            let o_min = ho.peek().map_or(f64::NAN, |e| e.0);
+            let min = f64::min(a_min, o_min);
+            let mut max;
+            if min == a_min {
+                max = ha.next().unwrap().x_max;
+            } else if min == o_min {
+                max = ho.next().unwrap().1;
+            } else {
+                // NaN
+                return;
+            }
+            loop {
+                if ha.peek().map_or(f64::NAN, |e| e.x_min) <= max + 1.0 {
+                    max = f64::max(max, ha.next().map_or(f64::NAN, |e| e.x_max));
+                } else if ho.peek().map_or(f64::NAN, |e| e.0) <= max + 1.0 {
+                    max = f64::max(max, ho.next().map_or(f64::NAN, |e| e.1));
+                } else {
+                    break;
+                }
+            }
+            f(min, max);
+        }
+    }
 }
 
 impl From<Module> for Item {
