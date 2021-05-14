@@ -1,3 +1,4 @@
+use raqote::DrawTarget;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self,File};
@@ -6,51 +7,102 @@ use std::path::{PathBuf,Component};
 use crate::item::Render;
 
 thread_local! {
-    static CACHE : RefCell<HashMap<(String, i32), Option<CairoStylePixbuf>>> = Default::default();
+    static CACHE : RefCell<HashMap<(String, u32), Option<OwnedImage>>> = Default::default();
 }
 
 #[derive(Debug)]
-struct CairoStylePixbuf {
-    w : i32,
-    h : i32,
-    surf : cairo::ImageSurface,
+pub struct OwnedImage {
+    pub width : i32,
+    pub height : i32,
+    pub buf : Vec<u32>,
 }
 
-impl CairoStylePixbuf {
-    fn parse(pixbuf : gdk_pixbuf::Pixbuf) -> Option<Self> {
-        if pixbuf.get_n_channels() != 4 {
-            return None;
+impl OwnedImage {
+    pub fn as_ref(&self) -> raqote::Image {
+        raqote::Image {
+            width: self.width,
+            height: self.height,
+            data: &self.buf,
         }
-        let w = pixbuf.get_width() as i32;
-        let h = pixbuf.get_height() as i32;
-        let src_s = pixbuf.get_rowstride() as i32;
-        let dst_s = cairo::Format::ARgb32.stride_for_width(w as u32).ok()?;
-        let mut buf = vec![0;(h*dst_s) as usize].into_boxed_slice();
+    }
 
-        let pixels = unsafe { &*pixbuf.get_pixels() }; // this would be safe if non-mut
-        let idx_map = u32::to_ne_bytes(u32::from_be_bytes([0,1,2,3]));
-        for r in 0..h {
-            let src_i = r * src_s;
-            let dst_i = r * dst_s;
-            for c in 0..w {
-                let src_i = (src_i + c * 4) as usize;
-                let dst_i = (dst_i + c * 4) as usize;
-                let alpha = pixels[src_i + 3] as u32;
-                for k in 0..3 {
-                    let pix = pixels[src_i + k] as u32;
-                    let pix = ((pix * alpha) / 255) as u8;
-                    buf[dst_i + idx_map[k + 1] as usize] = pix;
-                }
-                buf[src_i + idx_map[0] as usize] = alpha as u8;
+    pub fn from_canvas(canvas : DrawTarget) -> Self {
+        let width = canvas.width();
+        let height = canvas.height();
+        Self { width, height, buf: canvas.into_vec() }
+    }
+
+    pub fn from_file<R : io::Read>(mut file : R, tsize : u32) -> Option<Self> {
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).ok()?;
+        Self::from_data(&buf, tsize)
+    }
+
+    pub fn from_data(buf : &[u8], tsize : u32) -> Option<Self> {
+        Self::from_png(buf).ok()
+            .or_else(|| Self::from_svg(buf, tsize))
+    }
+
+    pub fn from_png(data : &[u8]) -> Result<Self, png::DecodingError> {
+        let mut png = png::Decoder::new(std::io::Cursor::new(data));
+        png.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+        let (info, mut png) = png.read_info()?;
+        let mut image = vec![0; png.output_buffer_size()];
+        let (color, _depth_is_8) = png.output_color_type();
+        png.next_frame(&mut image)?;
+
+        let mut tmp_canvas = DrawTarget::new(info.width as i32, info.height as i32);
+        let step = match color {
+            png::ColorType::Grayscale => 1,
+            png::ColorType::GrayscaleAlpha => 2,
+            png::ColorType::RGB => 3,
+            png::ColorType::RGBA => 4,
+            _ => unreachable!(),
+        };
+        if step == 4 {
+            tmp_canvas.get_data_u8_mut().copy_from_slice(&image);
+            for pixel in tmp_canvas.get_data_mut() {
+                let [r,g,b,a] = pixel.to_le_bytes();
+                let m = |v| ((v as u32) * (a as u32) / 255) as u8;
+                *pixel = u32::from_be_bytes([a,m(r), m(g), m(b)]);
+            }
+        } else {
+            for (src, pixel) in image.chunks(step).zip(tmp_canvas.get_data_mut()) {
+                let argb = match src.len() {
+                    1 => [255, src[0], src[0], src[0]],
+                    2 => {
+                        let a = src[1];
+                        let g = ((src[0] as u32) * (a as u32) / 255) as u8;
+                        [a, g,g,g]
+                    }
+                    3 => [255, src[0], src[1], src[2]],
+                    _ => break,
+                };
+                *pixel = u32::from_be_bytes(argb);
             }
         }
+        Ok(Self::from_canvas(tmp_canvas))
+    }
 
-        cairo::ImageSurface::create_for_data(buf, cairo::Format::ARgb32, w, h, dst_s)
-            .ok().map(|surf| CairoStylePixbuf { w, h, surf })
+    pub fn from_svg(data : &[u8], height : u32) -> Option<Self> {
+        let tree = usvg::Tree::from_data(data, &usvg::Options::default()).ok()?;
+        let svg_width = tree.svg_node().size.width();
+        let svg_height = tree.svg_node().size.height();
+        let width = (height as f64 * svg_width / svg_height).ceil() as u32;
+        let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
+        resvg::render(&tree, usvg::FitTo::Height(height), pixmap.as_mut())?;
+        let buf = pixmap.pixels().iter().map(|pixel| {
+            u32::from_be_bytes([pixel.alpha(), pixel.red(), pixel.green(), pixel.blue()])
+        }).collect();
+        Some(Self {
+            width: width as i32,
+            height: height as i32,
+            buf
+        })
     }
 }
 
-fn open_icon(xdg : &xdg::BaseDirectories, name : &str, target_size : f64) -> io::Result<PathBuf> {
+fn open_icon(xdg : &xdg::BaseDirectories, name : &str, target_size : f32) -> io::Result<PathBuf> {
     if name.contains('/') {
         return Ok(PathBuf::from(name.to_owned()));
     }
@@ -98,7 +150,7 @@ fn open_icon(xdg : &xdg::BaseDirectories, name : &str, target_size : f64) -> io:
     Err(io::ErrorKind::NotFound.into())
 }
 
-fn iter_icons<F,R>(base : &PathBuf, target_size : f64, mut f : F) -> io::Result<Option<R>>
+fn iter_icons<F,R>(base : &PathBuf, target_size : f32, mut f : F) -> io::Result<Option<R>>
     where F : FnMut(PathBuf) -> Option<R>
 {
     let mut sorted_dirs = Vec::new();
@@ -119,9 +171,9 @@ fn iter_icons<F,R>(base : &PathBuf, target_size : f64, mut f : F) -> io::Result<
                 Some(s) => {
                     if let Some(size) = s.find('x').and_then(|p| s[..p].parse::<u32>().ok()) {
                         cur_size = size;
-                        if target_size == size as f64 {
+                        if target_size == size as f32 {
                             cur_rank = 5;
-                        } else if target_size > size as f64 {
+                        } else if target_size > size as f32 {
                             cur_rank = 2;
                         } else {
                             cur_rank = 1;
@@ -150,40 +202,37 @@ fn iter_icons<F,R>(base : &PathBuf, target_size : f64, mut f : F) -> io::Result<
     Ok(None)
 }
 
-pub fn render(ctx : &Render, name : &str) -> Result<(), ()> {
+pub fn render(ctx : &mut Render, name : &str) -> Result<(), ()> {
     let (clip_x0, clip_y0, clip_x1, clip_y1) = *ctx.render_extents;
-    let m = ctx.cairo.get_matrix();
-    let (xsize, ysize) = m.transform_distance(clip_y1 - clip_y0, clip_x1 - clip_x0);
-    let logic_size = f64::min(clip_y1 - clip_y0, clip_x1 - clip_x0);
-    let pixel_size = f64::min(xsize, ysize);
+    let xform = ctx.canvas.get_transform();
+    let raqote::Vector { x: xsize, y: ysize, .. } =
+        xform.transform_vector(raqote::Vector::new(clip_x1 - clip_x0, clip_y1 - clip_y0)); 
+    let pixel_size = f32::min(xsize, ysize);
     if pixel_size < 1.0 {
         return Err(());
     }
 
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let tsize = pixel_size as i32;
+        let tsize = pixel_size as u32;
         match cache.entry((name.into(), tsize)).or_insert_with(|| {
                 open_icon(&ctx.runtime.xdg, name, pixel_size).ok()
-                .and_then(|path| gdk_pixbuf::Pixbuf::from_file_at_size(path, tsize, tsize).ok())
-                .and_then(|pixbuf| pixbuf.add_alpha(false, 0,0,0))
-                .and_then(CairoStylePixbuf::parse)
+                .and_then(|path| File::open(path).ok())
+                .and_then(|file| OwnedImage::from_file(file, tsize))
             })
         {
-            &mut Some(CairoStylePixbuf { w, h, ref surf }) => {
-                let pattern = cairo::SurfacePattern::create(surf);
-                let pos = ctx.render_pos.get();
-                let mut m = ctx.cairo.get_matrix();
-                if w != tsize && h != tsize {
-                    m.scale((w as f64 - 0.5) / pixel_size, (h as f64 - 0.5) / pixel_size);
-                }
-                m.translate(-pos, -clip_y0);
-                pattern.set_matrix(m);
-                ctx.cairo.save();
-                ctx.cairo.set_source(&pattern);
-                ctx.cairo.paint();
-                ctx.cairo.restore();
-                ctx.render_pos.set(pos + logic_size);
+            Some(img) => {
+                let xscale = (clip_x1 - clip_x0) / img.width as f32;
+                let yscale = (clip_y1 - clip_y0) / img.height as f32;
+                let scale = f32::min(xscale, yscale);
+                ctx.canvas.draw_image_with_size_at(
+                    img.width as f32 * scale,
+                    img.height as f32 * scale,
+                    ctx.render_pos,
+                    clip_y0,
+                    &img.as_ref(),
+                    &Default::default());
+                ctx.render_pos += img.width as f32 * scale;
                 Ok(())
             }
             None => Err(()),

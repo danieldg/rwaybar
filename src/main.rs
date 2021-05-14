@@ -3,6 +3,7 @@ use std::error::Error;
 mod bar;
 mod data;
 mod dbus;
+mod font;
 mod icon;
 mod item;
 mod mpris;

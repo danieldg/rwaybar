@@ -5,19 +5,23 @@ authors = ["Daniel De Graaf <code@danieldg.net>"]
 edition = "2018"
 
 [profile.dev]
+# 400ms frames are more annoying than a bit more work on compile
+opt-level = 1
 panic = 'abort'
 
 [profile.release]
 panic = 'abort'
+lto = true
 
 [dependencies]
 # Basic runtime
 bytes = ""
 env_logger = ""
-futures-util = ""
+futures-util = { version = "", features = ['channel'] }
 json = ""
 libc = ""
 log = ""
+memmap2 = ""
 once_cell = ""
 strfmt = "=0.1.6"
 tokio = { version = "1", features = ['rt', 'net', 'signal', 'sync', 'io-util', 'time'] }
@@ -25,11 +29,13 @@ toml = ""
 xdg = ""
 
 # GUI
-cairo-rs = "0.9"
-pango = "0.9"
-pango-sys = "0.10" # for pango_color_parse
-pangocairo = "0.10"
+png = ""
+usvg = { version = "", default-features = false }
+tiny-skia = ""
+raqote = { version = "0.8", default-features = false }
+resvg = { version = "", default-features = false }
 smithay-client-toolkit = { version = "0.14", default-features = false }
+ttf-parser = ""
 wayland-client = "0.28.5"
 wayland-cursor = "0.28"
 wayland-protocols = "0.28"
@@ -39,6 +45,5 @@ chrono = ""
 chrono-tz = ""
 dbus = { version = "", features = ['futures'] }
 evalexpr = ""
-gdk-pixbuf = "" # for SVG icons, else we could use image
 libpulse-binding = { version = "", features = ['pa_v14'] }
 regex = ""

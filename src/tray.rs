@@ -3,6 +3,7 @@ use crate::dbus::get as get_dbus;
 use crate::dbus::SigWatcherToken;
 use crate::dbus as dbus_util;
 use crate::data::{Module,Value};
+use crate::font::render_font;
 use crate::icon;
 use crate::item::{Item,Render,EventSink,PopupDesc};
 use crate::state::{Runtime,NotifierList};
@@ -404,7 +405,7 @@ pub struct TrayPopup {
     owner : Rc<str>,
     title : Option<Rc<str>>,
     menu : Rc<TrayPopupMenu>,
-    rendered_ids : Vec<(f64, f64, i32)>,
+    rendered_ids : Vec<(f32, f32, i32)>,
 }
 
 impl PartialEq for TrayPopup {
@@ -560,13 +561,12 @@ async fn refresh_menu(menu : Rc<TrayPopupMenu>) -> Result<(), Box<dyn Error>> {
 }
 
 impl TrayPopup {
-    pub fn get_size(&self) -> (i32, i32) {
-        let tmp = cairo::RecordingSurface::create(cairo::Content::ColorAlpha, None).unwrap();
-        let ctx = cairo::Context::new(&tmp);
-        let layout = pangocairo::create_layout(&ctx).unwrap();
-        layout.set_text(self.title.as_deref().unwrap_or_default());
-        let psize = layout.get_size();
-        let mut size = (pango::units_to_double(psize.0), pango::units_to_double(psize.1));
+    pub fn render(&mut self, ctx : &mut Render) {
+        let width = ctx.render_extents.2;
+        let mut size = render_font(ctx.canvas, ctx.font, ctx.font_size, ctx.font_color, &ctx.runtime, (2.0, 2.0), self.title.as_deref().unwrap_or_default(), false);
+        let mut pos = 2.0 + size.1.ceil();
+        let rendered_ids = &mut self.rendered_ids;
+
         if !self.menu.fresh.get() &&
             self.menu.dbus_token.take_in(|t| !t.is_active()) &&
             self.menu.menu_path.take_in_some(|_| ()).is_some()
@@ -575,78 +575,43 @@ impl TrayPopup {
             let menu = self.menu.clone();
             spawn("Tray menu population", refresh_menu(menu));
         }
-        self.menu.items.take_in(|items| {
-            if !items.is_empty() {
-                size.1 += 9.0;
-            }
-            for item in items {
-                if !item.visible {
-                    continue;
-                }
-                let indent = item.depth as f64 * 20.0;
-                if item.is_sep {
-                    size.1 += 9.0;
-                } else {
-                    let layout = pangocairo::create_layout(&ctx).unwrap();
-                    layout.set_text(&item.label);
-                    let tsize = layout.get_size();
-                    size.0 = f64::max(size.0, indent + pango::units_to_double(tsize.0));
-                    size.1 += pango::units_to_double(tsize.1) + 5.0;
-                }
-            }
-        });
-        (size.0 as i32 + 4, size.1 as i32 + 4)
-    }
 
-    pub fn render(&mut self, rctx : &Render) {
-        let ctx = rctx.cairo;
-        let clip = ctx.clip_extents(); 
-        ctx.move_to(2.0, 2.0);
-        let layout = pangocairo::create_layout(&ctx).unwrap();
-        layout.set_text(self.title.as_deref().unwrap_or_default());
-        let psize = layout.get_size();
-        pangocairo::show_layout(&ctx, &layout);
-        let mut pos = 2.0 + pango::units_to_double(psize.1);
-        let rendered_ids = &mut self.rendered_ids;
-
-        self.menu.interested.take_in(|i| i.add(rctx.runtime));
+        self.menu.interested.take_in(|i| i.add(ctx.runtime));
 
         self.menu.items.take_in(|items| {
             if !items.is_empty() {
-                ctx.move_to(0.0, pos + 4.0);
-                ctx.line_to(clip.2, pos + 4.0);
-                ctx.stroke();
+                ctx.canvas.fill_rect(0.0, pos + 4.0, width, 2.0,
+                    &raqote::Color::new(255, 255, 255, 255).into(),
+                    &Default::default());
+
                 pos += 9.0;
             }
             for item in items {
                 if !item.visible {
                     continue;
                 }
-                let indent = item.depth as f64 * 20.0;
+                let indent = item.depth as f32 * 20.0;
                 if item.is_sep {
-                    ctx.move_to(indent + 5.0, pos + 4.0);
-                    ctx.line_to(clip.2 - 5.0, pos + 4.0);
-                    ctx.stroke();
+                    ctx.canvas.fill_rect(indent + 5.0, pos + 4.0, width - indent - 5.0, 1.0,
+                        &raqote::Color::new(255, 255, 255, 255).into(),
+                        &Default::default());
+
                     pos += 9.0;
                 } else {
-                    ctx.move_to(indent + 2.0, pos);
-                    let layout = pangocairo::create_layout(&ctx).unwrap();
-                    layout.set_text(&item.label);
-                    let tsize = layout.get_size();
-                    pangocairo::show_layout(&ctx, &layout);
-                    let end = pos + pango::units_to_double(tsize.1);
+                    let tsize = render_font(ctx.canvas, ctx.font, ctx.font_size, ctx.font_color, &ctx.runtime, (indent + 2.0, pos), &item.label, false);
+                    let end = pos + tsize.1;
+                    size.0 = size.0.max(indent + tsize.0);
                     rendered_ids.push((pos, end, item.id));
                     pos = end + 5.0;
                 }
             }
         });
-        // This is required because pango won't report render cropping due to widths being short
-        let size = self.get_size();
-        rctx.render_pos.set(size.0 as f64);
-        rctx.render_ypos.as_ref().map(|p| p.set(size.1 as f64));
+        ctx.render_pos = size.0;
+        ctx.render_ypos = Some(pos);
     }
 
     pub fn button(&mut self, x : f64, y : f64, button : u32, _runtime : &mut Runtime) {
+        let y = y as f32;
         let _ = (x, button);
         for &(min, max, id) in &self.rendered_ids {
             let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
@@ -666,14 +631,14 @@ impl TrayPopup {
     }
 }
 
-pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
+pub fn show(ctx : &mut Render, ev : &mut EventSink, spacing : f32) {
     DATA.with(|cell| {
         let tray = cell.get_or_init(Tray::init);
         tray.interested.take_in(|interest| interest.add(&ctx.runtime));
         tray.items.take_in(|items| {
-            ctx.render_pos.set(ctx.render_pos.get() + spacing);
+            ctx.render_pos += spacing;
             for item in items {
-                let x0 = ctx.render_pos.get();
+                let x0 = ctx.render_pos;
                 let mut done = false;
                 if !done && !item.icon_path.is_empty() {
                     let icon = format!("{}/{}.svg", item.icon_path, item.icon);
@@ -695,7 +660,7 @@ pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
                     let item : Item = Module::new_value(title.into_owned()).into();
                     Rc::new(item).render(ctx);
                 }
-                let x1 = ctx.render_pos.get();
+                let x1 = ctx.render_pos;
                 let mut es = EventSink::from_tray(item.owner.clone(), item.path.clone());
                 es.offset_clamp(0.0, x0, x1);
                 es.add_hover(x0, x1, PopupDesc::Tray(TrayPopup {
@@ -705,7 +670,7 @@ pub fn show(ctx : &Render, ev : &mut EventSink, spacing : f64) {
                     rendered_ids : Vec::new(),
                 }));
                 ev.merge(es);
-                ctx.render_pos.set(ctx.render_pos.get() + spacing);
+                ctx.render_pos += spacing;
             }
         });
     });

@@ -13,6 +13,7 @@ use wayland_client::protocol::wl_output::WlOutput;
 
 use crate::bar::Bar;
 use crate::data::{Module,IterationItem,Value};
+use crate::font::FontMapped;
 use crate::item::*;
 use crate::render::RenderTarget;
 use crate::util::{Cell,spawn,spawn_noerr};
@@ -62,6 +63,7 @@ impl NotifierList {
 /// Common state available during rendering operations
 pub struct Runtime {
     pub xdg : xdg::BaseDirectories,
+    pub fonts : Vec<FontMapped>,
     pub items : HashMap<String, Rc<Item>>,
     item_var : Rc<Item>,
     notify : Notifier,
@@ -183,6 +185,7 @@ impl State {
             bar_config : Vec::new(),
             runtime : Runtime {
                 xdg : xdg::BaseDirectories::new()?,
+                fonts : Vec::new(),
                 items : Default::default(),
                 item_var : Rc::new(Module::new_current_item().into()),
                 refresh : Default::default(),
@@ -260,6 +263,7 @@ impl State {
 
     fn load_config(&mut self, reload : bool) -> Result<(), Box<dyn Error>> {
         let mut bar_config = Vec::new();
+        let mut font_list = Vec::new();
 
         let config_path = self.runtime.xdg.find_config_file("rwaybar.toml")
             .ok_or("Could not find configuration: create ~/.config/rwaybar.toml")?;
@@ -270,17 +274,26 @@ impl State {
         let cfg = config.as_table().unwrap();
 
         let new_items = cfg.iter().filter_map(|(key, value)| {
-            if key == "bar" {
-                if let Some(bars) = value.as_array() {
-                    bar_config.extend(bars.iter().cloned());
-                } else {
-                    bar_config.push(value.clone());
+            match key.as_str() {
+                "bar" => {
+                    if let Some(bars) = value.as_array() {
+                        bar_config.extend(bars.iter().cloned());
+                    } else {
+                        bar_config.push(value.clone());
+                    }
+                    None
                 }
-                None
-            } else {
-                let key = key.to_owned();
-                let value = Rc::new(Item::from_item_list(&key, value));
-                Some((key, value))
+                "fonts" => {
+                    if let Some(list) = value.as_table() {
+                        font_list = list.iter().collect();
+                    }
+                    None
+                }
+                _ => {
+                    let key = key.to_owned();
+                    let value = Rc::new(Item::from_item_list(&key, value));
+                    Some((key, value))
+                }
             }
         }).collect();
 
@@ -288,10 +301,20 @@ impl State {
             Err("At least one [[bar]] section is required")?;
         }
 
+        if font_list.is_empty() {
+            Err("At least one font is required in the [fonts] section")?;
+        }
+
+        let mut fonts = Vec::with_capacity(font_list.len());
+        for (name, path) in font_list {
+            fonts.push(FontMapped::new(name.clone(), path.as_str().unwrap_or("").to_owned().into())?);
+        }
+
         debug!("Loading configuration");
 
         let mut old_items = std::mem::replace(&mut self.runtime.items, new_items);
         self.bar_config = bar_config;
+        self.runtime.fonts = fonts;
 
         self.runtime.items.insert("item".into(), self.runtime.item_var.clone());
 

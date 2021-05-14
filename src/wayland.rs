@@ -179,7 +179,7 @@ impl WaylandClient {
                         };
                         for bar in &mut state.bars {
                             if Some(bar.surf.as_ref().id()) == over {
-                                bar.sink.button(x,y,button_id, &mut state.runtime);
+                                bar.sink.button(x as f32, y as f32, button_id, &mut state.runtime);
                             }
                             if bar.popup.as_ref().map(|p| p.wl.surf.as_ref().id()) == over {
                                 bar.popup_button(x,y,button_id, &mut state.runtime);
@@ -230,7 +230,7 @@ impl WaylandClient {
                         }
                         for bar in &mut state.bars {
                             if Some(bar.surf.as_ref().id()) == over {
-                                bar.sink.button(x,y,button_id, &mut state.runtime);
+                                bar.sink.button(x as f32, y as f32, button_id, &mut state.runtime);
                             }
                             if bar.popup.as_ref().map(|p| p.wl.surf.as_ref().id()) == over {
                                 bar.popup_button(x,y,button_id, &mut state.runtime);
@@ -267,7 +267,7 @@ impl WaylandClient {
                         // TODO support gestures?  Wait for Up, detect Cancel
                         for bar in &mut state.bars {
                             if surface == *bar.surf {
-                                bar.sink.button(x,y,0, &mut state.runtime);
+                                bar.sink.button(x as f32, y as f32, 0, &mut state.runtime);
                                 break;
                             }
                         }

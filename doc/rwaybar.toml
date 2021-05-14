@@ -30,6 +30,12 @@ text-outline = "black"
 text-outline-alpha = 0.8
 the-clock-font = "Liberation Sans 20"
 
+[fonts]
+# Named fonts are tried first, then all other fonts are searched for missing glyphs
+"Liberation Sans" = "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf"
+symbola = "/usr/share/fonts/gdouros-symbola/Symbola.ttf"
+emoji = "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf"
+
 # Everything else is defined in its own section and addressed by name elsewhere.
 [dpl]
 type = "group"
@@ -336,6 +342,10 @@ regex = 'some avg10=(\S+)'
 [cpu]
 format = "{psi-cpu-10.1} {psi-io-10.1} {cpu_icon}"
 
+[emoji]
+format = "⏱"
+font = "emoji"
+
 [tvl]
 type = "group"
 fg = "white"
@@ -343,7 +353,7 @@ bg = "black"
 bg-alpha = 0.5
 spacing = 1.5
 alpha = 0.7
-items = ["mode", "workspaces-repr"]
+items = ["emoji", "mode", "workspaces-repr"]
 
 [tvr]
 type = "group"

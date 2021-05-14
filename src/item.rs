@@ -1,20 +1,27 @@
 use crate::data::{Action,Module,ModuleContext,ItemReference,IterationItem,Value};
 use crate::state::Runtime;
+use crate::font::{FontMapped,draw_font_with,layout_font,render_font};
 use crate::icon;
 use crate::tray;
-use crate::util::Cell;
-use log::{warn,error};
+use log::{debug,warn,error};
+use raqote::DrawTarget;
 use std::borrow::Cow;
 use std::rc::Rc;
 
 /// State available to an [Item] render function
 pub struct Render<'a> {
-    pub cairo : &'a cairo::Context,
-    pub font : &'a pango::FontDescription,
+    pub canvas : &'a mut DrawTarget,
+
+    pub render_extents : &'a (f32, f32, f32, f32),
+    pub render_pos : f32,
+    pub render_ypos : Option<f32>,
+
+    pub font : &'a FontMapped,
+    pub font_size : f32,
+    pub font_color : (u16, u16, u16, u16),
     pub text_stroke : Option<(u16, u16, u16, u16)>,
-    pub render_extents : &'a (f64, f64, f64, f64),
-    pub render_pos : &'a Cell<f64>,
-    pub render_ypos : Option<&'a Cell<f64>>,
+    pub text_stroke_size : Option<f32>,
+
     pub align : Align,
     pub err_name : &'a str,
     pub runtime : &'a Runtime,
@@ -23,16 +30,16 @@ pub struct Render<'a> {
 #[derive(Debug,Clone,Copy,PartialEq)]
 enum Width {
     /// Some fraction (0.0-1.0) of the total width
-    Fraction(f64),
+    Fraction(f32),
     /// Some number of pixels
-    Pixels(f64),
+    Pixels(f32),
 }
 
 impl Width {
     pub fn from_str(value : Cow<str>) -> Option<Self> {
         if value.ends_with('%') {
             let value = &value[..value.len() - 1];
-            let pct = value.parse::<f64>().ok()?;
+            let pct = value.parse::<f32>().ok()?;
             return Some(Width::Fraction(pct / 100.0));
         }
         if value.contains('.') {
@@ -43,12 +50,12 @@ impl Width {
     }
 }
 
-pub const MIDDLE : f64 = 0.5;
+pub const MIDDLE : f32 = 0.5;
 
 #[derive(Default,Debug,Copy,Clone,PartialEq)]
 pub struct Align {
-    pub horiz : Option<f64>,
-    pub vert : Option<f64>,
+    pub horiz : Option<f32>,
+    pub vert : Option<f32>,
 }
 
 impl Align {
@@ -59,10 +66,10 @@ impl Align {
         }
     }
 
-    pub fn parse_hv(value : Cow<str>) -> Option<f64> {
+    pub fn parse_hv(value : Cow<str>) -> Option<f32> {
         if value.ends_with('%') {
             let value = &value[..value.len() - 1];
-            let pct = value.parse::<f64>().ok()?;
+            let pct = value.parse::<f32>().ok()?;
             return Some(pct / 100.0);
         }
         value.parse().ok()
@@ -99,24 +106,26 @@ pub struct Item {
 }
 
 /// Formatting information (colors, width, etc) for an [Item]
-#[derive(Debug,Clone,Default,PartialEq)]
-struct Formatting {
-    font : Option<pango::FontDescription>,
+#[derive(Debug,Clone,Default)]
+pub struct Formatting<'a> {
+    font : Option<&'a FontMapped>,
+    font_size : Option<f32>,
     fg_rgba : Option<(u16, u16, u16, u16)>,
     bg_rgba : Option<(u16, u16, u16, u16)>,
     stroke_rgba : Option<(u16, u16, u16, u16)>,
-    border : Option<(f64, f64, f64, f64)>,
+    stroke_size : Option<f32>,
+    border : Option<(f32, f32, f32, f32)>,
     border_rgba : Option<(u16, u16, u16, u16)>,
     min_width : Option<Width>,
     max_width : Option<Width>,
     align : Align,
-    margin : Option<(f64, f64, f64, f64)>,
-    padding : Option<(f64, f64, f64, f64)>,
+    margin : Option<(f32, f32, f32, f32)>,
+    padding : Option<(f32, f32, f32, f32)>,
     alpha : Option<u16>,
 }
 
-impl Formatting {
-    fn expand(config : &toml::Value, runtime : &Runtime) -> Self {
+impl<'a> Formatting<'a> {
+    fn expand(config : &toml::Value, runtime : &'a Runtime) -> Self {
         let get = |key| {
             config.get(key).and_then(|v| match v.as_str() {
                 Some(fmt) => runtime.format(&fmt).or_else(|e| {
@@ -127,13 +136,13 @@ impl Formatting {
             })
         };
 
-        let get_f64 = |key| {
+        let get_f32 = |key| {
             config.get(key).and_then(|v| match v.as_str() {
                 Some(fmt) => runtime.format(&fmt).or_else(|e| {
                     warn!("Error expanding '{}' when rendering: {}", fmt, e);
                     Err(())
-                }).ok().and_then(|v| v.parse_f64()),
-                None => v.as_float().or_else(|| v.as_integer().map(|i| i as f64)),
+                }).ok().and_then(|v| v.parse_f32()),
+                None => v.as_float().map(|v| v as f32).or_else(|| v.as_integer().map(|i| i as f32)),
             })
         };
         let mut align = Align {
@@ -142,27 +151,41 @@ impl Formatting {
         };
         align.from_name(get("align"));
 
-        let font = get("font").map(|font| pango::FontDescription::from_string(&font));
-        let stroke_rgba = Formatting::parse_rgba(get("text-outline"), get_f64("text-outline-alpha"));
+        let (font, font_size) = get("font").map_or((None, None), |font| {
+            let mut size = None::<f32>;
+            let font = match font.rsplit_once(' ') {
+                Some((name, ssize)) if {
+                    size = ssize.parse().ok();
+                    size.is_some()
+                } => name,
+                _ => &*font,
+            };
+            let font = runtime.fonts.iter().find(|f| f.name == font);
+            (font, size)
+        });
+        let stroke_rgba = Formatting::parse_rgba(get("text-outline"), get_f32("text-outline-alpha"));
+        let stroke_size = get_f32("text-outline-width");
         let min_width = get("min-width").and_then(Width::from_str);
         let max_width = get("max-width").and_then(Width::from_str);
-        let alpha = get_f64("alpha").map(|f| {
-            f64::min(65535.0, f64::max(0.0, f * 65535.0)) as u16
+        let alpha = get_f32("alpha").map(|f| {
+            f32::min(65535.0, f32::max(0.0, f * 65535.0)) as u16
         });
 
         let margin = get("margin").and_then(Formatting::parse_trbl);
         let border = get("border").and_then(Formatting::parse_trbl);
         let padding = get("padding").and_then(Formatting::parse_trbl);
 
-        let bg_rgba = Formatting::parse_rgba(get("bg"), get_f64("bg-alpha"));
-        let fg_rgba = Formatting::parse_rgba(get("fg"), get_f64("fg-alpha"));
-        let border_rgba = Formatting::parse_rgba(get("border-color"), get_f64("border-alpha"));
+        let bg_rgba = Formatting::parse_rgba(get("bg"), get_f32("bg-alpha"));
+        let fg_rgba = Formatting::parse_rgba(get("fg"), get_f32("fg-alpha"));
+        let border_rgba = Formatting::parse_rgba(get("border-color"), get_f32("border-alpha"));
 
         Self {
             font,
+            font_size,
             fg_rgba,
             bg_rgba,
             stroke_rgba,
+            stroke_size,
             border,
             border_rgba,
             min_width,
@@ -174,7 +197,7 @@ impl Formatting {
         }
     }
 
-    fn parse_trbl(v : Cow<str>) -> Option<(f64, f64, f64, f64)> {
+    fn parse_trbl(v : Cow<str>) -> Option<(f32, f32, f32, f32)> {
         let mut rv = (0.0, 0.0, 0.0, 0.0);
         for (i,x) in v.split_whitespace().enumerate() {
             match (i, x.parse()) {
@@ -196,23 +219,74 @@ impl Formatting {
         Some(rv)
     }
 
-    fn parse_rgba(color : Option<impl AsRef<str>>, alpha : Option<f64>) -> Option<(u16, u16, u16, u16)> {
+    pub fn parse_rgba(color : Option<impl AsRef<str>>, alpha : Option<f32>) -> Option<(u16, u16, u16, u16)> {
         if color.is_none() && alpha.is_none() {
             return None;
         }
-        let mut pc = pango_sys::PangoColor {
-            red : 0, blue : 0, green : 0
-        };
-        if let Some(color) = color {
-            let cstr = std::ffi::CString::new(color.as_ref()).unwrap();
-            unsafe { pango_sys::pango_color_parse(&mut pc, cstr.as_ptr()); }
-        }
+        let color = color.as_ref().map_or("black", |v| v.as_ref());
+        let (r,g,b,mut a);
         let alpha_f = alpha.unwrap_or(1.0) * 65535.0;
-        let alpha_i = f64::min(65535.0, f64::max(0.0, alpha_f)) as u16;
-        Some((pc.red, pc.green, pc.blue, alpha_i))
+        a = f32::min(65535.0, f32::max(0.0, alpha_f)) as u64;
+        if color.starts_with('#') {
+            let v = u64::from_str_radix(&color[1..], 16);
+            match (v, color.len()) {
+                (Ok(v), 4) => {
+                    r = ((v >> 8) & 0xF) * 0x1111;
+                    g = ((v >> 4) & 0xF) * 0x1111;
+                    b = ((v >> 0) & 0xF) * 0x1111;
+                }
+                (Ok(v), 5) => {
+                    r = ((v >> 12) & 0xF) * 0x1111;
+                    g = ((v >> 8) & 0xF) * 0x1111;
+                    b = ((v >> 4) & 0xF) * 0x1111;
+                    a = ((v >> 0) & 0xF) * 0x1111;
+                }
+                (Ok(v), 7) => {
+                    r = ((v >> 16) & 0xFF) * 0x101;
+                    g = ((v >> 8) & 0xFF) * 0x101;
+                    b = ((v >> 0) & 0xFF) * 0x101;
+                }
+                (Ok(v), 9) => {
+                    r = ((v >> 24) & 0xFF) * 0x101;
+                    g = ((v >> 16) & 0xFF) * 0x101;
+                    b = ((v >> 8) & 0xFF) * 0x101;
+                    a = ((v >> 0) & 0xFF) * 0x101;
+                }
+                (Ok(v), 13) => {
+                    r = (v >> 32) & 0xFFFF;
+                    g = (v >> 16) & 0xFFFF;
+                    b = (v >> 0) & 0xFFFF;
+                }
+                (Ok(v), 17) => {
+                    r = (v >> 48) & 0xFFFF;
+                    g = (v >> 32) & 0xFFFF;
+                    b = (v >> 16) & 0xFFFF;
+                    a = (v >> 0) & 0xFFFF;
+                }
+                _ => {
+                    debug!("Could not parse color '{}'", color);
+                    r = 0; g = 0; b = 0;
+                }
+            }
+        } else {
+            match color {
+                "black" => { r = 0; g = 0; b = 0; }
+                "red" => { r = 0xFFFF; g = 0; b = 0; }
+                "yellow" => { r = 0xFFFF; g = 0xFFFF; b = 0; }
+                "green" => { r = 0; g = 0xFFFF; b = 0; }
+                "blue" => { r = 0; g = 0; b = 0xFFFF; }
+                "gray" => { r = 0x7FFF; g = 0x7FFF; b = 0x7FFF; }
+                "white" => { r = 0xFFFF; g = 0xFFFF; b = 0xFFFF; }
+                _ => {
+                    debug!("Unknown color '{}'", color);
+                    r = 0; g = 0; b = 0;
+                }
+            }
+        }
+        Some((r as u16, g as u16, b as u16, a as u16))
     }
 
-    fn get_shrink(&self) -> Option<(f64, f64, f64, f64)> {
+    fn get_shrink(&self) -> Option<(f32, f32, f32, f32)> {
         let mut rv = (0.0, 0.0, 0.0, 0.0);
         if self.padding == None && self.margin == None {
             return None;
@@ -228,22 +302,27 @@ impl Formatting {
         Some(rv)
     }
 
-    fn is_boring(&mut self) -> bool {
-        // this might be more efficient if we enumerated all fields
-        let mut b = Self::default();
-        b.align = self.align;
-        b.stroke_rgba = self.stroke_rgba;
-        let font = self.font.take();
-        let rv = *self == b;
-        self.font = font;
-        rv
+    fn is_boring(&self) -> bool {
+        self.fg_rgba.is_none() &&
+        self.bg_rgba.is_none() &&
+        self.border.is_none() &&
+        self.border_rgba.is_none() &&
+        self.min_width.is_none() &&
+        self.max_width.is_none() &&
+        self.margin.is_none() &&
+        self.padding.is_none() &&
+        self.alpha.is_none()
     }
 
-    fn setup_ctx<'a, 'p : 'a>(&'a self, ctx : &Render<'p>) -> Render<'a> {
+    fn setup_ctx<'p : 'a>(&'a self, ctx : &'a mut Render<'p>) -> Render<'a> {
         Render {
+            canvas : &mut *ctx.canvas,
             align : ctx.align.merge(&self.align),
-            font : self.font.as_ref().unwrap_or(ctx.font),
+            font : self.font.unwrap_or(&ctx.font),
+            font_size : self.font_size.unwrap_or(ctx.font_size),
+            font_color : self.fg_rgba.unwrap_or(ctx.font_color),
             text_stroke : self.stroke_rgba.or(ctx.text_stroke),
+            text_stroke_size : self.stroke_size.or(ctx.text_stroke_size),
             ..*ctx
         }
     }
@@ -252,8 +331,8 @@ impl Formatting {
 /// A single click action associated with the area that activates it
 #[derive(Debug,Clone)]
 struct EventListener {
-    x_min : f64,
-    x_max : f64,
+    x_min : f32,
+    x_max : f32,
     buttons : u32,
     item : Option<IterationItem>,
     target : Action,
@@ -263,7 +342,7 @@ struct EventListener {
 #[derive(Debug,Default,Clone)]
 pub struct EventSink {
     handlers : Vec<EventListener>,
-    hovers : Vec<(f64, f64, PopupDesc)>,
+    hovers : Vec<(f32, f32, PopupDesc)>,
 }
 
 impl EventSink {
@@ -314,7 +393,7 @@ impl EventSink {
         self.hovers.extend(sink.hovers);
     }
 
-    pub fn offset_clamp(&mut self, offset : f64, min : f64, max : f64) {
+    pub fn offset_clamp(&mut self, offset : f32, min : f32, max : f32) {
         for h in &mut self.handlers {
             h.x_min += offset;
             h.x_max += offset;
@@ -345,7 +424,7 @@ impl EventSink {
         }
     }
 
-    pub fn button(&mut self, x : f64, y : f64, button : u32, runtime : &mut Runtime) {
+    pub fn button(&mut self, x : f32, y : f32, button : u32, runtime : &mut Runtime) {
         let _ = y;
         for h in &mut self.handlers {
             if x < h.x_min || x > h.x_max {
@@ -365,11 +444,11 @@ impl EventSink {
         }
     }
 
-    pub fn add_hover(&mut self, min : f64, max : f64, desc : PopupDesc) {
+    pub fn add_hover(&mut self, min : f32, max : f32, desc : PopupDesc) {
         self.hovers.push((min, max, desc));
     }
 
-    pub fn get_hover(&mut self, x : f64, y : f64) -> Option<(f64, f64, &mut PopupDesc)> {
+    pub fn get_hover(&mut self, x : f32, y : f32) -> Option<(f32, f32, &mut PopupDesc)> {
         let _ = y;
         for &mut (min, max, ref mut text) in &mut self.hovers {
             if x >= min && x < max {
@@ -379,13 +458,13 @@ impl EventSink {
         None
     }
 
-    pub fn for_active_regions(&self, mut f : impl FnMut(f64, f64)) {
+    pub fn for_active_regions(&self, mut f : impl FnMut(f32, f32)) {
         let mut ha = self.handlers.iter().peekable();
         let mut ho = self.hovers.iter().peekable();
         loop {
-            let a_min = ha.peek().map_or(f64::NAN, |e| e.x_min);
-            let o_min = ho.peek().map_or(f64::NAN, |e| e.0);
-            let min = f64::min(a_min, o_min);
+            let a_min = ha.peek().map_or(f32::NAN, |e| e.x_min);
+            let o_min = ho.peek().map_or(f32::NAN, |e| e.0);
+            let min = f32::min(a_min, o_min);
             let mut max;
             if min == a_min {
                 max = ha.next().unwrap().x_max;
@@ -396,10 +475,10 @@ impl EventSink {
                 return;
             }
             loop {
-                if ha.peek().map_or(f64::NAN, |e| e.x_min) <= max + 1.0 {
-                    max = f64::max(max, ha.next().map_or(f64::NAN, |e| e.x_max));
-                } else if ho.peek().map_or(f64::NAN, |e| e.0) <= max + 1.0 {
-                    max = f64::max(max, ho.next().map_or(f64::NAN, |e| e.1));
+                if ha.peek().map_or(f32::NAN, |e| e.x_min) <= max + 1.0 {
+                    max = f32::max(max, ha.next().map_or(f32::NAN, |e| e.x_max));
+                } else if ho.peek().map_or(f32::NAN, |e| e.0) <= max + 1.0 {
+                    max = f32::max(max, ho.next().map_or(f32::NAN, |e| e.1));
                 } else {
                     break;
                 }
@@ -478,27 +557,27 @@ impl Item {
         }
     }
 
-    pub fn render(self : &Rc<Self>, parent_ctx : &Render) -> EventSink {
+    pub fn render(self : &Rc<Self>, parent_ctx : &mut Render) -> EventSink {
         let mut rv = self.events.clone();
 
-        let format;
-
-        if let Some(mut f) = self.config.as_ref().map(|cfg| Formatting::expand(cfg, &parent_ctx.runtime)) {
-            if f.is_boring() {
-                let ctx = f.setup_ctx(parent_ctx);
-                self.render_inner(&ctx, &mut rv);
+        let format = match self.config.as_ref().map(|cfg| Formatting::expand(cfg, &parent_ctx.runtime)) {
+            Some(f) => f,
+            None => {
+                self.render_inner(parent_ctx, &mut rv);
                 return rv;
             }
-            format = f;
-        } else {
-            self.render_inner(parent_ctx, &mut rv);
+        };
+        let mut ctx = format.setup_ctx(parent_ctx);
+        if format.is_boring() {
+            self.render_inner(&mut ctx, &mut rv);
+            let (x,y) = (ctx.render_pos, ctx.render_ypos);
+            parent_ctx.render_pos = x;
+            parent_ctx.render_ypos = y;
             return rv;
         }
-        let mut ctx = format.setup_ctx(parent_ctx);
 
         let mut outer_clip = *ctx.render_extents;
-        let start_pos = ctx.render_pos.get();
-        ctx.cairo.push_group();
+        let start_pos = ctx.render_pos;
 
         let mut inner_clip = outer_clip;
         inner_clip.0 = start_pos;
@@ -526,19 +605,13 @@ impl Item {
             }
         }
 
-        if let Some(rgba) = format.fg_rgba {
-            ctx.cairo.set_source_rgba(rgba.0 as f64 / 65535.0, rgba.1 as f64 / 65535.0, rgba.2 as f64 / 65535.0, rgba.3 as f64 / 65535.0);
-        }
-
-        ctx.render_pos.set(inner_clip.0);
+        ctx.render_pos = inner_clip.0;
 
         ctx.render_extents = &inner_clip;
-        self.render_inner(&ctx, &mut rv);
+        self.render_inner(&mut ctx, &mut rv);
         let mut inner_clip = inner_clip;
 
-        let inner_end = ctx.render_pos.get();
-        let group = ctx.cairo.pop_group();
-        ctx.cairo.save();
+        let inner_end = ctx.render_pos;
 
         let child_render_width = inner_end - inner_clip.0;
         let mut min_width = match format.min_width {
@@ -558,10 +631,25 @@ impl Item {
             match format.align.horiz.or(ctx.align.horiz) {
                 Some(f) => {
                     inner_x_offset = expand * f;
-
-                    let mut m = ctx.cairo.get_matrix();
-                    m.translate(-inner_x_offset, 0.0);
-                    group.set_matrix(m);
+                    let x0 = inner_clip.0.floor() as usize;
+                    let x1 = inner_end.ceil() as usize;
+                    let ilen = x1 - x0;
+                    let wlen = min_width.ceil() as usize;
+                    if wlen > ilen {
+                        // Align by rotating the pixels of the inner clip region to the right.  The
+                        // right part of the clip region should just be blank pixels at this point,
+                        // which is what we want to put on the left.
+                        let rlen = wlen - ilen;
+                        let stride = ctx.canvas.width() as usize;
+                        let h = ctx.canvas.height() as usize;
+                        for y in 0..h {
+                            let x0 = y * stride + x0;
+                            let x2 = y * stride + x0 + wlen;
+                            if let Some(buf) = ctx.canvas.get_data_mut().get_mut(x0..x2) {
+                                buf.rotate_right(rlen);
+                            }
+                        }
+                    }
                 }
                 _ => { // defaults to left align
                     inner_x_offset = 0.0;
@@ -590,81 +678,56 @@ impl Item {
                 bg_clip.2 += r;
                 bg_clip.3 += b;
             }
-            ctx.cairo.set_operator(cairo::Operator::Source);
 
             if let Some(rgba) = format.bg_rgba {
-                ctx.cairo.save();
-                ctx.cairo.rectangle(bg_clip.0, bg_clip.1, bg_clip.2 - bg_clip.0, bg_clip.3 - bg_clip.1);
-                ctx.cairo.set_source_rgba(rgba.0 as f64 / 65535.0, rgba.1 as f64 / 65535.0, rgba.2 as f64 / 65535.0, rgba.3 as f64 / 65535.0);
-                ctx.cairo.fill();
-                ctx.cairo.restore();
-            }
-
-            if let Some(rgba) = format.border_rgba {
-                ctx.cairo.set_source_rgba(rgba.0 as f64 / 65535.0, rgba.1 as f64 / 65535.0, rgba.2 as f64 / 65535.0, rgba.3 as f64 / 65535.0);
+                ctx.canvas.fill_rect(bg_clip.0, bg_clip.1, bg_clip.2 - bg_clip.0, bg_clip.3 - bg_clip.1,
+                    &raqote::Color::new((rgba.3 / 256) as u8, (rgba.0 / 256) as u8, (rgba.1 / 256) as u8, (rgba.2 / 256) as u8).into(),
+                    &raqote::DrawOptions {
+                        blend_mode : raqote::BlendMode::DstOver,
+                        ..Default::default()
+                    });
             }
 
             if let Some(border) = format.border {
-                if border.0 == border.1 && border.0 == border.2 && border.0 == border.3 {
-                    ctx.cairo.set_line_width(border.0);
-                    ctx.cairo.rectangle(bg_clip.0, bg_clip.1, bg_clip.2 - bg_clip.0, bg_clip.3 - bg_clip.1);
-                    ctx.cairo.stroke();
-                } else {
-                    if border.0 > 0.0 {
-                        ctx.cairo.set_line_width(border.0);
-                        ctx.cairo.move_to(bg_clip.0, bg_clip.1);
-                        ctx.cairo.line_to(bg_clip.2, bg_clip.1);
-                        ctx.cairo.stroke();
-                    }
-                    if border.1 > 0.0 {
-                        ctx.cairo.set_line_width(border.1);
-                        ctx.cairo.move_to(bg_clip.2, bg_clip.1);
-                        ctx.cairo.line_to(bg_clip.2, bg_clip.3);
-                        ctx.cairo.stroke();
-                    }
-                    if border.2 > 0.0 {
-                        ctx.cairo.set_line_width(border.2);
-                        ctx.cairo.move_to(bg_clip.0, bg_clip.3);
-                        ctx.cairo.line_to(bg_clip.2, bg_clip.3);
-                        ctx.cairo.stroke();
-                    }
-                    if border.3 > 0.0 {
-                        ctx.cairo.set_line_width(border.3);
-                        ctx.cairo.move_to(bg_clip.0, bg_clip.1);
-                        ctx.cairo.line_to(bg_clip.0, bg_clip.3);
-                        ctx.cairo.stroke();
-                    }
+                let rgba = format.border_rgba.unwrap_or(ctx.font_color);
+                let src = raqote::Color::new((rgba.3 / 256) as u8, (rgba.0 / 256) as u8, (rgba.1 / 256) as u8, (rgba.2 / 256) as u8).into();
+
+                if border.0 > 0.0 {
+                    ctx.canvas.fill_rect(bg_clip.0, bg_clip.1, bg_clip.2 - bg_clip.0, border.0, &src, &Default::default());
+                }
+                if border.1 > 0.0 {
+                    ctx.canvas.fill_rect(bg_clip.2, bg_clip.1, border.1, bg_clip.3 - bg_clip.1, &src, &Default::default());
+                }
+                if border.2 > 0.0 {
+                    ctx.canvas.fill_rect(bg_clip.0, bg_clip.3, bg_clip.2 - bg_clip.0, border.2, &src, &Default::default());
+                }
+                if border.3 > 0.0 {
+                    ctx.canvas.fill_rect(bg_clip.0, bg_clip.1, border.3, bg_clip.3 - bg_clip.1, &src, &Default::default());
                 }
             }
+        }
 
-            ctx.cairo.set_operator(cairo::Operator::Over);
-        }
-        ctx.cairo.set_source(&group);
-        if let Some(alpha) = format.alpha {
-            ctx.cairo.paint_with_alpha(alpha as f64 / 65535.0);
-        } else {
-            ctx.cairo.paint();
-        }
-        ctx.cairo.restore();
-        ctx.render_pos.set(outer_clip.2);
+        let yp = ctx.render_ypos;
+        parent_ctx.render_pos = outer_clip.2;
+        parent_ctx.render_ypos = yp;
 
         rv
     }
 
-    pub fn render_clamped(self : &Rc<Self>, ctx : &Render, ev : &mut EventSink) {
-        let x0 = ctx.render_pos.get();
+    pub fn render_clamped(self : &Rc<Self>, ctx : &mut Render, ev : &mut EventSink) {
+        let x0 = ctx.render_pos;
         let mut rv = self.render(ctx);
-        let x1 = ctx.render_pos.get();
+        let x1 = ctx.render_pos;
         rv.offset_clamp(0.0, x0, x1);
         ev.merge(rv);
     }
 
-    pub fn render_clamped_item(self : &Rc<Self>, ctx : &Render, ev : &mut EventSink, item : &IterationItem) {
+    pub fn render_clamped_item(self : &Rc<Self>, ctx : &mut Render, ev : &mut EventSink, item : &IterationItem) {
         let item_var = ctx.runtime.get_item_var();
         let prev = item_var.replace(Some(item.clone()));
-        let x0 = ctx.render_pos.get();
+        let x0 = ctx.render_pos;
         let mut rv = self.render(ctx);
-        let x1 = ctx.render_pos.get();
+        let x1 = ctx.render_pos;
         rv.offset_clamp(0.0, x0, x1);
         for h in &mut rv.handlers {
             h.item.get_or_insert_with(|| item.clone());
@@ -685,11 +748,11 @@ impl Item {
     /// Note that the coordinates you use to render may not match the final coordinates in the
     /// buffer; if your item is not left-aligned, it will likely be shifted right before the final
     /// render.
-    fn render_inner(self : &Rc<Self>, ctx : &Render, rv : &mut EventSink) {
+    fn render_inner(self : &Rc<Self>, ctx : &mut Render, rv : &mut EventSink) {
         match &self.data {
             Module::ItemReference { value } => {
                 ItemReference::with(value, &ctx.runtime, |item| match item {
-                    Some(item) => rv.merge(item.render(&ctx)),
+                    Some(item) => rv.merge(item.render(ctx)),
                     None => {}
                 });
             }
@@ -708,23 +771,24 @@ impl Item {
                         }
                     }
                 }
-                let mut ypos = ctx.render_ypos.as_ref().map(|p| (p.get(), p.get()));
-                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse_f64()).unwrap_or(0.0);
-                let xstart = ctx.render_pos.get();
-                ctx.render_pos.set(xstart + spacing);
+                let mut ypos = ctx.render_ypos.map(|p| (p, p));
+                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse_f32()).unwrap_or(0.0);
+                let xstart = ctx.render_pos;
+                ctx.render_pos += spacing;
                 for item in items {
                     item.render_clamped(ctx, rv);
-                    ctx.render_pos.set(ctx.render_pos.get() + spacing);
+                    ctx.render_pos += spacing;
                     if let Some((min,max)) = &mut ypos {
-                        let now = ctx.render_ypos.as_ref().unwrap().replace(*min);
+                        let now = ctx.render_ypos.unwrap();
+                        ctx.render_ypos = Some(*min);
                         if now > *max {
                             *max = now;
                         }
                     }
                 }
-                ctx.render_ypos.as_ref().map(|p| p.set(ypos.unwrap().1));
+                ctx.render_ypos.as_mut().map(|p| *p = ypos.unwrap().1);
                 if let Some(item) = tooltip {
-                    let xend = ctx.render_pos.get();
+                    let xend = ctx.render_pos;
                     rv.hovers.push((xstart, xend, PopupDesc::RenderItem {
                         item : item.clone(),
                         iter : ctx.runtime.copy_item_var(),
@@ -732,65 +796,79 @@ impl Item {
                 }
             }
             Module::FocusList { source, others, focused, spacing } => {
-                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse_f64()).unwrap_or(0.0);
+                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse_f32()).unwrap_or(0.0);
                 let item_var = ctx.runtime.get_item_var();
-                ctx.render_pos.set(ctx.render_pos.get() + spacing);
+                ctx.render_pos += spacing;
                 let prev = item_var.replace(None);
                 source.read_focus_list(ctx.runtime, |focus, item| {
                     item_var.set(Some(item.clone()));
-                    let x0 = ctx.render_pos.get();
+                    let x0 = ctx.render_pos;
                     let mut ev = if focus {
                         focused.render(ctx)
                     } else {
                         others.render(ctx)
                     };
-                    let x1 = ctx.render_pos.get();
+                    let x1 = ctx.render_pos;
                     ev.offset_clamp(0.0, x0, x1);
                     for h in &mut ev.handlers {
                         h.item.get_or_insert_with(|| item.clone());
                     }
                     rv.merge(ev);
-                    ctx.render_pos.set(ctx.render_pos.get() + spacing);
+                    ctx.render_pos += spacing;
                 });
                 item_var.set(prev);
             }
             Module::Bar { left, center, right, .. } => {
-                let (clip_x0, _y0, clip_x1, _y1) = *ctx.render_extents;
+                let (clip_x0, clip_y0, clip_x1, clip_y1) = *ctx.render_extents;
+                let xform = *ctx.canvas.get_transform();
                 let width = clip_x1 - clip_x0;
+                let height = clip_y1.ceil();
+                let render_extents = (0.0, clip_y0, width, clip_y1);
+                let canvas_size = xform.transform_point(raqote::Point::new(width, height)).to_i32();
+                let mut canvas = DrawTarget::new(canvas_size.x, canvas_size.y);
+                canvas.set_transform(&xform);
 
-                ctx.cairo.push_group();
-                let mut left_ev = left.render(&ctx);
-                let left_size = ctx.render_pos.get();
-                let left = ctx.cairo.pop_group();
+                let mut left_ev = left.render(ctx);
+                let left_size = ctx.render_pos;
                 left_ev.offset_clamp(0.0, 0.0, left_size);
                 rv.merge(left_ev);
 
-                ctx.render_pos.set(0.0);
-                ctx.cairo.push_group();
-                let mut cent_ev = center.render(&ctx);
-                let cent_size = ctx.render_pos.get();
-                let cent = ctx.cairo.pop_group();
+                let mut group = Render {
+                    canvas : &mut canvas, 
+                    render_extents : &render_extents,
+                    render_pos : 0.0,
+                    render_ypos : None,
 
-                ctx.render_pos.set(0.0);
-                ctx.cairo.push_group();
-                let mut right_ev = right.render(&ctx);
-                let right_size = ctx.render_pos.get();
-                let right = ctx.cairo.pop_group();
+                    font : ctx.font,
+                    font_size : ctx.font_size,
+                    font_color : ctx.font_color,
+                    text_stroke : ctx.text_stroke,
+                    text_stroke_size : ctx.text_stroke_size,
 
-                ctx.cairo.set_source(&left);
-                ctx.cairo.paint();
+                    align : ctx.align,
+                    err_name : "bar",
+                    runtime : ctx.runtime,
+                };
 
-                let mut m = ctx.cairo.get_matrix();
-                let right_offset = clip_x1 - right_size; // this is negative
-                m.translate(-right_offset, 0.0);
+                let mut right_ev = right.render(&mut group);
+                let right_width = group.render_pos.ceil();
+
+                let right_offset = clip_x1 - right_width;
+                ctx.canvas.copy_surface(&group.canvas,
+                    raqote::IntRect::new(raqote::IntPoint::origin(), xform.transform_point(raqote::Point::new(right_width, height)).to_i32()),
+                    xform.transform_point(raqote::Point::new(right_offset, 0.0)).to_i32());
+
                 right_ev.offset_clamp(right_offset, right_offset, clip_x1);
                 rv.merge(right_ev);
-                right.set_matrix(m);
-                ctx.cairo.set_source(&right);
-                ctx.cairo.paint();
+
+                group.canvas.clear(raqote::SolidSource { a: 0, r: 0, g: 0, b: 0 });
+                group.render_pos = 0.0;
+
+                let mut cent_ev = center.render(&mut group);
+                let cent_size = group.render_pos;
 
                 let max_side = (width - cent_size) / 2.0;
-                let total_room = width - (left_size + right_size + cent_size);
+                let total_room = width - (left_size + right_width + cent_size);
                 let cent_offset;
                 if total_room < 0.0 {
                     // TODO maybe we should have cropped it?
@@ -798,25 +876,23 @@ impl Item {
                 } else if left_size > max_side {
                     // left side is too long to properly center; put it just to the right of that
                     cent_offset = left_size;
-                } else if right_size > max_side {
+                } else if right_width > max_side {
                     // right side is too long to properly center; put it just to the left of that
-                    cent_offset = clip_x1 - right_size - cent_size;
+                    cent_offset = clip_x1 - right_width - cent_size;
                 } else {
                     // Actually center the center module
                     cent_offset = max_side;
                 }
-                m = ctx.cairo.get_matrix();
-                m.translate(-cent_offset, 0.0);
-                cent.set_matrix(m);
+                ctx.canvas.copy_surface(&group.canvas,
+                    raqote::IntRect::new(raqote::IntPoint::origin(), xform.transform_point(raqote::Point::new(cent_size, height)).to_i32()),
+                    xform.transform_point(raqote::Point::new(cent_offset, 0.0)).to_i32());
                 cent_ev.offset_clamp(cent_offset, cent_offset, cent_offset + cent_size);
                 rv.merge(cent_ev);
-                ctx.cairo.set_source(&cent);
-                ctx.cairo.paint();
 
-                ctx.render_pos.set(clip_x1);
+                ctx.render_pos = clip_x1;
             }
             Module::Icon { name, fallback, tooltip } => {
-                let start_pos = ctx.render_pos.get();
+                let start_pos = ctx.render_pos;
                 let markup = self.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
                 let name = ctx.runtime.format_or(name, ctx.err_name).into_text();
                 match icon::render(ctx, &name) {
@@ -831,7 +907,7 @@ impl Item {
                     }
                 }
                 if !tooltip.is_empty() {
-                    let end_pos = ctx.render_pos.get();
+                    let end_pos = ctx.render_pos;
                     rv.hovers.push((start_pos, end_pos, PopupDesc::TextItem {
                         source : self.clone(),
                         iter : ctx.runtime.copy_item_var(),
@@ -842,7 +918,7 @@ impl Item {
                 tree.render(ctx, rv);
             }
             Module::Tray { spacing } => {
-                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse_f64()).unwrap_or(0.0);
+                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse_f32()).unwrap_or(0.0);
                 tray::show(ctx, rv, spacing);
             }
             Module::None => {}
@@ -851,51 +927,67 @@ impl Item {
             _ => {
                 let markup = self.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
                 let text = self.data.read_to_owned(ctx.err_name, "text", &ctx.runtime).into_text();
-                let layout = pangocairo::create_layout(ctx.cairo).unwrap();
-                layout.set_font_description(Some(ctx.font));
-                if markup {
-                    layout.set_markup(&text);
-                } else {
-                    layout.set_text(&text);
-                }
-                let size = layout.get_size();
-                let xpos = ctx.render_pos.get();
-                let ypos = match ctx.render_ypos {
-                    Some(v) => v.get(),
-                    None => {
-                        let yoff = match ctx.align.vert {
-                            Some(f) => {
-                                let (_x0, clip_y0, _x1, clip_y1) = *ctx.render_extents;
-                                let extra = clip_y1 - clip_y0 - pango::units_to_double(size.1);
-                                if extra >= 0.0 {
-                                    extra * f
-                                } else {
-                                    0.0
-                                }
+                let main_scale = ctx.font.scale_from_pt(ctx.font_size);
+                let main_font = ctx.font.as_ref();
+
+                let xstart = ctx.render_pos;
+                let ystart = ctx.render_ypos.unwrap_or_else(|| {
+                    let yoff = match ctx.align.vert {
+                        Some(f) => {
+                            let (_x0, clip_y0, _x1, clip_y1) = *ctx.render_extents;
+                            let extra = clip_y1 - clip_y0 - main_scale * (main_font.ascender() - main_font.descender()) as f32;
+                            if extra >= 0.0 {
+                                extra * f
+                            } else {
+                                0.0
                             }
-                            _ => 0.0,
-                        };
-                        yoff + ctx.render_extents.1
-                    }
+                        }
+                        _ => 0.0,
+                    };
+                    yoff + ctx.render_extents.1
+                });
+
+                let (width, height) = if let Some(rgba) = ctx.text_stroke {
+                    let (to_draw, (width, height)) = layout_font(ctx.font, ctx.font_size, &ctx.runtime, ctx.font_color, &text, markup);
+
+                    let src = raqote::Color::new(
+                        (rgba.3 / 256) as u8,
+                        (rgba.0 / 256) as u8,
+                        (rgba.1 / 256) as u8,
+                        (rgba.2 / 256) as u8,
+                    ).into();
+                    let style = raqote::StrokeStyle {
+                        width : ctx.text_stroke_size.unwrap_or(1.0),
+                        cap: raqote::LineCap::Round,
+                        join: raqote::LineJoin::Round,
+                        ..Default::default()
+                    };
+                    let opts = raqote::DrawOptions {
+                        ..Default::default()
+                    };
+
+                    draw_font_with(ctx.canvas, (xstart, ystart), &to_draw, |canvas, path, color| {
+                        canvas.stroke(&path, &src, &style, &opts);
+                        let src = raqote::Color::new(
+                            (color.3 / 256) as u8,
+                            (color.0 / 256) as u8,
+                            (color.1 / 256) as u8,
+                            (color.2 / 256) as u8,
+                        ).into();
+                        canvas.fill(&path, &src, &opts);
+                    });
+
+                    (width, height)
+                } else {
+                    render_font(ctx.canvas, ctx.font, ctx.font_size, ctx.font_color, &ctx.runtime, (xstart, ystart), &text, markup)
                 };
-                ctx.cairo.move_to(xpos, ypos);
-                if let Some(rgba) = ctx.text_stroke {
-                    ctx.cairo.save();
-                    pangocairo::layout_path(ctx.cairo, &layout);
-                    ctx.cairo.set_source_rgba(rgba.0 as f64 / 65535.0, rgba.1 as f64 / 65535.0, rgba.2 as f64 / 65535.0, rgba.3 as f64 / 65535.0);
-                    ctx.cairo.stroke();
-                    ctx.cairo.restore();
+
+                ctx.render_pos = xstart + width;
+                if let Some(yrec) = ctx.render_ypos.as_mut() {
+                    *yrec = ystart + height - main_scale * main_font.descender() as f32;
                 }
 
-                ctx.cairo.move_to(xpos, ypos);
-                pangocairo::show_layout(ctx.cairo, &layout);
-                let width = pango::units_to_double(size.0);
-                ctx.render_pos.set(xpos + width);
-                if let Some(yrec) = ctx.render_ypos {
-                    let height = pango::units_to_double(size.1);
-                    yrec.set(ypos + height);
-                }
-
+                let xpos = xstart;
                 match &self.data {
                     Module::Formatted { tooltip : Some(item), .. } => {
                         rv.hovers.push((xpos, xpos + width, PopupDesc::RenderItem {
@@ -948,37 +1040,31 @@ impl PartialEq for PopupDesc {
 }
 
 impl PopupDesc {
-    pub fn render_popup(&mut self, runtime : &Runtime, contents : &cairo::Surface, scale : i32) -> (i32, i32) {
-        let ctx = cairo::Context::new(&contents);
-        let mut scale_matrix = cairo::Matrix::identity();
-        scale_matrix.scale(scale as f64, scale as f64);
-        ctx.set_matrix(scale_matrix);
-        ctx.set_operator(cairo::Operator::Source);
-        ctx.paint();
-        ctx.set_operator(cairo::Operator::Over);
-        ctx.set_source_rgb(1.0, 1.0, 1.0);
-        let font = pango::FontDescription::new();
-        let render_extents = ctx.clip_extents();
-        let render_pos = Cell::new(0.0);
-        let render_ypos = Cell::new(0.0);
+    pub fn render_popup(&mut self, runtime : &Runtime, target : &mut DrawTarget) -> (i32, i32) {
+        target.clear(raqote::SolidSource { a: 255, r: 0, g: 0, b: 0 });
+        let font = &runtime.fonts[0];
+        let render_extents = (0.0, 0.0, target.width() as f32, target.height() as f32);
 
-        let ctx = Render {
-            cairo : &ctx,
-            font : &font,
+        let mut ctx = Render {
+            canvas : target,
+            font,
+            font_size : 16.0,
+            font_color : (0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF),
             align : Align::bar_default(),
             render_extents : &render_extents,
-            render_pos : &render_pos,
-            render_ypos : Some(&render_ypos),
+            render_pos : 2.0,
+            render_ypos : Some(2.0),
             err_name: "popup",
             text_stroke : None,
+            text_stroke_size : None,
             runtime,
         };
 
-        self.render(&ctx);
-        (render_pos.get() as i32, render_ypos.get() as i32)
+        self.render(&mut ctx);
+        (ctx.render_pos as i32, ctx.render_ypos.unwrap() as i32)
     }
 
-    fn render(&mut self, ctx : &Render) {
+    fn render(&mut self, ctx : &mut Render) {
         match self {
             PopupDesc::RenderItem { item, iter } => {
                 let item_var = ctx.runtime.get_item_var();
@@ -997,17 +1083,10 @@ impl PopupDesc {
                 }
 
                 let markup = source.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
-                ctx.cairo.move_to(2.0, 2.0);
-                let layout = pangocairo::create_layout(&ctx.cairo).unwrap();
-                if markup {
-                    layout.set_markup(&value);
-                } else {
-                    layout.set_text(&value);
-                }
-                pangocairo::show_layout(&ctx.cairo, &layout);
-                let size = layout.get_size();
-                ctx.render_pos.set(pango::units_to_double(size.0) + 4.0);
-                ctx.render_ypos.as_ref().map(|p| p.set(pango::units_to_double(size.1) + 4.0));
+
+                let (width, height) = render_font(ctx.canvas, ctx.font, ctx.font_size, ctx.font_color, &ctx.runtime, (2.0, 2.0), &value, markup);
+                ctx.render_pos = width + 4.0;
+                ctx.render_ypos.as_mut().map(|p| *p = height + 4.0);
             }
             PopupDesc::Tray(tray) => tray.render(ctx),
         }

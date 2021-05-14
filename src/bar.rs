@@ -1,6 +1,7 @@
 use log::error;
 use std::time::Instant;
 use std::rc::Rc;
+use raqote::DrawTarget;
 use wayland_client::Attached;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -14,12 +15,11 @@ use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
 use crate::item::*;
 use crate::render::RenderTarget;
 use crate::state::{Runtime,State};
-use crate::util::Cell;
 use crate::wayland::{Popup,WaylandClient};
 
 pub struct BarPopup {
     pub wl : Popup,
-    contents : cairo::RecordingSurface,
+    contents : DrawTarget,
     desc : PopupDesc,
     vanish : Option<Instant>,
 }
@@ -142,36 +142,28 @@ impl Bar {
             let rt_item = runtime.items.entry("bar".into()).or_insert_with(|| Rc::new(Item::none()));
             std::mem::swap(&mut self.item, rt_item);
 
-            let surf = cairo::RecordingSurface::create(cairo::Content::ColorAlpha,
-                cairo::Rectangle {
-                    x : 0.0,
-                    y : 0.0,
-                    width : self.pixel_width as f64,
-                    height : (self.size * self.scale) as f64,
-                }).expect("Error creating bar rendering surface");
-            let ctx = cairo::Context::new(&surf);
-            let mut scale_matrix = cairo::Matrix::identity();
-            scale_matrix.scale(self.scale as f64, self.scale as f64);
-            ctx.set_matrix(scale_matrix);
-            let font = pango::FontDescription::new();
-            ctx.set_operator(cairo::Operator::Clear);
-            ctx.paint();
-            ctx.set_operator(cairo::Operator::Over);
-            let render_extents = ctx.clip_extents();
-            let render_pos = Cell::new(0.0);
+            let mut canvas = DrawTarget::new(self.pixel_width, self.size * self.scale);
+            let scale = raqote::Transform::create_scale(self.scale as f32, self.scale as f32);
+            canvas.set_transform(&scale);
+            let font = &runtime.fonts[0];
+            let render_extents = (0.0, 0.0, (self.pixel_width / self.scale) as f32, self.size as f32);
 
-            let ctx = Render {
-                cairo : &ctx,
-                font : &font,
-                align : Align::bar_default(),
+            let mut ctx = Render {
+                canvas : &mut canvas, 
                 render_extents : &render_extents,
-                render_pos : &render_pos,
+                render_pos : 0.0,
                 render_ypos : None,
+
+                font,
+                font_size : 16.0,
+                font_color : (0, 0, 0, 0xFFFF),
+                align : Align::bar_default(),
                 err_name: "bar",
                 text_stroke : None,
+                text_stroke_size : None,
                 runtime,
             };
-            self.sink = ctx.runtime.items["bar"].render(&ctx);
+            self.sink = ctx.runtime.items["bar"].render(&mut ctx);
 
             if self.sparse {
                 let comp : Attached<WlCompositor> = target.wayland.env.require_global();
@@ -188,7 +180,7 @@ impl Bar {
                 region.destroy();
             }
 
-            target.render((self.pixel_width, self.size * self.scale), &self.surf, &surf);
+            target.render((self.pixel_width, self.size * self.scale), &self.surf, &canvas);
             std::mem::swap(&mut self.item, runtime.items.get_mut("bar").unwrap());
 
             let frame = self.surf.frame();
@@ -222,7 +214,10 @@ impl Bar {
             let scale = popup.wl.scale;
             let pixel_size = (popup.wl.size.0 * scale, popup.wl.size.1 * scale);
 
-            let new_size = popup.desc.render_popup(runtime, &popup.contents, scale);
+            popup.contents = raqote::DrawTarget::new(popup.wl.size.0 * scale, popup.wl.size.1 * scale);
+            popup.contents.set_transform(&raqote::Transform::create_scale(scale as f32, scale as f32));
+
+            let new_size = popup.desc.render_popup(runtime, &mut popup.contents);
             target.render(pixel_size, &popup.wl.surf, &popup.contents);
             popup.wl.surf.commit();
             if new_size.0 > popup.wl.size.0 || new_size.1 > popup.wl.size.1 {
@@ -232,7 +227,7 @@ impl Bar {
     }
 
     pub fn hover(&mut self, x : f64, y : f64, wayland : &WaylandClient, runtime : &Runtime) {
-        if let Some((min_x, max_x, desc)) = self.sink.get_hover(x, y) {
+        if let Some((min_x, max_x, desc)) = self.sink.get_hover(x as f32, y as f32) {
             if let Some(popup) = &self.popup {
                 if x < popup.wl.anchor.0 as f64 || x > (popup.wl.anchor.0 + popup.wl.anchor.2) as f64 {
                     self.popup = None;
@@ -243,15 +238,10 @@ impl Bar {
                 }
             }
             let anchor = (min_x as i32, 0, (max_x - min_x) as i32, self.size as i32);
-            let contents = cairo::RecordingSurface::create(cairo::Content::ColorAlpha,
-                cairo::Rectangle {
-                    x : 0.0,
-                    y : 0.0,
-                    width : self.pixel_width as f64,
-                    height : self.pixel_width as f64 * 2.0,
-                }).expect("Error creating popup rendering surface");
-
-            let size = desc.render_popup(runtime, &contents, self.scale);
+            let mut contents = raqote::DrawTarget::new(self.pixel_width, self.pixel_width * 2);
+            let scale = raqote::Transform::create_scale(self.scale as f32, self.scale as f32);
+            contents.set_transform(&scale);
+            let size = desc.render_popup(runtime, &mut contents);
             if size.0 <= 0 || size.1 <= 0 {
                 return;
             }

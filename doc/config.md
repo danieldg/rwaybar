@@ -77,6 +77,7 @@ Key | Value | Details
 `padding` | `1 2 3 4` (pixels) | Padding width for the top, right, bottom, and left sides.  Like CSS, you can omit some of the values if they are the same.
 `text-outline` | `red` or `#ff0000` | Color for text outline
 `text-outline-alpha` | `0.5` | Opacity of the outline
+`text-outline-width` | `2.0` | Width of the outline (in pixels)
 `valign` | `20%` | Vertical alignment (of text)
 
 ## Actions

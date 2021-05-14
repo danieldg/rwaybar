@@ -588,7 +588,7 @@ impl Node {
         }
     }
 
-    fn render(self : &Rc<Self>, items : &TreeItems, ctx : &Render, ev : &mut EventSink) {
+    fn render(self : &Rc<Self>, items : &TreeItems, ctx : &mut Render, ev : &mut EventSink) {
         let ii = Rc::new(IterationItem::SwayTreeItem(self.clone()));
         match &self.contents {
             NodeType::Container { children, .. } => {
@@ -824,7 +824,7 @@ impl Tree {
         f(Value::Null)
     }
 
-    pub fn render(&self, ctx : &Render, ev : &mut EventSink) {
+    pub fn render(&self, ctx : &mut Render, ev : &mut EventSink) {
         let items = &self.items;
         let output = self.output.as_ref()
             .map(|v| ctx.runtime.format_or(&v, ctx.err_name).into_text())

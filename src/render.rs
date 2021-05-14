@@ -1,4 +1,5 @@
 use std::io;
+use raqote::DrawTarget;
 use smithay_client_toolkit::environment::Environment;
 use smithay_client_toolkit::shm::AutoMemPool;
 use wayland_client::Attached;
@@ -77,27 +78,18 @@ impl<'a> RenderTarget<'a> {
         RenderTarget { wayland }
     }
 
-    pub fn render(&mut self, size : (i32, i32), target : &WlSurface, surf : &cairo::Surface) {
-        let stride = cairo::Format::ARgb32.stride_for_width(size.0 as u32).unwrap();
+    pub fn render(&mut self, size : (i32, i32), target : &WlSurface, surf : &DrawTarget) {
+        let stride = size.0 * 4;
         let (buf, wl_buf) = self.wayland.renderer.shm
             .buffer(size.0, size.1, stride, smithay_client_toolkit::shm::Format::Argb8888)
             .expect("OOM");
 
-        unsafe {
-            // cairo::ImageSurface::create_for_data requires a 'static type, so give it that.
-            // This could be done safely by creating a type that takes ownership of the MemPool and
-            // returns it on Drop, which would require starting with an Rc<State> handle.
-            let buf : &'static mut [u8] = &mut *(buf as *mut [u8]);
-
-            let is = cairo::ImageSurface::create_for_data(buf, cairo::Format::ARgb32, size.0, size.1, stride).unwrap();
-            let ctx = cairo::Context::new(&is);
-            surf.flush();
-            ctx.set_source_surface(surf, 0.0, 0.0);
-            ctx.set_operator(cairo::Operator::Source);
-            ctx.paint();
-            is.finish();
-            drop(is);
+        if let Some(src) = surf.get_data_u8().get(..buf.len()) {
+            buf.copy_from_slice(src);
+        } else {
+            log::error!("DrawTarget too small for its rendering");
         }
+
         target.attach(Some(&wl_buf), 0, 0);
         target.damage_buffer(0, 0, size.0, size.1);
     }

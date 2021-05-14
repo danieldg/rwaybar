@@ -71,6 +71,17 @@ impl<'a> Value<'a> {
         }
     }
 
+    pub fn parse_f32(&self) -> Option<f32> {
+        match self {
+            Value::Borrow(v) => v.parse().ok(),
+            Value::Owned(v) => v.parse().ok(),
+            Value::Float(f) => Some(*f as f32),
+            Value::Bool(true) => Some(1.0),
+            Value::Bool(false) => Some(0.0),
+            Value::Null => None,
+        }
+    }
+
     pub fn parse_f64(&self) -> Option<f64> {
         match self {
             Value::Borrow(v) => v.parse().ok(),
