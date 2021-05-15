@@ -138,7 +138,7 @@ impl Bar {
     }
 
     pub fn render_with(&mut self, runtime : &mut Runtime, target : &mut RenderTarget) {
-        if self.dirty && self.throttle.is_none() {
+        if self.dirty && self.throttle.is_none() && self.pixel_width != 0 {
             let rt_item = runtime.items.entry("bar".into()).or_insert_with(|| Rc::new(Item::none()));
             std::mem::swap(&mut self.item, rt_item);
 
