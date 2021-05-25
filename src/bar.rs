@@ -69,7 +69,7 @@ impl Bar {
         ls_surf.set_size(0, size);
         ls_surf.set_exclusive_zone(size_excl as i32);
         let sparse = cfg.get("sparse-clicks").and_then(|v| v.as_bool()).unwrap_or(true);
-        if !sparse && size != size_excl && size_excl != 0 {
+        if size != size_excl && size_excl != 0 {
             // Only handle input in the exclusive region; clicks in the overhang region will go
             // through to the window we cover (hopefully transparently, to avoid confusion)
             let comp : Attached<WlCompositor> = wayland.env.require_global();
@@ -79,7 +79,9 @@ impl Bar {
             } else {
                 size.saturating_sub(size_excl) as i32
             };
-            region.add(0, yoff, i32::MAX, size_excl as i32);
+            if !sparse {
+                region.add(0, yoff, i32::MAX, size_excl as i32);
+            }
             surf.set_input_region(Some(&region));
             region.destroy();
         }
@@ -163,22 +165,34 @@ impl Bar {
                 text_stroke_size : None,
                 runtime,
             };
-            self.sink = ctx.runtime.items["bar"].render(&mut ctx);
+            let new_sink = ctx.runtime.items["bar"].render(&mut ctx);
 
             if self.sparse {
-                let comp : Attached<WlCompositor> = target.wayland.env.require_global();
-                let region = comp.create_region();
-                let yoff = if self.anchor_top {
-                    0
-                } else {
-                    (self.size as u32).saturating_sub(self.size_excl) as i32
-                };
+                let mut old_regions = Vec::new();
+                let mut new_regions = Vec::new();
                 self.sink.for_active_regions(|lo, hi| {
-                    region.add(lo as i32, yoff, (hi - lo) as i32, self.size_excl as i32);
+                    old_regions.push((lo as i32, (hi - lo) as i32));
                 });
-                self.surf.set_input_region(Some(&region));
-                region.destroy();
+                new_sink.for_active_regions(|lo, hi| {
+                    new_regions.push((lo as i32, (hi - lo) as i32));
+                });
+
+                if old_regions != new_regions {
+                    let comp : Attached<WlCompositor> = target.wayland.env.require_global();
+                    let region = comp.create_region();
+                    let yoff = if self.anchor_top {
+                        0
+                    } else {
+                        (self.size as u32).saturating_sub(self.size_excl) as i32
+                    };
+                    for (lo, len) in new_regions {
+                        region.add(lo, yoff, len, self.size_excl as i32);
+                    }
+                    self.surf.set_input_region(Some(&region));
+                    region.destroy();
+                }
             }
+            self.sink = new_sink;
 
             target.render((self.pixel_width, self.size * self.scale), &self.surf, &canvas);
             std::mem::swap(&mut self.item, runtime.items.get_mut("bar").unwrap());
