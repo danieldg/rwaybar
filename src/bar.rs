@@ -1,4 +1,5 @@
 use log::error;
+use std::convert::TryInto;
 use std::time::Instant;
 use std::rc::Rc;
 use raqote::DrawTarget;
@@ -34,7 +35,7 @@ pub struct Bar {
     pub scale : i32,
     pixel_width : i32,
     size : i32,
-    size_excl : u32,
+    click_size : u32,
     pub dirty : bool,
     sparse : bool,
     throttle : Option<Attached<WlCallback>>,
@@ -48,10 +49,21 @@ impl Bar {
         let surf : Attached<_> = wayland.env.create_surface();
         let ls_surf = ls.get_layer_surface(&surf, Some(output), Layer::Top, "bar".to_owned());
 
-        let size = cfg.get("size").and_then(|v| v.as_integer()).unwrap_or(20) as u32;
+        let size = cfg.get("size")
+            .and_then(|v| v.as_integer())
+            .filter(|&v| v > 0 && v < i32::MAX as _)
+            .and_then(|v| v.try_into().ok())
+            .unwrap_or(20);
         let size_excl = cfg.get("size-exclusive")
             .and_then(|v| v.as_integer())
-            .map(|v| v as u32)
+            .filter(|&v| v >= -1 && v < i32::MAX as _)
+            .and_then(|v| v.try_into().ok())
+            .unwrap_or(size as i32);
+        let click_size = cfg.get("size-clickable")
+            .and_then(|v| v.as_integer())
+            .filter(|&v| v > 0 && v < i32::MAX as _)
+            .and_then(|v| v.try_into().ok())
+            .or_else(|| size_excl.try_into().ok().filter(|&v| v > 0))
             .unwrap_or(size);
         let anchor_top = match cfg.get("side").and_then(|v| v.as_str()) {
             Some("top") => true,
@@ -67,9 +79,9 @@ impl Bar {
             ls_surf.set_anchor(Anchor::Bottom | Anchor::Left | Anchor::Right);
         }
         ls_surf.set_size(0, size);
-        ls_surf.set_exclusive_zone(size_excl as i32);
+        ls_surf.set_exclusive_zone(size_excl);
         let sparse = cfg.get("sparse-clicks").and_then(|v| v.as_bool()).unwrap_or(true);
-        if size != size_excl && size_excl != 0 {
+        if size != click_size {
             // Only handle input in the exclusive region; clicks in the overhang region will go
             // through to the window we cover (hopefully transparently, to avoid confusion)
             let comp : Attached<WlCompositor> = wayland.env.require_global();
@@ -77,10 +89,12 @@ impl Bar {
             let yoff = if anchor_top {
                 0
             } else {
-                size.saturating_sub(size_excl) as i32
+                size.saturating_sub(click_size) as i32
             };
-            if !sparse {
-                region.add(0, yoff, i32::MAX, size_excl as i32);
+            if sparse {
+                // start with an empty region to match the empty EventSink
+            } else {
+                region.add(0, yoff, i32::MAX, click_size as i32);
             }
             surf.set_input_region(Some(&region));
             region.destroy();
@@ -128,7 +142,7 @@ impl Bar {
             scale,
             pixel_width : 0,
             size : size as i32,
-            size_excl,
+            click_size,
             anchor_top,
             sink : EventSink::default(),
             dirty : false,
@@ -183,10 +197,10 @@ impl Bar {
                     let yoff = if self.anchor_top {
                         0
                     } else {
-                        (self.size as u32).saturating_sub(self.size_excl) as i32
+                        (self.size as u32).saturating_sub(self.click_size) as i32
                     };
                     for (lo, len) in new_regions {
-                        region.add(lo, yoff, len, self.size_excl as i32);
+                        region.add(lo, yoff, len, self.click_size as i32);
                     }
                     self.surf.set_input_region(Some(&region));
                     region.destroy();

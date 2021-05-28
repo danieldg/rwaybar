@@ -21,6 +21,7 @@ Key | Value | Expanded | Default
 `description` | A regex that must match the description of the monitor | No | Display on all monitors
 `size` | The size of the bar in pixels | No | `20`
 `size-exclusive` | Number of pixels to reserve for the bar | No | (`size`)
+`size-clickable` | Number of pixels of the bar that are clickable | No | (`size-exclusive`)
 `side` | `top` or `bottom` | No | `bottom`
 `sparse-clicks` | `true` if clicks should only be captured where active | No | `true`
 `left` | Block or list of blocks | No | None
@@ -33,6 +34,14 @@ configuration does not produce any matching bars.
 
 Note: the bar configuration may also include [formatting rules](#formatting)
 and other arbitrary text values accessible in [text expansions](#text-expansion).
+
+If you don't like dedicating an entire edge of the screen to the bar, you can
+set `size-exclusive` to 0 to have the bar display over other windows; in
+combination with `sparse-clicks`, transparent backgrounds, and careful
+positioning of any visible or clickable items, this can avoid wasting screen
+space for the bar but still have some information be visible, drawn over other
+windows or unused parts of the desktop surface (for example, the top-right of a
+fullscreen window title-bar).
 
 # Common attributes
 
