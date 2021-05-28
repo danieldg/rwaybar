@@ -13,6 +13,14 @@ panic = 'abort'
 panic = 'abort'
 lto = true
 
+[features]
+default = ['pulse', 'dbus']
+pulse = ['libpulse-binding']
+# This changes the static dependency on libxkbcommon.so to an optional run-time
+# dependency, but also changes the wayland-client code to link to the C
+# library.  No actual changes in functionality are present.
+dlopen = ['smithay-client-toolkit/dlopen']
+
 [dependencies]
 # Basic runtime
 bytes = ""
@@ -40,10 +48,10 @@ wayland-client = "0.28.5"
 wayland-cursor = "0.28"
 wayland-protocols = "0.28"
 
-# Module specific (could be optional deps)
+# Module specific
 chrono = ""
 chrono-tz = ""
-dbus = { version = "", features = ['futures'] }
+dbus = { version = "", features = ['futures'], optional = true }
 evalexpr = ""
-libpulse-binding = { version = "", features = ['pa_v14'] }
+libpulse-binding = { version = "", features = ['pa_v14'], optional = true }
 regex = ""

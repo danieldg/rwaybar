@@ -1,9 +1,12 @@
 use crate::item::Item;
+#[cfg(feature="dbus")]
 use crate::mpris;
+#[cfg(feature="pulse")]
 use crate::pulse;
 use crate::state::NotifierList;
 use crate::state::Runtime;
 use crate::sway;
+#[cfg(feature="dbus")]
 use crate::tray;
 use crate::util::{Cell,Fd,toml_to_string,toml_to_f64,spawn_noerr};
 use evalexpr::Node as EvalExpr;
@@ -31,6 +34,7 @@ pub enum Value<'a> {
     Null,
 }
 
+#[cfg_attr(not(feature="pulse"),allow(unused))]
 impl<'a> Value<'a> {
     pub fn as_ref(&self) -> Value {
         match self {
@@ -271,6 +275,7 @@ pub enum Module {
     ItemReference {
         value : Cell<ItemReference>,
     },
+    #[cfg(feature="dbus")]
     MediaPlayer2 { target : Box<str> },
     Meter {
         min : Box<str>,
@@ -280,6 +285,7 @@ pub enum Module {
         looped : Cell<bool>,
     },
     None,
+    #[cfg(feature="pulse")]
     Pulse {
         target : Box<str>,
     },
@@ -315,7 +321,9 @@ pub enum Module {
 
 #[derive(Debug,Clone)]
 pub enum IterationItem {
+    #[cfg(feature="dbus")]
     MediaPlayer2 { target : Rc<str> },
+    #[cfg(feature="pulse")]
     Pulse { target : Rc<str> },
     SwayWorkspace(Rc<sway::WorkspaceData>),
     SwayTreeItem(Rc<sway::Node>),
@@ -325,7 +333,9 @@ impl PartialEq for IterationItem {
     fn eq(&self, rhs : &Self) -> bool {
         use IterationItem::*;
         match (self, rhs) {
+            #[cfg(feature="dbus")]
             (MediaPlayer2 { target : a }, MediaPlayer2 { target : b }) => Rc::ptr_eq(a,b),
+            #[cfg(feature="pulse")]
             (Pulse { target : a }, Pulse { target : b }) => Rc::ptr_eq(a,b),
             (SwayWorkspace(a), SwayWorkspace(b)) => Rc::ptr_eq(a,b),
             (SwayTreeItem(a), SwayTreeItem(b)) => Rc::ptr_eq(a,b),
@@ -495,10 +505,12 @@ impl Module {
                 values[e] = value.get("above").and_then(|v| v.as_str()).unwrap_or(&values[e - 1]).into();
                 Module::Meter { min, max, src, values, looped : Cell::new(false) }
             }
+            #[cfg(feature="dbus")]
             Some("mpris") => {
                 let target = toml_to_string(value.get("name")).unwrap_or_default().into();
                 Module::MediaPlayer2 { target }
             }
+            #[cfg(feature="pulse")]
             Some("pulse") => {
                 let target = toml_to_string(value.get("target")).unwrap_or_default().into();
                 Module::Pulse { target }
@@ -949,7 +961,9 @@ impl Module {
             }
             Module::Item { value } => value.take_in(|item| {
                 match item.as_ref() {
+                    #[cfg(feature="dbus")]
                     Some(IterationItem::MediaPlayer2 { target }) => mpris::read_in(name, target, key, rt, f),
+                    #[cfg(feature="pulse")]
                     Some(IterationItem::Pulse { target }) => pulse::read_in(name, target, key, rt, f),
                     Some(IterationItem::SwayWorkspace(data)) => data.read_in(key, rt, f),
                     Some(IterationItem::SwayTreeItem(node)) => node.read_in(key, rt, f),
@@ -962,6 +976,7 @@ impl Module {
                     None => f(Value::Null),
                 })
             }
+            #[cfg(feature="dbus")]
             Module::MediaPlayer2 { target } => mpris::read_in(name, target, key, rt, f),
             Module::Meter { min, max, src, values, looped } => {
                 if looped.get() {
@@ -987,6 +1002,7 @@ impl Module {
                 f(res)
             }
             Module::None => f(Value::Null),
+            #[cfg(feature="pulse")]
             Module::Pulse { target } => pulse::read_in(name, target, key, rt, f),
             Module::ReadFile { name, poll, last_read, contents } => {
                 use std::io::Read;
@@ -1085,14 +1101,18 @@ impl Module {
             }
             Module::Item { value : v } => v.take_in(|item| {
                 match item.as_ref() {
+                    #[cfg(feature="dbus")]
                     Some(IterationItem::MediaPlayer2 { target }) => mpris::write(name, target, key, value, rt),
+                    #[cfg(feature="pulse")]
                     Some(IterationItem::Pulse { target }) => pulse::do_write(name, target, key, value, rt),
                     Some(IterationItem::SwayWorkspace(data)) => data.write(key, value, rt),
                     Some(IterationItem::SwayTreeItem(node)) => node.write(key, value, rt),
                     None => {}
                 }
             }),
+            #[cfg(feature="dbus")]
             Module::MediaPlayer2 { target } => mpris::write(name, target, key, value, rt),
+            #[cfg(feature="pulse")]
             Module::Pulse { target } => pulse::do_write(name, target, key, value, rt),
             Module::SwayMode(_) => sway::write(value, rt),
             Module::SwayTree(_) => sway::write(value, rt),
@@ -1117,8 +1137,10 @@ impl Module {
 
     pub fn read_focus_list<F : FnMut(bool, IterationItem)>(&self, rt : &Runtime, f : F) {
         match self {
+            #[cfg(feature="dbus")]
             Module::MediaPlayer2 { .. } => mpris::read_focus_list(rt, f),
             Module::SwayWorkspace(ws) => ws.read_focus_list(rt, f),
+            #[cfg(feature="pulse")]
             Module::Pulse { target } => pulse::read_focus_list(rt, target, f),
             Module::ItemReference { value } => {
                 ItemReference::with(value, rt, |v| match v {
@@ -1139,6 +1161,7 @@ pub enum Action {
     Exec { format : String },
     Write { target : String, format : String },
     List(Vec<Action>),
+    #[cfg(feature="dbus")]
     Tray { owner : Rc<str>, path : Rc<str> },
     None,
 }
@@ -1161,6 +1184,7 @@ impl Action {
         Action::None
     }
 
+    #[cfg(feature="dbus")]
     pub fn from_tray(owner : Rc<str>, path : Rc<str>) -> Self {
         Action::Tray { owner, path }
     }
@@ -1208,6 +1232,7 @@ impl Action {
                     }
                 }
             }
+            #[cfg(feature="dbus")]
             Action::Tray { owner, path } => {
                 tray::do_click(owner, path, how);
             }

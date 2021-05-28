@@ -2,16 +2,21 @@ use std::error::Error;
 
 mod bar;
 mod data;
+#[cfg(feature="dbus")]
 mod dbus;
 mod font;
 mod icon;
 mod item;
+#[cfg(feature="dbus")]
 mod mpris;
+#[cfg(feature="pulse")]
 mod pulse;
+#[cfg(feature="pulse")]
 mod pulse_tokio;
 mod render;
 mod state;
 mod sway;
+#[cfg(feature="dbus")]
 mod tray;
 mod util;
 mod wayland;
@@ -31,6 +36,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (client, wl_queue) = WaylandClient::new()?;
 
     tokio::task::LocalSet::new().block_on(&rt, async move {
+        #[cfg(feature="dbus")]
         dbus::init()?;
 
         let state = State::new(client)?;

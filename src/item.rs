@@ -2,6 +2,7 @@ use crate::data::{Action,Module,ModuleContext,ItemReference,IterationItem,Value}
 use crate::state::Runtime;
 use crate::font::{FontMapped,draw_font_with,layout_font,render_font};
 use crate::icon;
+#[cfg(feature="dbus")]
 use crate::tray;
 use log::{debug,warn,error};
 use raqote::DrawTarget;
@@ -376,6 +377,7 @@ impl EventSink {
         }
     }
 
+    #[cfg(feature="dbus")]
     pub fn from_tray(owner : Rc<str>, path : Rc<str>) -> Self {
         let mut sink = EventSink::default();
         sink.handlers.push(EventListener {
@@ -444,6 +446,7 @@ impl EventSink {
         }
     }
 
+    #[cfg_attr(not(feature="dbus"), allow(unused))]
     pub fn add_hover(&mut self, min : f32, max : f32, desc : PopupDesc) {
         self.hovers.push((min, max, desc));
     }
@@ -917,6 +920,7 @@ impl Item {
             Module::SwayTree(tree) => {
                 tree.render(ctx, rv);
             }
+            #[cfg(feature="dbus")]
             Module::Tray { spacing } => {
                 let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse_f32()).unwrap_or(0.0);
                 tray::show(ctx, rv, spacing);
@@ -1021,6 +1025,7 @@ pub enum PopupDesc {
         source : Rc<Item>,
         iter : Option<IterationItem>,
     },
+    #[cfg(feature="dbus")]
     Tray(tray::TrayPopup),
 }
 
@@ -1033,6 +1038,7 @@ impl PartialEq for PopupDesc {
             (PopupDesc::TextItem { source : a, iter : ai }, PopupDesc::TextItem { source : b, iter : bi }) => {
                 Rc::ptr_eq(a,b) && ai == bi
             }
+            #[cfg(feature="dbus")]
             (PopupDesc::Tray(a), PopupDesc::Tray(b)) => a == b,
             _ => false,
         }
@@ -1088,14 +1094,17 @@ impl PopupDesc {
                 ctx.render_pos = width + 4.0;
                 ctx.render_ypos.as_mut().map(|p| *p = height + 4.0);
             }
+            #[cfg(feature="dbus")]
             PopupDesc::Tray(tray) => tray.render(ctx),
         }
     }
 
+    #[cfg_attr(not(feature="dbus"), allow(unused))]
     pub fn button(&mut self, x : f64, y : f64, button : u32, runtime : &mut Runtime) {
         match self {
             PopupDesc::RenderItem { .. } => { }
             PopupDesc::TextItem { .. } => { }
+            #[cfg(feature="dbus")]
             PopupDesc::Tray(tray) => tray.button(x, y, button, runtime),
         }
     }
