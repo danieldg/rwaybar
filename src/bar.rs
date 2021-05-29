@@ -20,7 +20,6 @@ use crate::wayland::{Popup,WaylandClient};
 
 pub struct BarPopup {
     pub wl : Popup,
-    contents : DrawTarget,
     desc : PopupDesc,
     vanish : Option<Instant>,
 }
@@ -158,8 +157,10 @@ impl Bar {
             let rt_item = runtime.items.entry("bar".into()).or_insert_with(|| Rc::new(Item::none()));
             std::mem::swap(&mut self.item, rt_item);
 
-            let mut canvas = DrawTarget::new(self.pixel_width, self.size * self.scale);
-            let scale = raqote::Transform::create_scale(self.scale as f32, self.scale as f32);
+            let canvas = target.render((self.pixel_width, self.size * self.scale), &self.surf);
+            let mut canvas = DrawTarget::from_backing(self.pixel_width, self.size * self.scale, canvas);
+            canvas.clear(raqote::SolidSource { r: 0, g: 0, b: 0, a: 0 });
+            let scale = raqote::Transform::scale(self.scale as f32, self.scale as f32);
             canvas.set_transform(&scale);
             let font = &runtime.fonts[0];
             let render_extents = (0.0, 0.0, (self.pixel_width / self.scale) as f32, self.size as f32);
@@ -208,7 +209,6 @@ impl Bar {
             }
             self.sink = new_sink;
 
-            target.render((self.pixel_width, self.size * self.scale), &self.surf, &canvas);
             std::mem::swap(&mut self.item, runtime.items.get_mut("bar").unwrap());
 
             let frame = self.surf.frame();
@@ -242,11 +242,12 @@ impl Bar {
             let scale = popup.wl.scale;
             let pixel_size = (popup.wl.size.0 * scale, popup.wl.size.1 * scale);
 
-            popup.contents = raqote::DrawTarget::new(popup.wl.size.0 * scale, popup.wl.size.1 * scale);
-            popup.contents.set_transform(&raqote::Transform::create_scale(scale as f32, scale as f32));
+            let canvas = target.render(pixel_size, &popup.wl.surf);
+            let mut canvas = DrawTarget::from_backing(popup.wl.size.0 * scale, popup.wl.size.1 * scale, canvas);
+            canvas.clear(raqote::SolidSource { r: 0, g: 0, b: 0, a: 0 });
+            canvas.set_transform(&raqote::Transform::scale(scale as f32, scale as f32));
 
-            let new_size = popup.desc.render_popup(runtime, &mut popup.contents);
-            target.render(pixel_size, &popup.wl.surf, &popup.contents);
+            let new_size = popup.desc.render_popup(runtime, &mut canvas);
             popup.wl.surf.commit();
             if new_size.0 > popup.wl.size.0 || new_size.1 > popup.wl.size.1 {
                 target.wayland.resize_popup(&self.ls_surf, &mut popup.wl, new_size, scale);
@@ -266,10 +267,11 @@ impl Bar {
                 }
             }
             let anchor = (min_x as i32, 0, (max_x - min_x) as i32, self.size as i32);
-            let mut contents = raqote::DrawTarget::new(self.pixel_width, self.pixel_width * 2);
-            let scale = raqote::Transform::create_scale(self.scale as f32, self.scale as f32);
-            contents.set_transform(&scale);
-            let size = desc.render_popup(runtime, &mut contents);
+            let mut canvas = vec![0];
+            let mut canvas = raqote::DrawTarget::from_backing(1, 1, &mut canvas[..]);
+            let scale = raqote::Transform::scale(self.scale as f32, self.scale as f32);
+            canvas.set_transform(&scale);
+            let size = desc.render_popup(runtime, &mut canvas);
             if size.0 <= 0 || size.1 <= 0 {
                 return;
             }
@@ -278,7 +280,6 @@ impl Bar {
             let popup = BarPopup {
                 wl : wayland.new_popup(self, anchor, size),
                 desc,
-                contents,
                 vanish : None,
             };
             self.popup = Some(popup);

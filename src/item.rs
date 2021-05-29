@@ -10,8 +10,8 @@ use std::borrow::Cow;
 use std::rc::Rc;
 
 /// State available to an [Item] render function
-pub struct Render<'a> {
-    pub canvas : &'a mut DrawTarget,
+pub struct Render<'a, 'c> {
+    pub canvas : &'a mut DrawTarget<&'c mut [u32]>,
 
     pub render_extents : &'a (f32, f32, f32, f32),
     pub render_pos : f32,
@@ -315,7 +315,7 @@ impl<'a> Formatting<'a> {
         self.alpha.is_none()
     }
 
-    fn setup_ctx<'p : 'a>(&'a self, ctx : &'a mut Render<'p>) -> Render<'a> {
+    fn setup_ctx<'p : 'a, 'c>(&'a self, ctx : &'a mut Render<'p, 'c>) -> Render<'a, 'c> {
         Render {
             canvas : &mut *ctx.canvas,
             align : ctx.align.merge(&self.align),
@@ -828,7 +828,8 @@ impl Item {
                 let height = clip_y1.ceil();
                 let render_extents = (0.0, clip_y0, width, clip_y1);
                 let canvas_size = xform.transform_point(raqote::Point::new(width, height)).to_i32();
-                let mut canvas = DrawTarget::new(canvas_size.x, canvas_size.y);
+                let mut canvas = DrawTarget::new(canvas_size.x, canvas_size.y).into_vec();
+                let mut canvas = DrawTarget::from_backing(canvas_size.x, canvas_size.y, &mut canvas[..]);
                 canvas.set_transform(&xform);
 
                 let mut left_ev = left.render(ctx);
@@ -1046,7 +1047,7 @@ impl PartialEq for PopupDesc {
 }
 
 impl PopupDesc {
-    pub fn render_popup(&mut self, runtime : &Runtime, target : &mut DrawTarget) -> (i32, i32) {
+    pub fn render_popup(&mut self, runtime : &Runtime, target : &mut DrawTarget<&mut [u32]>) -> (i32, i32) {
         target.clear(raqote::SolidSource { a: 255, r: 0, g: 0, b: 0 });
         let font = &runtime.fonts[0];
         let render_extents = (0.0, 0.0, target.width() as f32, target.height() as f32);

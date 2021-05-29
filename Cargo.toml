@@ -38,7 +38,8 @@ xdg = ""
 
 # GUI
 png = ""
-raqote = { version = "", default-features = false }
+#raqote = { version = "", default-features = false }
+raqote = { git = "https://github.com/jrmuizel/raqote.git", default-features = false }
 resvg = { version = "", default-features = false }
 smithay-client-toolkit = { version = "", default-features = false }
 tiny-skia = ""

@@ -156,7 +156,7 @@ pub fn layout_font<'a>(
     (to_draw, (width, height))
 }
 
-pub fn draw_font_with(target : &mut DrawTarget, start : (f32, f32), to_draw : &[CGlyph], mut draw : impl FnMut(&mut DrawTarget, raqote::Path, (u16, u16, u16, u16))) {
+pub fn draw_font_with(target : &mut DrawTarget<&mut [u32]>, start : (f32, f32), to_draw : &[CGlyph], mut draw : impl FnMut(&mut DrawTarget<&mut [u32]>, raqote::Path, (u16, u16, u16, u16))) {
     for &CGlyph { id, scale, position, font, color } in to_draw {
         struct Draw(raqote::Path);
         let mut path = Draw(raqote::Path {
@@ -181,9 +181,9 @@ pub fn draw_font_with(target : &mut DrawTarget, start : (f32, f32), to_draw : &[
             }
         }
         if let Some(_bounds) = font.as_ref().outline_glyph(id, &mut path) {
-            let xform = raqote::Transform::create_scale(scale, scale);
-            let xform = xform.post_translate(position - Point::origin());
-            let xform = xform.post_translate(raqote::Vector::new(start.0, start.1));
+            let xform = raqote::Transform::scale(scale, scale);
+            let xform = xform.then_translate(position - Point::origin());
+            let xform = xform.then_translate(raqote::Vector::new(start.0, start.1));
             let path = path.0.transform(&xform);
             draw(target, path, color);
             continue;
@@ -221,7 +221,7 @@ pub fn draw_font_with(target : &mut DrawTarget, start : (f32, f32), to_draw : &[
     }
 }
 
-pub fn render_font(target : &mut DrawTarget,
+pub fn render_font(target : &mut DrawTarget<&mut [u32]>,
     font: &FontMapped,
     scale : f32,
     rgba : (u16, u16, u16, u16),
