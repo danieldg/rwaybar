@@ -237,7 +237,6 @@ pub enum Module {
     Eval {
         expr : EvalExpr,
         vars : Vec<(Box<str>, Module)>,
-        looped : Cell<bool>,
     },
     ExecJson {
         command : Box<str>,
@@ -255,7 +254,6 @@ pub enum Module {
     Formatted {
         format : Box<str>,
         tooltip : Option<Rc<Item>>,
-        looped : Cell<bool>,
     },
     Group {
         items : Vec<Rc<Item>>,
@@ -282,7 +280,6 @@ pub enum Module {
         max : Box<str>,
         src : Box<Module>,
         values : Box<[Box<str>]>,
-        looped : Cell<bool>,
     },
     None,
     #[cfg(feature="pulse")]
@@ -299,7 +296,6 @@ pub enum Module {
         regex : regex::Regex,
         text : Box<str>,
         replace : Box<str>,
-        looped : Cell<bool>,
     },
     SwayMode(sway::Mode),
     SwayTree(sway::Tree),
@@ -308,7 +304,6 @@ pub enum Module {
         format : Box<Module>,
         cases : toml::value::Table,
         default : Box<str>,
-        looped : Cell<bool>,
     },
     Tray {
         spacing : Box<str>,
@@ -394,7 +389,7 @@ impl Module {
                                 }
                             }
                         }
-                        Module::Eval { expr, vars, looped : Cell::new(false) }
+                        Module::Eval { expr, vars }
                     }
                     Some(Err(e)) => {
                         error!("Could not parse expression: {}", e);
@@ -449,7 +444,7 @@ impl Module {
                     ""
                 }).into();
                 let tooltip = value.get("tooltip").map(Item::from_toml_format).map(Rc::new);
-                Module::Formatted { format, tooltip, looped : Cell::new(false) }
+                Module::Formatted { format, tooltip }
             }
             Some("group") => {
                 let spacing = toml_to_string(value.get("spacing")).unwrap_or_default().into();
@@ -503,7 +498,7 @@ impl Module {
                 let e = values.len() - 1;
                 values[0] = value.get("below").and_then(|v| v.as_str()).unwrap_or(&values[1]).into();
                 values[e] = value.get("above").and_then(|v| v.as_str()).unwrap_or(&values[e - 1]).into();
-                Module::Meter { min, max, src, values, looped : Cell::new(false) }
+                Module::Meter { min, max, src, values }
             }
             #[cfg(feature="dbus")]
             Some("mpris") => {
@@ -529,7 +524,7 @@ impl Module {
                     .dot_matches_new_line(true)
                     .build()
                 {
-                    Ok(regex) => Module::Regex { regex, text, replace, looped : Cell::new(false) },
+                    Ok(regex) => Module::Regex { regex, text, replace },
                     Err(e) => {
                         error!("Error compiling regex '{}': {}", regex, e);
                         Module::None
@@ -575,7 +570,7 @@ impl Module {
                     }
                 };
                 let default = toml_to_string(value.get("default")).unwrap_or_default().into();
-                Module::Switch { format, cases, default, looped : Cell::new(false) }
+                Module::Switch { format, cases, default }
             }
             // "text" is an alias for "formatted"
             Some("tray") => {
@@ -594,18 +589,18 @@ impl Module {
                 if let Some(value) = value.as_str() {
                     match ctx {
                         ModuleContext::Source if value.contains('{') => {
-                            Module::Formatted { format : value.into(), tooltip : None, looped : Cell::new(false) }
+                            Module::Formatted { format : value.into(), tooltip : None }
                         }
                         ModuleContext::Source => {
                             Module::ItemReference { value : Cell::new(ItemReference::New(value.into())) }
                         }
                         ModuleContext::Item => {
-                            Module::Formatted { format : value.into(), tooltip : None, looped : Cell::new(false) }
+                            Module::Formatted { format : value.into(), tooltip : None }
                         }
                     }
                 } else if let Some(format) = value.get("format").and_then(|v| v.as_str()) {
                     let tooltip = value.get("tooltip").map(Item::from_toml_format).map(Rc::new);
-                    Module::Formatted { format : format.into(), tooltip, looped : Cell::new(false) }
+                    Module::Formatted { format : format.into(), tooltip }
                 } else if let Some(value) = toml_to_string(value.get("value")) {
                     Module::new_value(value)
                 } else {
@@ -701,6 +696,14 @@ impl Module {
     ///
     /// Note: The name is a hint and should not be assumed to uniquely identify this module.
     pub fn read_in<F : FnOnce(Value) -> R, R>(&self, name : &str, key : &str, rt : &Runtime, f : F) -> R {
+        let _handle = match rt.get_recursion_handle() {
+            Some(r) => r,
+            None => {
+                error!("Loop found when evaluating '{}.{}'", name, key);
+                return f(Value::Null);
+            }
+        };
+
         match self {
             Module::Group { .. } |
             Module::FocusList { .. } |
@@ -844,11 +847,7 @@ impl Module {
                     _ => f(Value::Null)
                 }
             }
-            Module::Eval { expr, vars, looped } => {
-                if looped.get() {
-                    error!("Recursion detected when expanding {}", name);
-                    return f(Value::Null);
-                }
+            Module::Eval { expr, vars } => {
                 struct Context<'a> {
                     float : evalexpr::Function,
                     int : evalexpr::Function,
@@ -869,7 +868,6 @@ impl Module {
                         }
                     }
                 }
-                looped.set(true);
                 let ctx = Context {
                     int : evalexpr::Function::new(Box::new(move |arg| {
                         if let Ok(f) = arg.as_float() {
@@ -907,7 +905,6 @@ impl Module {
                         })
                         .collect(),
                 };
-                looped.set(false);
                 match expr.eval_with_context(&ctx) {
                     Ok(evalexpr::Value::String(s)) => f(Value::Owned(s)),
                     Ok(evalexpr::Value::Float(n)) => f(Value::Float(n)),
@@ -935,22 +932,13 @@ impl Module {
                 value.1.take_in(|i| i.add(rt));
                 rv
             }
-            Module::Formatted { format, tooltip, looped } => {
-                if looped.get() {
-                    error!("Recursion detected when expanding {}", name);
-                    return f(Value::Null);
-                }
+            Module::Formatted { format, tooltip } => {
                 match key {
                     "tooltip" => match tooltip {
                         Some(tt) => tt.data.read_in(name, "text", rt, f),
                         None => f(Value::Null),
                     },
-                    _ => {
-                        looped.set(true);
-                        let value = rt.format_or(&format, &name);
-                        looped.set(false);
-                        f(value)
-                    }
+                    _ => f(rt.format_or(&format, &name)),
                 }
             }
             Module::Icon { tooltip, .. } => {
@@ -978,12 +966,7 @@ impl Module {
             }
             #[cfg(feature="dbus")]
             Module::MediaPlayer2 { target } => mpris::read_in(name, target, key, rt, f),
-            Module::Meter { min, max, src, values, looped } => {
-                if looped.get() {
-                    error!("Recursion detected when expanding {}", name);
-                    return f(Value::Null);
-                }
-                looped.set(true);
+            Module::Meter { min, max, src, values } => {
                 let value = src.read_to_owned(&name, "", rt).parse_f64().unwrap_or(0.0);
                 let min = rt.format_or(&min, &name).parse_f64().unwrap_or(0.0);
                 let max = rt.format_or(&max, &name).parse_f64().unwrap_or(100.0);
@@ -997,9 +980,7 @@ impl Module {
                     let i = (value - min) / step;
                     &values[i as usize + 1]
                 };
-                let res = rt.format_or(&expr, &name);
-                looped.set(false);
-                f(res)
+                f(rt.format_or(&expr, &name))
             }
             Module::None => f(Value::Null),
             #[cfg(feature="pulse")]
@@ -1023,14 +1004,8 @@ impl Module {
                     contents.take_in(|s| f(Value::Borrow(s.trim())))
                 }
             }
-            Module::Regex { regex, text, replace, looped } => {
-                if looped.get() {
-                    error!("Recursion detected when expanding {}", name);
-                    return f(Value::Null);
-                }
-                looped.set(true);
+            Module::Regex { regex, text, replace } => {
                 let text = rt.format_or(&text, &name).into_text();
-                looped.set(false);
                 if key == "" || key == "text" {
                     let output = regex.replace_all(&text, &**replace);
                     f(output.into())
@@ -1049,17 +1024,11 @@ impl Module {
             Module::SwayMode(mode) => mode.read_in(name, key, rt, f),
             Module::SwayTree(tree) => tree.read_in(name, key, rt, f),
             Module::SwayWorkspace(ws) => ws.read_in(name, key, rt, f),
-            Module::Switch { format, cases, default, looped } => {
-                if looped.get() {
-                    error!("Recursion detected when expanding {}", name);
-                    return f(Value::Null);
-                }
-                looped.set(true);
+            Module::Switch { format, cases, default } => {
                 let text = format.read_to_owned(&name, "", rt).into_text();
                 let case = toml_to_string(cases.get(&text[..]));
                 let case = case.as_deref().unwrap_or(default);
                 let res = rt.format_or(case, &name);
-                looped.set(false);
                 f(res)
             }
             Module::Value { value, interested } => {

@@ -68,6 +68,7 @@ pub struct Runtime {
     item_var : Rc<Item>,
     notify : Notifier,
     refresh : Rc<RefreshState>,
+    read_depth : Cell<u8>,
 }
 
 #[derive(Default)]
@@ -87,6 +88,22 @@ impl Runtime {
         self.refresh.time.set(Some(wake));
         self.refresh.cause.set(who);
         self.refresh.notify.notify_one();
+    }
+
+    pub fn get_recursion_handle(&self) -> Option<impl Sized + '_> {
+        let depth = self.read_depth.get();
+        if depth > 80 {
+            None
+        } else {
+            self.read_depth.set(depth + 1);
+            struct LoopRef<'a>(&'a Runtime);
+            impl<'a> Drop for LoopRef<'a> {
+                fn drop(&mut self) {
+                    self.0.read_depth.set(self.0.read_depth.get() - 1)
+                }
+            }
+            Some(LoopRef(self))
+        }
     }
 
     pub fn format<'a>(&'a self, fmt : &'a str) -> Result<Value<'a>, strfmt::FmtError> {
@@ -190,6 +207,7 @@ impl State {
                 item_var : Rc::new(Module::new_current_item().into()),
                 refresh : Default::default(),
                 notify : Notifier { inner : notify_inner.clone() },
+                read_depth : Cell::new(0),
             },
             this : rc::Weak::new(),
             output_status_listener,
