@@ -38,15 +38,15 @@ xdg = ""
 
 # GUI
 png = ""
-usvg = { version = "", default-features = false }
-tiny-skia = ""
-raqote = { version = "0.8", default-features = false }
+raqote = { version = "", default-features = false }
 resvg = { version = "", default-features = false }
-smithay-client-toolkit = { version = "0.14", default-features = false }
+smithay-client-toolkit = { version = "", default-features = false }
+tiny-skia = ""
 ttf-parser = ""
-wayland-client = "0.28.5"
-wayland-cursor = "0.28"
-wayland-protocols = "0.28"
+usvg = { version = "", default-features = false }
+wayland-client = ""
+wayland-cursor = ""
+wayland-protocols = ""
 
 # Module specific
 chrono = ""
