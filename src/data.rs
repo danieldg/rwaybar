@@ -849,8 +849,6 @@ impl Module {
             }
             Module::Eval { expr, vars } => {
                 struct Context<'a> {
-                    float : evalexpr::Function,
-                    int : evalexpr::Function,
                     vars : Vec<(&'a str, evalexpr::Value)>,
                 }
                 impl<'a> evalexpr::Context for Context<'a> {
@@ -860,39 +858,37 @@ impl Module {
                             .next()
                             .map(|(_,v)| v)
                     }
-                    fn get_function(&self, name : &str) -> Option<&evalexpr::Function> {
+                    fn call_function(&self, name : &str, arg : &evalexpr::Value) -> evalexpr::EvalexprResult<evalexpr::Value> {
                         match name {
-                            "float" => Some(&self.float),
-                            "int" => Some(&self.int),
-                            _ => None,
+                            "float" => {
+                                if arg.is_float() {
+                                    return Ok(arg.clone());
+                                }
+                                let rv = arg.as_string()?;
+                                match rv.trim().parse() {
+                                    Ok(v) => Ok(evalexpr::Value::Float(v)),
+                                    Err(_) => Err(evalexpr::error::EvalexprError::ExpectedFloat {
+                                        actual : evalexpr::Value::String(rv),
+                                    })
+                                }
+                            }
+                            "int" => {
+                                if let Ok(f) = arg.as_float() {
+                                    return Ok(evalexpr::Value::Int(f as _));
+                                }
+                                let rv = arg.as_string()?;
+                                match rv.trim().parse() {
+                                    Ok(v) => Ok(evalexpr::Value::Int(v)),
+                                    Err(_) => Err(evalexpr::error::EvalexprError::ExpectedInt {
+                                        actual : evalexpr::Value::String(rv),
+                                    })
+                                }
+                            }
+                            _ => Err(evalexpr::error::EvalexprError::FunctionIdentifierNotFound(name.into()))
                         }
                     }
                 }
                 let ctx = Context {
-                    int : evalexpr::Function::new(Box::new(move |arg| {
-                        if let Ok(f) = arg.as_float() {
-                            return Ok(evalexpr::Value::Int(f as _));
-                        }
-                        let rv = arg.as_string()?;
-                        match rv.trim().parse() {
-                            Ok(v) => Ok(evalexpr::Value::Int(v)),
-                            Err(_) => Err(evalexpr::error::EvalexprError::ExpectedInt {
-                                actual : evalexpr::Value::String(rv),
-                            })
-                        }
-                    })),
-                    float : evalexpr::Function::new(Box::new(move |arg| {
-                        if arg.is_float() {
-                            return Ok(arg.clone());
-                        }
-                        let rv = arg.as_string()?;
-                        match rv.trim().parse() {
-                            Ok(v) => Ok(evalexpr::Value::Float(v)),
-                            Err(_) => Err(evalexpr::error::EvalexprError::ExpectedFloat {
-                                actual : evalexpr::Value::String(rv),
-                            })
-                        }
-                    })),
                     vars : vars.iter()
                         .map(|(k,v)| {
                             (&k[..], match v.read_to_owned(k, "", rt) {
