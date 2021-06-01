@@ -780,7 +780,9 @@ impl Item {
                 ctx.render_pos += spacing;
                 for item in items {
                     item.render_clamped(ctx, rv);
-                    ctx.render_pos += spacing;
+                    if spacing >= 1.0 {
+                        ctx.render_pos = ctx.render_pos.ceil() + spacing;
+                    }
                     if let Some((min,max)) = &mut ypos {
                         let now = ctx.render_ypos.unwrap();
                         ctx.render_ypos = Some(*min);
