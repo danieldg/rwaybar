@@ -21,14 +21,29 @@ thread_local! {
     static SOCK : Rc<OnceCell<SessionDBus>> = Default::default();
 }
 
-struct SigWatcher<F : ?Sized> {
-    _non_zst : bool,
-    f : F,
+struct SigWatcherNZ<F : ?Sized>(F);
+struct SigWatcherZST<F : ?Sized>(u8, F);
+
+trait SigWatcherCall {
+    fn call(&mut self, m: &Message, s: &SessionDBus);
+    fn get_sw_ptr(&self) -> Option<NonNull<()>>;
 }
 
-impl<F : ?Sized> SigWatcher<F> {
+impl<F: FnMut(&Message, &SessionDBus)> SigWatcherCall for SigWatcherNZ<F> {
+    fn call(&mut self, m: &Message, s: &SessionDBus) {
+        (self.0)(m, s)
+    }
     fn get_sw_ptr(&self) -> Option<NonNull<()>> {
-        NonNull::new(self as *const SigWatcher<F> as *mut ())
+        NonNull::new(self as *const SigWatcherNZ<F> as *mut ())
+    }
+}
+
+impl<F: FnMut(&Message, &SessionDBus)> SigWatcherCall for SigWatcherZST<F> {
+    fn call(&mut self, m: &Message, s: &SessionDBus) {
+        (self.1)(m, s)
+    }
+    fn get_sw_ptr(&self) -> Option<NonNull<()>> {
+        NonNull::new(self as *const SigWatcherZST<F> as *mut ())
     }
 }
 
@@ -45,7 +60,7 @@ pub struct SessionDBus {
     pub local : LocalConnection,
     prop_watchers : util::Cell<Vec<Box<dyn FnMut(&Message, &PropertiesPropertiesChanged, &SessionDBus)>>>,
     name_watchers : util::Cell<Vec<Box<dyn FnMut(&str, &str, &str, &SessionDBus)>>>,
-    sig_watchers : util::Cell<Vec<Box<SigWatcher<dyn FnMut(&Message, &SessionDBus)>>>>,
+    sig_watchers : util::Cell<Vec<Box<dyn SigWatcherCall>>>,
     wake : Notify,
 }
 
@@ -140,7 +155,15 @@ impl SessionDBus {
         -> SigWatcherToken
         where F : FnMut(&Message, &Self) + 'static
     {
-        let b = Box::new(SigWatcher { _non_zst : false, f });
+        if std::mem::size_of::<F>() != 0 {
+            self.do_add_signal_watcher(Box::new(SigWatcherNZ(f)))
+        } else {
+            self.do_add_signal_watcher(Box::new(SigWatcherZST(0, f)))
+        }
+    }
+
+    fn do_add_signal_watcher(&self, b : Box<dyn SigWatcherCall>) -> SigWatcherToken
+    {
         let rv = SigWatcherToken(b.get_sw_ptr());
         if self.sig_watchers.take_in(|w| {
             w.push(b);
@@ -152,7 +175,7 @@ impl SessionDBus {
                 let this = Self::get();
                 let mut watchers = this.sig_watchers.replace(Vec::new());
                 for watcher in &mut watchers {
-                    (watcher.f)(&msg, &this);
+                    watcher.call(&msg, &this);
                 }
                 this.sig_watchers.take_in(|w| {
                     if w.is_empty() {
