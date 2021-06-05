@@ -566,6 +566,7 @@ impl TrayPopup {
         let mut size = render_font(ctx.canvas, ctx.font, ctx.font_size, ctx.font_color, &ctx.runtime, (2.0, 2.0), self.title.as_deref().unwrap_or_default(), false);
         let mut pos = 2.0 + size.1.ceil();
         let rendered_ids = &mut self.rendered_ids;
+        rendered_ids.clear();
 
         if !self.menu.fresh.get() &&
             self.menu.dbus_token.take_in(|t| !t.is_active()) &&
@@ -622,6 +623,7 @@ impl TrayPopup {
                 let owner = self.owner.clone();
                 spawn("Tray menu click", async move {
                     let dbus = get_dbus();
+                    debug!("Clicking {} {} id {}", owner, menu_path, id);
                     let proxy = Proxy::new(&*owner, &*menu_path, Duration::from_secs(10), &dbus.local);
                     proxy.method_call("com.canonical.dbusmenu", "Event", (id, "clicked", Variant(0i32), ts as u32)).await?;
                     Ok(())
