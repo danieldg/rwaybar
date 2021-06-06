@@ -160,6 +160,34 @@ Key | Expanded | Default | Details
 `format` | Yes | `%H:%M` | Time format using the strftime format specifiers
 `timezone` | Yes | | Time zone to display (blank uses the system local time zone)
 
+## dbus
+
+Invokes an arbitrary dbus method to get data
+
+#### Configuration
+
+Key | Expanded | Default | Details
+----|----------|---------|--------
+`owner` | No | -- | A dbus destination for the method call
+`path` | No | -- | A dbus object path on which to invoke the method or inspect the property
+`method` | No | -- | A dbus method (interface`.`member) to invoke (exclusive with property)
+`property` | No | -- | A dbus property (interface`.`member) to inspect (exclusive with method)
+`args` | No | [] | Arguments to the method.  Only strings and floats are currently supported.
+`poll` | No | 0 | Number of seconds to wait between calls, or 0 to disable polling
+`watch-method` | No | -- | A dbus signal (interface`.`member) to watch for updates
+`watch-path` | No | -- | A dbus object path to which the signal must be attached
+
+If `watch-method` is set, any broadcast of the named signal will cause the
+method to be re-invoked (or the property queried) to refresh the result.
+Otherwise, the method is only called according to the period defined by poll.
+
+#### Available Keys
+
+The first return value of the method (or value of the property) is returned if a non-numeric key is used.
+
+The key may be a zero-index numeric path separated by `.` to address the list
+of return values and the members of returned structs.
+
 ## disk
 
 #### Configuration

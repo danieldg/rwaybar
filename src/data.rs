@@ -1,5 +1,7 @@
 use crate::item::Item;
 #[cfg(feature="dbus")]
+use crate::dbus::{SessionDBus,SigWatcherToken};
+#[cfg(feature="dbus")]
 use crate::mpris;
 #[cfg(feature="pulse")]
 use crate::pulse;
@@ -15,6 +17,7 @@ use futures_util::FutureExt;
 use json::JsonValue;
 use log::{debug,info,warn,error};
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::fmt;
 use std::io;
 use std::io::Write;
@@ -228,6 +231,12 @@ pub enum Module {
         format : Box<str>,
         zone : Box<str>,
     },
+    #[cfg(feature="dbus")]
+    DbusCall {
+        value : Rc<DbusValue>,
+        poll : f64,
+        last_read : Cell<Option<Instant>>,
+    },
     Disk {
         path : Box<str>,
         poll : f64,
@@ -360,6 +369,107 @@ impl Module {
                 let format = value.get("format").and_then(|v| v.as_str()).unwrap_or("%H:%M").into();
                 let zone = value.get("timezone").and_then(|v| v.as_str()).unwrap_or("").into();
                 Module::Clock { format, zone }
+            }
+            Some("dbus") => {
+                use dbus::arg::RefArg;
+                let bus_name = value.get("owner").and_then(|v| v.as_str()).unwrap_or("").into();
+                let path = value.get("path").and_then(|v| v.as_str()).unwrap_or("").into();
+                let method = value.get("method").and_then(|v| v.as_str());
+                let property = value.get("property").and_then(|v| v.as_str());
+                let (interface, member, args);
+                match (method.map(|s| s.rsplit_once(".")) , property.map(|s| s.rsplit_once("."))) {
+                    (Some(_), Some(_)) => {
+                        error!("dbus cannot query both a property and a method");
+                        return Module::None;
+                    }
+                    (Some(Some((i,m))), None) => {
+                        interface = i.into();
+                        member = m.into();
+                        args = value.get("args").and_then(|v| v.as_array()).map_or(Box::new([]) as Box<[_]>, |a| {
+                            use toml::value::Value;
+                            a.iter().map(|arg| match arg {
+                                Value::String(s) => Box::new(s.clone()) as Box<(dyn RefArg + 'static)>,
+                                Value::Float(f) => Box::new(*f),
+                                _ => {
+                                    // TODO need introspection or a type-list arg for integers
+                                    error!("Invalid dbus argument '{}'", arg);
+                                    Box::new(0u8)
+                                }
+                            }).collect()
+                        });
+                    }
+                    (None, Some(Some((i,p)))) => {
+                        interface = "org.freedesktop.DBus.Properties".into();
+                        member = "Get".into();
+                        args = Box::new([
+                            Box::new(i.to_owned()) as Box<(dyn RefArg + 'static)>,
+                            Box::new(p.to_owned()),
+                        ]);
+                    }
+                    _ => {
+                        error!("dbus requires a member or property to query");
+                        return Module::None;
+                    }
+                }
+
+                let poll = toml_to_f64(value.get("poll")).unwrap_or(0.0);
+                let rc = Rc::new(DbusValue {
+                    bus_name, path, interface, member, args,
+                    value : RefCell::new(None),
+                    interested : Default::default(),
+                    watch : Default::default(),
+                });
+
+                let watch_path = value.get("watch-path").and_then(|v| v.as_str());
+                let watch_method = value.get("watch-method").and_then(|v| v.as_str());
+                match watch_method.map(|s| s.rsplit_once(".")) {
+                    Some(Some((i,m))) => {
+                        let mut rule = dbus::message::MatchRule::new_signal(i, m);
+                        rule.path = watch_path.as_deref().map(Into::into);
+                        let expr = rule.match_str();
+                        spawn_noerr(async move {
+                            let bus = SessionDBus::get();
+                            match bus.local.add_match_no_cb(&expr).await {
+                                Ok(()) => {}
+                                Err(e) => warn!("Could not add watch on {}: {}", expr, e)
+                            }
+                        });
+                        let weak = Rc::downgrade(&rc);
+                        let rule = rule.static_clone();
+                        let bus = SessionDBus::get();
+                        let watch = bus.add_signal_watcher(move |msg, _bus| {
+                            if rule.matches(msg) {
+                                if let Some(rc) = weak.upgrade() {
+                                    rc.call_now();
+                                }
+                            }
+                        });
+                        rc.watch.set(watch);
+                    }
+                    Some(None) if watch_method == Some("") => {}
+                    Some(None) => error!("Invalid dbus watch expression, ignoring"),
+                    None if property.is_some() => {
+                        let prop = property.unwrap_or_default().to_owned();
+                        let weak = Rc::downgrade(&rc);
+                        spawn_noerr(async move {
+                            let bus = SessionDBus::get();
+                            bus.add_property_change_watcher(move |msg, ppc, _bus| {
+                                if let (Some(rc), Some((iface, prop))) = (weak.upgrade(), prop.rsplit_once(".")) {
+                                    if ppc.interface_name != iface || msg.path().as_deref() != Some(&*rc.path) {
+                                        return;
+                                    }
+                                    if let Some(value) = ppc.changed_properties.get(prop) {
+                                        *rc.value.borrow_mut() = Some(Box::new([value.box_clone()]));
+                                    } else if ppc.invalidated_properties.iter().any(|p| p == prop) {
+                                        *rc.value.borrow_mut() = None;
+                                    }
+                                }
+                            }).await;
+                        });
+                    }
+                    None => {}
+                }
+                Module::DbusCall { value : rc, poll, last_read: Cell::default() }
             }
             Some("disk") => {
                 let path = value.get("path").and_then(|v| v.as_str()).unwrap_or("/").into();
@@ -796,6 +906,13 @@ impl Module {
 
                 f(Value::Owned(value))
             }
+            #[cfg(feature="dbus")]
+            Module::DbusCall { value, poll, last_read } => {
+                if Self::should_read_now(*poll, last_read, rt, "dbus") {
+                    value.call_now();
+                }
+                value.read_in(key, rt, f)
+            },
             Module::Disk { path, poll, last_read, contents } => {
                 if Self::should_read_now(*poll, last_read, rt, "disk") {
                     let cstr = std::ffi::CString::new(path.as_bytes()).unwrap();
@@ -1203,6 +1320,98 @@ impl Action {
             }
             Action::None => { info!("Invoked a no-op"); }
         }
+    }
+}
+
+#[cfg(feature="dbus")]
+#[derive(Debug)]
+pub struct DbusValue {
+    bus_name : Box<str>,
+    path : Box<str>,
+    interface : Box<str>,
+    member : Box<str>,
+    args : Box<[Box<dyn dbus::arg::RefArg>]>,
+    value : RefCell<Option<Box<[Box<dyn dbus::arg::RefArg>]>>>,
+    interested : Cell<NotifierList>,
+    watch : Cell<SigWatcherToken>,
+}
+
+#[cfg(feature="dbus")]
+impl Drop for DbusValue {
+    fn drop(&mut self) {
+        let mut w = self.watch.take();
+        if w.is_active() {
+            let bus = SessionDBus::get();
+            bus.stop_signal_watcher(&mut w);
+        }
+    }
+}
+
+#[cfg(feature="dbus")]
+impl DbusValue {
+    fn call_now(self : &Rc<Self>) {
+        let me = self.clone();
+        spawn_noerr(async move {
+            let bus = SessionDBus::get();
+            let proxy = dbus::nonblock::Proxy::new(&*me.bus_name, &*me.path, Duration::from_secs(30), &bus.local);
+            struct A<'a>(&'a [Box<dyn dbus::arg::RefArg>]);
+            impl dbus::arg::AppendAll for A<'_> {
+                fn append(&self, a: &mut dbus::arg::IterAppend<'_>) {
+                    for arg in self.0.iter() {
+                        arg.append(a);
+                    }
+                }
+            }
+            struct R(Box<[Box<dyn dbus::arg::RefArg>]>);
+            impl dbus::arg::ReadAll for R {
+                fn read(i: &mut dbus::arg::Iter<'_>) -> Result<Self, dbus::arg::TypeMismatchError> {
+                    Ok(R(i.collect()))
+                }
+            }
+            match proxy.method_call(&*me.interface, &*me.member, A(&me.args)).await {
+                Ok(R(rv)) => {
+                    *me.value.borrow_mut() = Some(rv);
+                }
+                Err(e) => {
+                    info!("Error calling {}.{}: {}", me.interface, me.member, e);
+                    *me.value.borrow_mut() = None;
+                }
+            }
+            me.interested.take().notify_data("dbus-read");
+        });
+    }
+    pub fn read_in<F : FnOnce(Value) -> R, R>(&self, key : &str, rt : &Runtime, f : F) -> R {
+        self.interested.take_in(|i| i.add(rt));
+        let value = self.value.borrow();
+        let mut keys = key.split(".");
+        let key0 = keys.next().unwrap_or("");
+        let vi = match (key0.parse::<usize>(), value.as_ref()) {
+            (Ok(i), Some(v)) => v.get(i),
+            (Err(_), Some(v)) => v.get(0),
+            _ => None
+        };
+        let mut vi = vi.map(|v| &**v);
+        while let Some(v) = vi {
+            // debug!("type: {:?}", v.arg_type());
+            if let Some(v) = v.as_str() {
+                return f(Value::Borrow(v))
+            }
+            if let Some(v) = v.as_f64() {
+                return f(Value::Float(v))
+            }
+            if let Some(v) = v.as_u64() {
+                return f(Value::Float(v as _))
+            }
+            if let Some(v) = v.as_i64() {
+                return f(Value::Float(v as _))
+            }
+            if let Some(mut iter) = v.as_iter() {
+                // TODO handle dict keys?
+                let n = keys.next().and_then(|k| k.parse().ok()).unwrap_or(0);
+                vi = iter.nth(n);
+            }
+        }
+        f(Value::Null)
     }
 }
 
