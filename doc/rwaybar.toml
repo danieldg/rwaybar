@@ -33,6 +33,7 @@ the-clock-font = "Liberation Sans 20"
 [fonts]
 # Named fonts are tried first, then all other fonts are searched for missing glyphs
 "Liberation Sans" = "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf"
+mono = "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf"
 symbola = "/usr/share/fonts/gdouros-symbola/Symbola.ttf"
 emoji = "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf"
 
@@ -70,13 +71,16 @@ timezone = "America/Los_Angeles"
 
 [time-utc]
 type = "clock"
-format = "%H:%M"
+format = "%H:%M:%S"
 timezone = "UTC"
+
+[date]
+type = "clock"
+format = "%A %Y-%m-%d"
 
 [clock]
 type = "text"
 format = "{time}"
-tooltip = "{time-et} Eastern\n{time-ct} Central\n{time-pt} Pacific\n{time-utc} UTC"
 # The expression "{bar.some-value}" reads configuration items from the
 # currently rendering bar, which is useful if you want to have bars of
 # different sizes without duplicating all your items just to change one value
@@ -85,6 +89,22 @@ margin = "0 10"
 on-click = { "exec" = "gnome-calendar" }
 on-click-middle = { "write" = "time_fmt", "format" = "%H:%M" }
 on-click-right = { "write" = "time_fmt", "format" = "%H:%M:%S" }
+
+# A tooltip can either be a string or an item
+#tooltip = "{date}\n{time-et} Eastern\n{time-ct} Central\n{time-pt} Pacific\n{time-utc} UTC"
+
+[clock.tooltip]
+type = 'group'
+spacing = 4
+
+# The items list in a group can be expanded inline instead of referencing items by name
+[[clock.tooltip.items]]
+format ="{date}\n{time-et} Eastern\n{time-ct} Central\n{time-pt} Pacific\n{time-utc} UTC"
+
+[[clock.tooltip.items]]
+type = 'calendar'
+font = "mono 13"
+markup = true
 
 [sway-mode]
 type = "sway-mode"

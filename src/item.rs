@@ -13,9 +13,10 @@ use std::rc::Rc;
 pub struct Render<'a, 'c> {
     pub canvas : &'a mut DrawTarget<&'c mut [u32]>,
 
-    pub render_extents : &'a (f32, f32, f32, f32),
+    pub render_extents : (f32, f32, f32, f32),
     pub render_pos : f32,
     pub render_ypos : Option<f32>,
+    pub render_flex : bool,
 
     pub font : &'a FontMapped,
     pub font_size : f32,
@@ -579,7 +580,7 @@ impl Item {
             return rv;
         }
 
-        let mut outer_clip = *ctx.render_extents;
+        let mut outer_clip = ctx.render_extents;
         let start_pos = ctx.render_pos;
 
         let mut inner_clip = outer_clip;
@@ -610,7 +611,7 @@ impl Item {
 
         ctx.render_pos = inner_clip.0;
 
-        ctx.render_extents = &inner_clip;
+        ctx.render_extents = inner_clip;
         self.render_inner(&mut ctx, &mut rv);
         let mut inner_clip = inner_clip;
 
@@ -662,13 +663,19 @@ impl Item {
             inner_x_offset = 0.0;
         }
 
-        // move the right side of the clip regions leftwards to the actual dimensions
         let shrink_r_width = outer_clip.2 - inner_clip.2;
-        if inner_clip.2 > inner_clip.0 + child_render_width {
+        if ctx.render_flex {
+            // flex the right side of the clip regions to the actual dimensions
             inner_clip.2 = inner_clip.0 + child_render_width;
-        }
-        if outer_clip.2 > inner_clip.2 + shrink_r_width {
             outer_clip.2 = inner_clip.2 + shrink_r_width;
+        } else {
+            // move the right side of the clip regions leftwards to the actual dimensions
+            if inner_clip.2 > inner_clip.0 + child_render_width {
+                inner_clip.2 = inner_clip.0 + child_render_width;
+            }
+            if outer_clip.2 > inner_clip.2 + shrink_r_width {
+                outer_clip.2 = inner_clip.2 + shrink_r_width;
+            }
         }
 
         rv.offset_clamp(inner_x_offset, inner_clip.0, inner_clip.2);
@@ -824,7 +831,7 @@ impl Item {
                 item_var.set(prev);
             }
             Module::Bar { left, center, right, .. } => {
-                let (clip_x0, clip_y0, clip_x1, clip_y1) = *ctx.render_extents;
+                let (clip_x0, clip_y0, clip_x1, clip_y1) = ctx.render_extents;
                 let xform = *ctx.canvas.get_transform();
                 let width = clip_x1 - clip_x0;
                 let height = clip_y1.ceil();
@@ -841,9 +848,10 @@ impl Item {
 
                 let mut group = Render {
                     canvas : &mut canvas, 
-                    render_extents : &render_extents,
+                    render_extents,
                     render_pos : 0.0,
                     render_ypos : None,
+                    render_flex : ctx.render_flex,
 
                     font : ctx.font,
                     font_size : ctx.font_size,
@@ -941,7 +949,7 @@ impl Item {
                 let ystart = ctx.render_ypos.unwrap_or_else(|| {
                     let yoff = match ctx.align.vert {
                         Some(f) => {
-                            let (_x0, clip_y0, _x1, clip_y1) = *ctx.render_extents;
+                            let (_x0, clip_y0, _x1, clip_y1) = ctx.render_extents;
                             let extra = clip_y1 - clip_y0 - main_scale * (main_font.ascender() - main_font.descender()) as f32;
                             if extra >= 0.0 {
                                 extra * f
@@ -1060,9 +1068,10 @@ impl PopupDesc {
             font_size : 16.0,
             font_color : (0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF),
             align : Align::bar_default(),
-            render_extents : &render_extents,
+            render_extents,
             render_pos : 2.0,
             render_ypos : Some(2.0),
+            render_flex : true,
             err_name: "popup",
             text_stroke : None,
             text_stroke_size : None,

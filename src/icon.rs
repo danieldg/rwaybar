@@ -203,7 +203,7 @@ fn iter_icons<F,R>(base : &PathBuf, target_size : f32, mut f : F) -> io::Result<
 }
 
 pub fn render(ctx : &mut Render, name : &str) -> Result<(), ()> {
-    let (clip_x0, clip_y0, clip_x1, clip_y1) = *ctx.render_extents;
+    let (clip_x0, clip_y0, clip_x1, clip_y1) = ctx.render_extents;
     let xform = ctx.canvas.get_transform();
     let raqote::Vector { x: xsize, y: ysize, .. } =
         xform.transform_vector(raqote::Vector::new(clip_x1 - clip_x0, clip_y1 - clip_y0)); 

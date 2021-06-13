@@ -163,13 +163,13 @@ impl Bar {
             let scale = raqote::Transform::scale(self.scale as f32, self.scale as f32);
             canvas.set_transform(&scale);
             let font = &runtime.fonts[0];
-            let render_extents = (0.0, 0.0, (self.pixel_width / self.scale) as f32, self.size as f32);
 
             let mut ctx = Render {
                 canvas : &mut canvas, 
-                render_extents : &render_extents,
+                render_extents : (0.0, 0.0, (self.pixel_width / self.scale) as f32, self.size as f32),
                 render_pos : 0.0,
                 render_ypos : None,
+                render_flex : false,
 
                 font,
                 font_size : 16.0,
