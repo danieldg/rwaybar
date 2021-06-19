@@ -23,36 +23,36 @@ dlopen = ['smithay-client-toolkit/dlopen']
 
 [dependencies]
 # Basic runtime
-bytes = ""
-env_logger = ""
-futures-util = { version = "", features = ['channel'] }
-json = ""
-libc = ""
-log = ""
-memmap2 = ""
-once_cell = ""
+bytes = "*"
+env_logger = "*"
+futures-util = { version = "*", features = ['channel'] }
+json = "*"
+libc = "*"
+log = "*"
+memmap2 = "*"
+once_cell = "*"
 strfmt = "=0.1.6"
 tokio = { version = "1", features = ['rt', 'net', 'signal', 'sync', 'io-util', 'time'] }
-toml = ""
-xdg = ""
+toml = "*"
+xdg = "*"
 
 # GUI
-png = ""
-#raqote = { version = "", default-features = false }
+png = "*"
+#raqote = { version = "*", default-features = false }
 raqote = { git = "https://github.com/jrmuizel/raqote.git", default-features = false }
-resvg = { version = "", default-features = false }
-smithay-client-toolkit = { version = "", default-features = false }
-tiny-skia = ""
-ttf-parser = ""
-usvg = { version = "", default-features = false }
-wayland-client = ""
-wayland-cursor = ""
-wayland-protocols = ""
+resvg = { version = "*", default-features = false }
+smithay-client-toolkit = { version = "*", default-features = false }
+tiny-skia = "*"
+ttf-parser = "*"
+usvg = { version = "*", default-features = false }
+wayland-client = "*"
+wayland-cursor = "*"
+wayland-protocols = "*"
 
 # Module specific
-chrono = ""
-chrono-tz = ""
-dbus = { version = "", features = ['futures'], optional = true }
-evalexpr = ""
-libpulse-binding = { version = "", features = ['pa_v14'], optional = true }
-regex = ""
+chrono = "*"
+chrono-tz = "*"
+dbus = { version = "*", features = ['futures'], optional = true }
+evalexpr = "*"
+libpulse-binding = { version = "*", features = ['pa_v14'], optional = true }
+regex = "*"
