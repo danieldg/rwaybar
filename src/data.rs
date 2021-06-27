@@ -373,8 +373,8 @@ impl Module {
                 let zone = value.get("timezone").and_then(|v| v.as_str()).unwrap_or("").into();
                 Module::Clock { format, zone }
             }
+            #[cfg(feature="dbus")]
             Some("dbus") => {
-                use dbus::arg::RefArg;
                 let bus_name = value.get("owner").and_then(|v| v.as_str()).unwrap_or("").into();
                 let path = value.get("path").and_then(|v| v.as_str()).unwrap_or("").into();
                 let method = value.get("method").and_then(|v| v.as_str());
@@ -388,26 +388,16 @@ impl Module {
                     (Some(Some((i,m))), None) => {
                         interface = i.into();
                         member = m.into();
-                        args = value.get("args").and_then(|v| v.as_array()).map_or(Box::new([]) as Box<[_]>, |a| {
-                            use toml::value::Value;
-                            a.iter().map(|arg| match arg {
-                                Value::String(s) => Box::new(s.clone()) as Box<(dyn RefArg + 'static)>,
-                                Value::Float(f) => Box::new(*f),
-                                _ => {
-                                    // TODO need introspection or a type-list arg for integers
-                                    error!("Invalid dbus argument '{}'", arg);
-                                    Box::new(0u8)
-                                }
-                            }).collect()
-                        });
+                        args = value.get("args")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default()
+                            .into_boxed_slice();
                     }
                     (None, Some(Some((i,p)))) => {
                         interface = "org.freedesktop.DBus.Properties".into();
                         member = "Get".into();
-                        args = Box::new([
-                            Box::new(i.to_owned()) as Box<(dyn RefArg + 'static)>,
-                            Box::new(p.to_owned()),
-                        ]);
+                        args = Box::new([i.into(), p.into()]);
                     }
                     _ => {
                         error!("dbus requires a member or property to query");
@@ -419,6 +409,7 @@ impl Module {
                 let rc = Rc::new(DbusValue {
                     bus_name, path, interface, member, args,
                     value : RefCell::new(None),
+                    sig : Default::default(),
                     interested : Default::default(),
                     watch : Default::default(),
                 });
@@ -457,6 +448,7 @@ impl Module {
                         spawn_noerr(async move {
                             let bus = SessionDBus::get();
                             bus.add_property_change_watcher(move |msg, ppc, _bus| {
+                                use dbus::arg::RefArg;
                                 if let (Some(rc), Some((iface, prop))) = (weak.upgrade(), prop.rsplit_once(".")) {
                                     if ppc.interface_name != iface || msg.path().as_deref() != Some(&*rc.path) {
                                         return;
@@ -1339,7 +1331,8 @@ pub struct DbusValue {
     path : Box<str>,
     interface : Box<str>,
     member : Box<str>,
-    args : Box<[Box<dyn dbus::arg::RefArg>]>,
+    args : Box<[toml::Value]>,
+    sig : Cell<Option<Box<str>>>,
     value : RefCell<Option<Box<[Box<dyn dbus::arg::RefArg>]>>>,
     interested : Cell<NotifierList>,
     watch : Cell<SigWatcherToken>,
@@ -1361,13 +1354,126 @@ impl DbusValue {
     fn call_now(self : &Rc<Self>) {
         let me = self.clone();
         spawn_noerr(async move {
+            use toml::value::Value;
             let bus = SessionDBus::get();
             let proxy = dbus::nonblock::Proxy::new(&*me.bus_name, &*me.path, Duration::from_secs(30), &bus.local);
-            struct A<'a>(&'a [Box<dyn dbus::arg::RefArg>]);
+            let mut api = None;
+            if !me.args.iter().all(Value::is_str) {
+                api = me.sig.take_in(|s| s.clone());
+                if api.is_none() {
+                    use dbus::nonblock::stdintf::org_freedesktop_dbus::Introspectable;
+                    match proxy.introspect().await {
+                        Ok(xml) => {
+                            let mut reader = xml::EventReader::from_str(&xml);
+                            let mut sig = String::new();
+                            let mut in_iface = false;
+                            let mut in_method = false;
+                            loop {
+                                use xml::reader::XmlEvent;
+                                match reader.next() {
+                                    Ok(XmlEvent::StartElement { name, attributes, .. })
+                                        if name.local_name == "interface" =>
+                                    {
+                                        in_iface = attributes.iter().any(|attr| {
+                                            attr.name.local_name == "name" &&
+                                            attr.value == &*me.interface
+                                        });
+                                    }
+                                    Ok(XmlEvent::EndElement { name })
+                                        if name.local_name == "interface" =>
+                                    {
+                                        in_iface = false;
+                                    }
+                                    Ok(XmlEvent::StartElement { name, attributes, .. })
+                                        if name.local_name == "method" =>
+                                    {
+                                        in_method = attributes.iter().any(|attr| {
+                                            attr.name.local_name == "name" &&
+                                            attr.value == &*me.member
+                                        });
+                                    }
+                                    Ok(XmlEvent::EndElement { name })
+                                        if name.local_name == "interface" =>
+                                    {
+                                        in_method = false;
+                                    }
+                                    Ok(XmlEvent::StartElement { name, attributes, .. })
+                                        if in_iface && in_method &&
+                                            name.local_name == "arg" &&
+                                            attributes.iter().any(|attr| {
+                                                attr.name.local_name == "direction" &&
+                                                attr.value == "in"
+                                            }) =>
+                                    {
+                                        for attr in attributes {
+                                            if attr.name.local_name == "type" {
+                                                sig.push_str(&attr.value);
+                                                sig.push_str(",");
+                                            }
+                                        }
+                                    }
+                                    Ok(XmlEvent::EndDocument) => break,
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        info!("Error introspecting {} {}: {}", me.bus_name, me.path, e);
+                                        *me.value.borrow_mut() = None;
+                                        return;
+                                    }
+                                }
+                            }
+                            sig.pop();
+                            api = Some(sig.into());
+                            me.sig.set(api.clone());
+                        }
+                        Err(e) => {
+                            info!("Error introspecting {} {}: {}", me.bus_name, me.path, e);
+                            *me.value.borrow_mut() = None;
+                            return;
+                        }
+                    };
+                }
+            }
+
+            struct A<'a>(&'a [toml::Value], Option<&'a str>);
             impl dbus::arg::AppendAll for A<'_> {
                 fn append(&self, a: &mut dbus::arg::IterAppend<'_>) {
-                    for arg in self.0.iter() {
-                        arg.append(a);
+                    use dbus::arg::Append;
+                    if let Some(sig) = self.1 {
+                        for (ty,arg) in sig.split(",").zip(self.0) {
+                            match ty {
+                                "s" => { arg.as_str().map(|s| s.append(a)); }
+                                "d" => {
+                                    arg.as_float()
+                                        .or_else(|| arg.as_integer().map(|i| i as f64))
+                                        .map(|f| f.append(a));
+                                }
+                                "y" => { arg.as_integer().map(|i| i as u8 ).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
+                                "n" => { arg.as_integer().map(|i| i as i16).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
+                                "q" => { arg.as_integer().map(|i| i as u16).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
+                                "i" => { arg.as_integer().map(|i| i as i32).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
+                                "u" => { arg.as_integer().map(|i| i as u32).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
+                                "x" => { arg.as_integer().map(|i| i as i64).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
+                                "t" => { arg.as_integer().map(|i| i as u64).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
+                                "b" => {
+                                    arg.as_bool()
+                                        .or_else(|| arg.as_integer().map(|i| i != 0))
+                                        .or_else(|| arg.as_float().map(|i| i != 0.0))
+                                        .map(|b| b.append(a));
+                                }
+                                _ => {
+                                    info!("Unsupported dbus argument type '{}'", ty);
+                                }
+                            }
+                        }
+                    } else {
+                        for arg in self.0.iter() {
+                            match arg {
+                                Value::String(s) => s.append(a),
+                                _ => {
+                                    info!("Invalid dbus argument '{}'", arg);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1377,7 +1483,7 @@ impl DbusValue {
                     Ok(R(i.collect()))
                 }
             }
-            match proxy.method_call(&*me.interface, &*me.member, A(&me.args)).await {
+            match proxy.method_call(&*me.interface, &*me.member, A(&me.args, api.as_deref())).await {
                 Ok(R(rv)) => {
                     *me.value.borrow_mut() = Some(rv);
                 }
