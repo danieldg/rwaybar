@@ -8,7 +8,7 @@ use crate::icon;
 use crate::item::{Item,Render,EventSink,PopupDesc};
 use crate::state::{Runtime,NotifierList};
 use dbus::arg::{ArgType,RefArg,Variant};
-use dbus::channel::{MatchingReceiver,Sender};
+use dbus::channel::Sender;
 use dbus::message::{MatchRule,Message};
 use dbus::nonblock::LocalConnection;
 use dbus::nonblock::Proxy;
@@ -68,16 +68,12 @@ impl Tray {
         spawn("Tray StatusNotifierWatcher", async move {
             let dbus = get_dbus();
 
-            let mut snw_match = MatchRule::new_method_call();
-            snw_match.path = Some("/StatusNotifierWatcher".into());
-            dbus.local.start_receive(snw_match, Box::new(move |msg : Message, local| {
+            dbus.add_api("/StatusNotifierWatcher", Box::new(move |msg, dbus| {
                 DATA.with(|cell| {
                     let tray = cell.get();
                     let tray = tray.as_ref().unwrap();
-                    tray.handle_snw(msg, local);
+                    tray.handle_snw(msg, &dbus.local);
                 });
-
-                true
             }));
 
             dbus.add_name_watcher(move |name, old, _new, dbus| {
@@ -188,6 +184,32 @@ impl Tray {
                                 }
                                 _ => {}
                             }
+                        }
+                        _ => {}
+                    }
+                }
+                Some("org.freedesktop.DBus.Introspectable") => {
+                    match msg.member().as_deref() {
+                        Some("Introspect") => {
+                            rsp = Some(msg.return_with_args((concat!(
+                                r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">"#,
+                                r#"<node><interface name="org.freedesktop.StatusNotifierWatcher">"#,
+                                    r#"<method name="RegisterStatusNotifierItem"><arg name="name" direction="in" type="s"/></method>"#,
+                                    r#"<method name="RegisterStatusNotifierHost"/>"#,
+                                    r#"<property type="as" name="RegisteredStatusNotifierItems" access="read"/>"#,
+                                    r#"<property type="b" name="IsStatusNotifierHostRegistered" access="read"/>"#,
+                                    r#"<property type="i" name="ProtocolVersion" access="read"/>"#,
+                                r#"</interface><interface name="org.kde.StatusNotifierWatcher">"#,
+                                    r#"<method name="RegisterStatusNotifierItem"><arg name="name" direction="in" type="s"/></method>"#,
+                                    r#"<method name="RegisterStatusNotifierHost"/>"#,
+                                    r#"<property type="as" name="RegisteredStatusNotifierItems" access="read"/>"#,
+                                    r#"<property type="b" name="IsStatusNotifierHostRegistered" access="read"/>"#,
+                                    r#"<property type="i" name="ProtocolVersion" access="read"/>"#,
+                                r#"</interface><interface name="org.freedesktop.DBus.Properties">"#,
+                                    r#"<method name="Get"><arg name="interface_name" type="s" direction="in"/><arg name="property_name" type="s" direction="in"/><arg name="value" type="v" direction="out"/></method>"#,
+                                    r#"<method name="GetAll"><arg name="interface_name" type="s" direction="in"/><arg name="values" type="a{sv}" direction="out"/></method>"#,
+                                r#"</interface></node>"#,
+                            ),)));
                         }
                         _ => {}
                     }

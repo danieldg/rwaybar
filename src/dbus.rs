@@ -9,6 +9,7 @@ use futures_util::future::select;
 use futures_util::pin_mut;
 use log::{warn,error};
 use once_cell::unsync::OnceCell;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::error::Error;
 use std::io;
@@ -61,6 +62,7 @@ pub struct SessionDBus {
     prop_watchers : util::Cell<Vec<Box<dyn FnMut(&Message, &PropertiesPropertiesChanged, &SessionDBus)>>>,
     name_watchers : util::Cell<Vec<Box<dyn FnMut(&str, &str, &str, &SessionDBus)>>>,
     sig_watchers : util::Cell<Vec<Box<dyn SigWatcherCall>>>,
+    api : util::Cell<HashMap<Cow<'static,str>, Box<dyn FnMut(Message, &SessionDBus)>>>,
     wake : Notify,
 }
 
@@ -84,13 +86,112 @@ pub fn init() -> Result<(), Box<dyn Error>> {
         Ok(())
     })));
 
-    rc.set(SessionDBus {
+    let mut rule = MatchRule::new();
+    rule.msg_type = Some(MessageType::Signal);
+    local.start_receive(rule, Box::new(move |msg, _local| {
+        let this = SessionDBus::get();
+        let mut watchers = this.sig_watchers.replace(Vec::new());
+        for watcher in &mut watchers {
+            watcher.call(&msg, &this);
+        }
+        this.sig_watchers.take_in(|w| {
+            if w.is_empty() {
+                *w = watchers;
+            } else {
+                w.extend(watchers);
+            }
+        });
+        true
+    }));
+
+    rule = MatchRule::new_method_call();
+    local.start_receive(rule, Box::new(move |msg, _local| {
+        let this = SessionDBus::get();
+        let mut objects = this.api.replace(HashMap::new());
+        if let Some(object) = msg.path().and_then(|p| objects.get_mut(&*p)) {
+            (object)(msg, &this);
+        } else {
+            use dbus::channel::Sender;
+            let mut rsp = dbus::channel::default_reply(&msg);
+            if msg.path().as_deref() == Some("/") &&
+                msg.interface().as_deref() == Some("org.freedesktop.DBus.Introspectable") &&
+                msg.member().as_deref() == Some("Introspect")
+            {
+                let mut rv = String::new();
+                rv.push_str(r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd"><node>"#);
+                for node in objects.keys() {
+                    use std::fmt::Write;
+                    write!(rv, r#"<node name="{}"/>"#, &node[1..]).unwrap();
+                }
+                rv.push_str(r#"</node>"#);
+                rsp = Some(msg.return_with_args((rv,)));
+            }
+            let _ = rsp.map(|rsp| this.local.send(rsp));
+        }
+        this.api.take_in(|api| {
+            if api.is_empty() {
+                *api = objects;
+            } else {
+                api.extend(objects);
+            }
+        });
+        true
+    }));
+
+    let dbus = SessionDBus {
         local,
         wake,
         prop_watchers : Default::default(),
         name_watchers : Default::default(),
         sig_watchers : Default::default(),
-    }).ok().expect("Called init twice");
+        api : Default::default(),
+    };
+
+    dbus.add_signal_watcher(move |msg, this| {
+        if msg.interface().as_deref() != Some("org.freedesktop.DBus.Properties") ||
+            msg.member().as_deref() != Some("PropertiesChanged")
+        {
+            return;
+        }
+        if let Ok(p) = msg.read_all::<PropertiesPropertiesChanged>() {
+            let mut watchers = this.prop_watchers.replace(Vec::new());
+            for watcher in &mut watchers {
+                (*watcher)(&msg, &p, &this);
+            }
+            this.prop_watchers.take_in(|w| {
+                if w.is_empty() {
+                    *w = watchers;
+                } else {
+                    w.extend(watchers);
+                }
+            });
+        } else {
+            warn!("Could not parse PropertiesPropertiesChanged message: {:?}", msg);
+        }
+    });
+
+    dbus.add_signal_watcher(move |msg, this| {
+        if msg.interface().as_deref() != Some("org.freedesktop.DBus") ||
+            msg.member().as_deref() != Some("NameOwnerChanged")
+        {
+            return;
+        }
+        if let (Some(name), Some(old), Some(new)) = msg.get3::<String, String, String>() {
+            let mut watchers = this.name_watchers.replace(Vec::new());
+            for watcher in &mut watchers {
+                (*watcher)(&name, &old, &new, &this);
+            }
+            this.name_watchers.take_in(|w| {
+                if w.is_empty() {
+                    *w = watchers;
+                } else {
+                    w.extend(watchers);
+                }
+            });
+        }
+    });
+
+    rc.set(dbus).ok().expect("Called init twice");
 
     util::spawn("D-Bus I/O loop", async move {
         let conn = rc.get().unwrap();
@@ -165,28 +266,7 @@ impl SessionDBus {
     fn do_add_signal_watcher(&self, b : Box<dyn SigWatcherCall>) -> SigWatcherToken
     {
         let rv = SigWatcherToken(b.get_sw_ptr());
-        if self.sig_watchers.take_in(|w| {
-            w.push(b);
-            w.len() == 1
-        }) {
-            let mut rule = MatchRule::new();
-            rule.msg_type = Some(MessageType::Signal);
-            self.local.start_receive(rule, Box::new(move |msg, _local| {
-                let this = Self::get();
-                let mut watchers = this.sig_watchers.replace(Vec::new());
-                for watcher in &mut watchers {
-                    watcher.call(&msg, &this);
-                }
-                this.sig_watchers.take_in(|w| {
-                    if w.is_empty() {
-                        *w = watchers;
-                    } else {
-                        w.extend(watchers);
-                    }
-                });
-                true
-            }));
-        }
+        self.sig_watchers.take_in(|w| w.push(b));
         rv
     }
 
@@ -208,29 +288,6 @@ impl SessionDBus {
             w.push(Box::new(f));
             w.len() == 1
         }) {
-            self.add_signal_watcher(move |msg, this| {
-                if msg.interface().as_deref() != Some("org.freedesktop.DBus.Properties") ||
-                    msg.member().as_deref() != Some("PropertiesChanged")
-                {
-                    return;
-                }
-                if let Ok(p) = msg.read_all::<PropertiesPropertiesChanged>() {
-                    let mut watchers = this.prop_watchers.replace(Vec::new());
-                    for watcher in &mut watchers {
-                        (*watcher)(&msg, &p, &this);
-                    }
-                    this.prop_watchers.take_in(|w| {
-                        if w.is_empty() {
-                            *w = watchers;
-                        } else {
-                            w.extend(watchers);
-                        }
-                    });
-                } else {
-                    warn!("Could not parse PropertiesPropertiesChanged message: {:?}", msg);
-                }
-            });
-
             let prop_rule = MatchRule::new_signal("org.freedesktop.DBus.Properties", "PropertiesChanged");
             let rule_str = prop_rule.match_str();
             match self.local.add_match_no_cb(&rule_str).await {
@@ -247,32 +304,18 @@ impl SessionDBus {
             w.push(Box::new(f));
             w.len() == 1
         }) {
-            self.add_signal_watcher(move |msg, this| {
-                if msg.interface().as_deref() != Some("org.freedesktop.DBus") ||
-                    msg.member().as_deref() != Some("NameOwnerChanged")
-                {
-                    return;
-                }
-                if let (Some(name), Some(old), Some(new)) = msg.get3::<String, String, String>() {
-                    let mut watchers = this.name_watchers.replace(Vec::new());
-                    for watcher in &mut watchers {
-                        (*watcher)(&name, &old, &new, &this);
-                    }
-                    this.name_watchers.take_in(|w| {
-                        if w.is_empty() {
-                            *w = watchers;
-                        } else {
-                            w.extend(watchers);
-                        }
-                    });
-                }
-            });
             let na_rule = MatchRule::new_signal("org.freedesktop.DBus", "NameOwnerChanged");
             let rule_str = na_rule.match_str();
             match self.local.add_match_no_cb(&rule_str).await {
                 Ok(()) => {}
                 Err(e) => warn!("Could not register for NameAcquired messages: {}", e),
             }
+        }
+    }
+
+    pub fn add_api(&self, name : impl Into<Cow<'static, str>>, imp : Box<dyn FnMut(Message, &SessionDBus)>) {
+        if self.api.take_in(|api| api.insert(name.into(), imp)).is_some() {
+            panic!("Object already exists");
         }
     }
 }
