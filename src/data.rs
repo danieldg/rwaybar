@@ -316,6 +316,9 @@ pub enum Module {
     },
     Tray {
         spacing : Box<str>,
+        show_passive: Box<str>,
+        show_active: Box<str>,
+        show_urgent: Box<str>,
     },
     Value {
         value : Cell<Value<'static>>,
@@ -685,8 +688,14 @@ impl Module {
             // "text" is an alias for "formatted"
             Some("tray") => {
                 let spacing = toml_to_string(value.get("spacing")).unwrap_or_default().into();
+                let show_passive = toml_to_string(value.get("show-passive")).unwrap_or_default().into();
+                let show_active = toml_to_string(value.get("show-active")).unwrap_or_default().into();
+                let show_urgent = toml_to_string(value.get("show-urgent")).unwrap_or_default().into();
                 Module::Tray {
                     spacing,
+                    show_passive,
+                    show_active,
+                    show_urgent,
                 }
             }
             Some("value") => {

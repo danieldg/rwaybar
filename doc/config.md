@@ -454,6 +454,9 @@ default = "<span color='#ff8888'></span>"
 Key | Expanded | Default | Details
 ----|----------|---------|--------
 `spacing` | Yes | 0 | Spacing between items in the tray
+`show-passive` | Yes | false | Show "Passive" icons (which are normally hidden)
+`show-active` | Yes | true | Show "Active" icons (which are normally visible)
+`show-urgent` | Yes | true | Show "NeedsAttention" icons
 
 ## value
 

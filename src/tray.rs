@@ -36,6 +36,7 @@ struct TrayItem {
     title : Option<Rc<str>>,
     icon : Box<str>,
     icon_path : Box<str>,
+    status : Box<str>,
     menu : Rc<TrayPopupMenu>,
 }
 
@@ -304,6 +305,7 @@ fn do_add_item(is_kde : bool, item : String) {
             title : None,
             icon : Default::default(),
             icon_path : Default::default(),
+            status : Default::default(),
             menu : Rc::new(TrayPopupMenu {
                 owner : owner.clone(),
                 menu_path : Default::default(),
@@ -370,6 +372,7 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<String, Varian
                         "Title" => value.as_str().map(|v| item.title = Some(v.into())),
                         "IconName" => value.as_str().map(|v| item.icon = v.into()),
                         "IconThemePath" => value.as_str().map(|v| item.icon_path = v.into()),
+                        "Status" => value.as_str().map(|v| item.status = v.into()),
                         "Menu" => value.as_str().map(|v| {
                             if item.menu.menu_path.take_in(|mp| {
                                 match mp.as_deref() {
@@ -633,13 +636,19 @@ impl TrayPopup {
     }
 }
 
-pub fn show(ctx : &mut Render, ev : &mut EventSink, spacing : f32) {
+pub fn show(ctx : &mut Render, ev : &mut EventSink, spacing : f32, show: (bool,bool,bool)) {
     DATA.with(|cell| {
         let tray = cell.get_or_init(Tray::init);
         tray.interested.take_in(|interest| interest.add(&ctx.runtime));
         tray.items.take_in(|items| {
             ctx.render_pos += spacing;
             for item in items {
+                match &*item.status {
+                    "Passive" if !show.0 => continue,
+                    "NeedsAttention" if !show.2 => continue,
+                    _ if !show.1 => continue,
+                    _ => {}
+                };
                 let x0 = ctx.render_pos;
                 let mut done = false;
                 if !done && !item.icon_path.is_empty() {
