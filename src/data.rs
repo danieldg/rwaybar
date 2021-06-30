@@ -101,12 +101,16 @@ impl<'a> Value<'a> {
     }
 
     pub fn parse_bool(&self) -> Option<bool> {
-        match self {
+        match self.as_ref() {
+            Value::Borrow(v) if v == "1" => Some(true),
+            Value::Borrow(v) if v == "0" => Some(false),
+            Value::Borrow(v) if v == "true" => Some(true),
+            Value::Borrow(v) if v == "false" => Some(false),
             Value::Borrow(_) => None,
             Value::Owned(_) => None,
-            Value::Float(f) if *f == 0.0 => Some(false),
-            Value::Float(f) if *f == 1.0 => Some(true),
-            Value::Bool(b) => Some(*b),
+            Value::Float(f) if f == 0.0 => Some(false),
+            Value::Float(f) if f == 1.0 => Some(true),
+            Value::Bool(b) => Some(b),
             _ => None,
         }
     }
