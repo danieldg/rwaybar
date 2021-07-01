@@ -665,12 +665,13 @@ pub fn show(ctx : &mut Render, ev : &mut EventSink, spacing : f32, show: (bool,b
         tray.items.take_in(|items| {
             ctx.render_pos += spacing;
             for item in items {
-                match &*item.status {
-                    "Passive" if !show.0 => continue,
-                    "NeedsAttention" if !show.2 => continue,
-                    _ if !show.1 => continue,
-                    _ => {}
-                };
+                if !match &*item.status {
+                    "Passive" => show.0,
+                    "NeedsAttention" => show.2,
+                    _ => show.1,
+                } {
+                    continue;
+                }
                 let x0 = ctx.render_pos;
                 let mut done = false;
                 if !done && !item.icon_path.is_empty() {
