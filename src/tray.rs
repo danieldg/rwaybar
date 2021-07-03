@@ -125,6 +125,8 @@ impl Tray {
                                     local.send(Message::new_signal("/StatusNotifierWatcher", iface, "StatusNotifierItemRegistered").unwrap()
                                         .append1(&service)).unwrap();
                                     reg_db.push(service);
+                                    reg_db.sort();
+                                    reg_db.dedup();
                                     rsp = Some(msg.return_with_args(()));
                                 } else if path.starts_with(':') {
                                     // kde uses this style
@@ -132,6 +134,8 @@ impl Tray {
                                     local.send(Message::new_signal("/StatusNotifierWatcher", iface, "StatusNotifierItemRegistered").unwrap()
                                         .append1(&service)).unwrap();
                                     reg_db.push(service);
+                                    reg_db.sort();
+                                    reg_db.dedup();
                                     rsp = Some(msg.return_with_args(()));
                                 } else {
                                     warn!("Unknown RegisterStatusNotifierItem from {:?}: {}", msg.sender(), path);
@@ -589,6 +593,7 @@ impl TrayPopup {
     pub fn render(&mut self, ctx : &mut Render) {
         let width = ctx.render_extents.2;
         let mut size = render_font(ctx.canvas, ctx.font, ctx.font_size, ctx.font_color, &ctx.runtime, (2.0, 2.0), self.title.as_deref().unwrap_or_default(), false);
+        size.0 += 2.0;
         let mut pos = 2.0 + size.1.ceil();
         let rendered_ids = &mut self.rendered_ids;
         rendered_ids.clear();
@@ -632,7 +637,7 @@ impl TrayPopup {
                 }
             }
         });
-        ctx.render_pos = size.0;
+        ctx.render_pos = size.0.ceil() + 2.0;
         ctx.render_ypos = Some(pos);
     }
 
