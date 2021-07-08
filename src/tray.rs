@@ -18,6 +18,7 @@ use once_cell::unsync::OnceCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::rc::Rc;
+use std::time::Instant;
 use std::mem::ManuallyDrop;
 use std::time::{SystemTime,Duration,UNIX_EPOCH};
 use log::{debug,warn};
@@ -335,7 +336,7 @@ fn do_add_item(is_kde : bool, item : String) {
             menu : Rc::new(TrayPopupMenu {
                 owner : owner.clone(),
                 menu_path : Default::default(),
-                fresh : Default::default(),
+                fresh : Cell::new(None),
                 dbus_token : Default::default(),
                 items : Default::default(),
                 interested : Default::default(),
@@ -448,7 +449,7 @@ impl PartialEq for TrayPopup {
 struct TrayPopupMenu {
     owner : Rc<str>,
     menu_path : Cell<Option<Rc<str>>>,
-    fresh : Cell<bool>,
+    fresh : Cell<Option<Instant>>,
     dbus_token : Cell<SigWatcherToken>,
     items : Cell<Vec<MenuItem>>,
     interested : Cell<NotifierList>,
@@ -481,8 +482,19 @@ impl TrayPopupMenu {
                     1 => {
                         let props = dbus_util::read_hash_map(&value);
                         let props = match props { Some(i) => i, None => continue };
-                        props.get("label").and_then(|v| v.as_str())
-                            .map(|label| item.label = label.to_owned());
+                        if let Some(label) = props.get("label").and_then(|v| v.as_str()) {
+                            let mut text = String::with_capacity(label.len());
+                            let mut esc = false;
+                            for c in label.chars() {
+                                if c == '_' && !esc {
+                                    esc = true;
+                                    continue;
+                                }
+                                esc = false;
+                                text.push(c);
+                            }
+                            item.label = text.into();
+                        }
                         item.visible = props.get("visible").and_then(|v| v.as_i64()) != Some(0);
                         item.enabled = props.get("enabled").and_then(|v| v.as_i64()) != Some(0);
                         if !item.visible {
@@ -567,7 +579,7 @@ async fn refresh_menu(menu : Rc<TrayPopupMenu>) -> Result<(), Box<dyn Error>> {
                 {
                     return;
                 }
-                if menu.fresh.replace(false) {
+                if menu.fresh.replace(None).is_none() {
                     spawn("Tray menu refresh", refresh_menu(menu));
                 }
             }
@@ -584,7 +596,7 @@ async fn refresh_menu(menu : Rc<TrayPopupMenu>) -> Result<(), Box<dyn Error>> {
     TrayPopupMenu::add_items(&mut items, &mut contents.into_iter(), 0);
     menu.items.set(items);
     menu.interested.take().notify_data("tray:menu");
-    menu.fresh.set(true);
+    menu.fresh.set(Some(Instant::now()));
 
     Ok(())
 }
@@ -598,8 +610,7 @@ impl TrayPopup {
         let rendered_ids = &mut self.rendered_ids;
         rendered_ids.clear();
 
-        if !self.menu.fresh.get() &&
-            self.menu.dbus_token.take_in(|t| !t.is_active()) &&
+        if self.menu.fresh.get().map_or(true, |i| i.elapsed() > Duration::from_secs(60)) &&
             self.menu.menu_path.take_in_some(|_| ()).is_some()
         {
             // need to kick off the first refresh
