@@ -301,6 +301,7 @@ pub enum Module {
     },
     ReadFile {
         name : Box<str>,
+        on_err : Box<str>,
         poll : f64,
         last_read : Cell<Option<Instant>>,
         contents : Cell<String>,
@@ -648,9 +649,10 @@ impl Module {
                         return Module::None;
                     }
                 };
+                let on_err = value.get("on-err").and_then(|v| v.as_str()).unwrap_or_default().into();
                 let poll = toml_to_f64(value.get("poll")).unwrap_or(60.0);
                 Module::ReadFile {
-                    name, poll, last_read: Cell::default(), contents : Cell::default()
+                    name, on_err, poll, last_read: Cell::default(), contents : Cell::default()
                 }
             }
             Some("sway-mode") => {
@@ -1103,7 +1105,7 @@ impl Module {
             Module::None => f(Value::Null),
             #[cfg(feature="pulse")]
             Module::Pulse { target } => pulse::read_in(name, target, key, rt, f),
-            Module::ReadFile { name, poll, last_read, contents } => {
+            Module::ReadFile { name, on_err, poll, last_read, contents } => {
                 use std::io::Read;
                 if Self::should_read_now(*poll, last_read, rt, "read-file") {
                     let mut v = String::with_capacity(4096);
@@ -1112,7 +1114,9 @@ impl Module {
                             contents.set(v);
                         }
                         Err(e) => {
-                            warn!("Could not read {}: {}", name, e);
+                            debug!("Could not read {}: {}", name, e);
+                            let v = rt.format_or(&on_err, &name).into_text().into();
+                            contents.set(v);
                         }
                     }
                 }
