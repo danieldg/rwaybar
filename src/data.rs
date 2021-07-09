@@ -320,10 +320,9 @@ pub enum Module {
         default : Box<str>,
     },
     Tray {
-        spacing : Box<str>,
-        show_passive: Box<str>,
-        show_active: Box<str>,
-        show_urgent: Box<str>,
+        passive : Rc<Item>,
+        active : Rc<Item>,
+        urgent : Rc<Item>,
     },
     Value {
         value : Cell<Value<'static>>,
@@ -339,6 +338,8 @@ pub enum IterationItem {
     Pulse { target : Rc<str> },
     SwayWorkspace(Rc<sway::WorkspaceData>),
     SwayTreeItem(Rc<sway::Node>),
+    #[cfg(feature="dbus")]
+    Tray { owner : Rc<str>, path : Rc<str>, },
 }
 
 impl PartialEq for IterationItem {
@@ -351,6 +352,10 @@ impl PartialEq for IterationItem {
             (Pulse { target : a }, Pulse { target : b }) => Rc::ptr_eq(a,b),
             (SwayWorkspace(a), SwayWorkspace(b)) => Rc::ptr_eq(a,b),
             (SwayTreeItem(a), SwayTreeItem(b)) => Rc::ptr_eq(a,b),
+            #[cfg(feature="dbus")]
+            (Tray { owner : ao, path : ap }, Tray { owner : bo, path : bp }) => {
+                Rc::ptr_eq(ao, bo) && Rc::ptr_eq(ap, bp)
+            }
             _ => false,
         }
     }
@@ -685,15 +690,19 @@ impl Module {
             }
             // "text" is an alias for "formatted"
             Some("tray") => {
-                let spacing = toml_to_string(value.get("spacing")).unwrap_or_default().into();
-                let show_passive = toml_to_string(value.get("show-passive")).unwrap_or_default().into();
-                let show_active = toml_to_string(value.get("show-active")).unwrap_or_default().into();
-                let show_urgent = toml_to_string(value.get("show-urgent")).unwrap_or_default().into();
+                let active = Rc::new(value.get("item").map(Item::from_toml_ref).unwrap_or_else(|| {
+                    Module::Icon {
+                        name : "{item.icon}".into(),
+                        fallback : "{item.title}".into(),
+                        tooltip : "".into(),
+                    }.into()
+                }));
+                let passive = Rc::new(value.get("passive").map_or_else(Item::none, Item::from_toml_ref));
+                let urgent = value.get("urgent").map(Item::from_toml_ref).map(Rc::new).unwrap_or_else(|| active.clone());
                 Module::Tray {
-                    spacing,
-                    show_passive,
-                    show_active,
-                    show_urgent,
+                    passive,
+                    active,
+                    urgent,
                 }
             }
             Some("value") => {
@@ -1075,6 +1084,8 @@ impl Module {
                     Some(IterationItem::Pulse { target }) => pulse::read_in(name, target, key, rt, f),
                     Some(IterationItem::SwayWorkspace(data)) => data.read_in(key, rt, f),
                     Some(IterationItem::SwayTreeItem(node)) => node.read_in(key, rt, f),
+                    #[cfg(feature="dbus")]
+                    Some(IterationItem::Tray { owner, path }) => tray::read_in(name, owner, path, key, rt, f),
                     None => f(Value::Null),
                 }
             }),
@@ -1198,6 +1209,7 @@ impl Module {
                     Some(IterationItem::Pulse { target }) => pulse::do_write(name, target, key, value, rt),
                     Some(IterationItem::SwayWorkspace(data)) => data.write(key, value, rt),
                     Some(IterationItem::SwayTreeItem(node)) => node.write(key, value, rt),
+                    Some(IterationItem::Tray { owner, path }) => tray::write(name, owner, path, key, value, rt),
                     None => {}
                 }
             }),

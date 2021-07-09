@@ -451,12 +451,21 @@ default = "<span color='#ff8888'></span>"
 
 ## tray
 
-Key | Expanded | Default | Details
+The tray contains up to three sub-blocks (like focus-list).  The `item` block
+is used by default, and if not present, defaults to the icon.  Icons that have
+marked themselves as "NeedsAttention" use the `urgent` block if present but are
+otherwise shown as normal.  Icons that are marked as "Passive" are hidden by
+default, but are displayed if a `passive` block is present.
+
+#### Item values
+
+Key | Value
 ----|----------|---------|--------
-`spacing` | Yes | 0 | Spacing between items in the tray
-`show-passive` | Yes | false | Show "Passive" icons (which are normally hidden)
-`show-active` | Yes | true | Show "Active" icons (which are normally visible)
-`show-urgent` | Yes | true | Show "NeedsAttention" icons
+`icon` | The path or name of the icon, suitable for passing to an `icon` block as name
+`id` | The ID of this icon, which is suitable to identify specific icons in a `switch` block
+`title` | The title of the item, shown in the menu/tooltip
+`status` | The status string for this item (Passive, Active, or NeedsAttention)
+`tooltip` | The tooltip set by this item, if any
 
 ## value
 

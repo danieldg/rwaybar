@@ -217,7 +217,14 @@ pub fn render(ctx : &mut Render, name : &str) -> Result<(), ()> {
         let tsize = pixel_size as u32;
         match cache.entry((name.into(), tsize)).or_insert_with(|| {
                 open_icon(&ctx.runtime.xdg, name, pixel_size).ok()
-                .and_then(|path| File::open(path).ok())
+                .and_then(|mut path| {
+                    match File::open(&path) { Ok(file) => return Some(file), _ => {} }
+                    path.set_extension("png");
+                    match File::open(&path) { Ok(file) => return Some(file), _ => {} }
+                    path.set_extension("svg");
+                    match File::open(&path) { Ok(file) => return Some(file), _ => {} }
+                    None
+                })
                 .and_then(|file| OwnedImage::from_file(file, tsize))
             })
         {

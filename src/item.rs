@@ -932,12 +932,8 @@ impl Item {
                 tree.render(ctx, rv);
             }
             #[cfg(feature="dbus")]
-            Module::Tray { spacing, show_passive, show_active, show_urgent } => {
-                let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse_f32()).unwrap_or(0.0);
-                let show_passive = ctx.runtime.format(show_passive).ok().and_then(|s| s.parse_bool()).unwrap_or(false);
-                let show_active = ctx.runtime.format(show_active).ok().and_then(|s| s.parse_bool()).unwrap_or(true);
-                let show_urgent = ctx.runtime.format(show_urgent).ok().and_then(|s| s.parse_bool()).unwrap_or(true);
-                tray::show(ctx, rv, spacing, (show_passive, show_active, show_urgent))
+            Module::Tray { passive, active, urgent } => {
+                tray::show(ctx, rv, [passive, active, urgent])
             }
             Module::None => {}
 

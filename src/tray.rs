@@ -2,9 +2,8 @@ use crate::util::{Cell,spawn};
 use crate::dbus::get as get_dbus;
 use crate::dbus::SigWatcherToken;
 use crate::dbus as dbus_util;
-use crate::data::{Module,Value};
+use crate::data::{IterationItem,Value};
 use crate::font::render_font;
-use crate::icon;
 use crate::item::{Item,Render,EventSink,PopupDesc};
 use crate::state::{Runtime,NotifierList};
 use dbus::arg::{ArgType,RefArg,Variant};
@@ -38,6 +37,7 @@ struct TrayItem {
     icon : Box<str>,
     icon_path : Box<str>,
     status : Box<str>,
+    tooltip : Option<Rc<str>>,
     menu : Rc<TrayPopupMenu>,
 }
 
@@ -333,6 +333,7 @@ fn do_add_item(is_kde : bool, item : String) {
             icon : Default::default(),
             icon_path : Default::default(),
             status : Default::default(),
+            tooltip : None,
             menu : Rc::new(TrayPopupMenu {
                 owner : owner.clone(),
                 menu_path : Default::default(),
@@ -400,6 +401,11 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<String, Varian
                         "IconName" => value.as_str().map(|v| item.icon = v.into()),
                         "IconThemePath" => value.as_str().map(|v| item.icon_path = v.into()),
                         "Status" => value.as_str().map(|v| item.status = v.into()),
+                        "ToolTip" => value.0.as_iter().map(|mut iter| {
+                            iter.nth(3)
+                                .and_then(|i| i.as_str())
+                                .map(|v| item.tooltip = Some(v.into()));
+                        }),
                         "Menu" => value.as_str().map(|v| {
                             if item.menu.menu_path.take_in(|mp| {
                                 match mp.as_deref() {
@@ -434,6 +440,7 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<String, Varian
 pub struct TrayPopup {
     owner : Rc<str>,
     title : Option<Rc<str>>,
+    tooltip : Option<Rc<str>>,
     menu : Rc<TrayPopupMenu>,
     rendered_ids : Vec<(f32, f32, i32)>,
 }
@@ -604,11 +611,18 @@ async fn refresh_menu(menu : Rc<TrayPopupMenu>) -> Result<(), Box<dyn Error>> {
 impl TrayPopup {
     pub fn render(&mut self, ctx : &mut Render) {
         let width = ctx.render_extents.2;
-        let mut size = render_font(ctx.canvas, ctx.font, ctx.font_size, ctx.font_color, &ctx.runtime, (2.0, 2.0), self.title.as_deref().unwrap_or_default(), false);
-        size.0 += 2.0;
-        let mut pos = 2.0 + size.1.ceil();
         let rendered_ids = &mut self.rendered_ids;
         rendered_ids.clear();
+
+        let (mut xsize, mut ypos) = render_font(ctx.canvas, ctx.font, ctx.font_size, ctx.font_color, &ctx.runtime, (2.0, 2.0), self.title.as_deref().unwrap_or_default(), false);
+        xsize += 2.0;
+        ypos = 2.0 + ypos.ceil();
+
+        if let Some(tooltip) = self.tooltip.as_ref() {
+            let tsize = render_font(ctx.canvas, ctx.font, ctx.font_size, ctx.font_color, &ctx.runtime, (10.0, ypos), &tooltip, true);
+            xsize = xsize.max(tsize.0 + 10.0);
+            ypos += tsize.1.ceil();
+        }
 
         if self.menu.fresh.get().map_or(true, |i| i.elapsed() > Duration::from_secs(60)) &&
             self.menu.menu_path.take_in_some(|_| ()).is_some()
@@ -622,34 +636,34 @@ impl TrayPopup {
 
         self.menu.items.take_in(|items| {
             if !items.is_empty() {
-                ctx.canvas.fill_rect(0.0, pos + 4.0, width, 2.0,
+                ctx.canvas.fill_rect(0.0, ypos + 4.0, width, 2.0,
                     &raqote::Color::new(255, 255, 255, 255).into(),
                     &Default::default());
 
-                pos += 9.0;
+                ypos += 9.0;
             }
             for item in items {
                 if !item.visible {
                     continue;
                 }
-                let indent = item.depth as f32 * 20.0;
+                let indent = 2.0 + item.depth as f32 * 20.0;
                 if item.is_sep {
-                    ctx.canvas.fill_rect(indent + 5.0, pos + 4.0, width - indent - 5.0, 1.0,
+                    ctx.canvas.fill_rect(indent + 3.0, ypos + 3.0, width - indent - 5.0, 1.0,
                         &raqote::Color::new(255, 255, 255, 255).into(),
                         &Default::default());
 
-                    pos += 9.0;
+                    ypos += 7.0;
                 } else {
-                    let tsize = render_font(ctx.canvas, ctx.font, ctx.font_size, ctx.font_color, &ctx.runtime, (indent + 2.0, pos), &item.label, false);
-                    let end = pos + tsize.1;
-                    size.0 = size.0.max(indent + tsize.0);
-                    rendered_ids.push((pos, end, item.id));
-                    pos = end + 5.0;
+                    let tsize = render_font(ctx.canvas, ctx.font, ctx.font_size, ctx.font_color, &ctx.runtime, (indent, ypos), &item.label, false);
+                    let end = ypos + tsize.1.ceil();
+                    xsize = xsize.max(indent + tsize.0);
+                    rendered_ids.push((ypos, end, item.id));
+                    ypos = end + 5.0;
                 }
             }
         });
-        ctx.render_pos = size.0.ceil() + 2.0;
-        ctx.render_ypos = Some(pos);
+        ctx.render_pos = xsize.ceil() + 2.0;
+        ctx.render_ypos = Some(ypos);
     }
 
     pub fn button(&mut self, x : f64, y : f64, button : u32, _runtime : &mut Runtime) {
@@ -674,56 +688,74 @@ impl TrayPopup {
     }
 }
 
-pub fn show(ctx : &mut Render, ev : &mut EventSink, spacing : f32, show: (bool,bool,bool)) {
-    DATA.with(|cell| {
+pub fn show(ctx : &mut Render, rv : &mut EventSink, [passive, active, urgent]: [&Rc<Item>;3]) {
+    let items = DATA.with(|cell| {
         let tray = cell.get_or_init(Tray::init);
         tray.interested.take_in(|interest| interest.add(&ctx.runtime));
         tray.items.take_in(|items| {
-            ctx.render_pos += spacing;
+            items.iter()
+                .map(|item| {
+                    let owner = item.owner.clone();
+                    let path = item.path.clone();
+                    let title = item.title.clone();
+                    let menu = item.menu.clone();
+                    let tooltip = item.tooltip.clone();
+                    let render = match &*item.status {
+                        "Passive" => passive,
+                        "NeedsAttention" => urgent,
+                        _ => active,
+                    };
+                    (owner, path, title, menu, tooltip, render)
+                }).collect::<Vec<_>>()
+        })
+    });
+    for (owner, path, title, menu, tooltip, render) in items {
+        let item = IterationItem::Tray { owner : owner.clone(), path : path.clone() };
+        let x0 = ctx.render_pos;
+        render.render_clamped_item(ctx, rv, &item);
+        let x1 = ctx.render_pos;
+        if x0 != x1 {
+            let mut es = EventSink::from_tray(owner.clone(), path);
+            es.offset_clamp(0.0, x0, x1);
+            es.add_hover(x0, x1, PopupDesc::Tray(TrayPopup {
+                owner, title, menu, tooltip, rendered_ids : Vec::new(),
+            }));
+            rv.merge(es);
+        }
+    }
+}
+
+pub fn read_in<F : FnOnce(Value) -> R, R>(_name : &str, owner : &str, path : &str, key : &str, rt : &Runtime, f : F) -> R {
+    DATA.with(|cell| {
+        let tray = cell.get_or_init(Tray::init);
+        tray.interested.take_in(|interest| interest.add(rt));
+        tray.items.take_in(|items| {
             for item in items {
-                if !match &*item.status {
-                    "Passive" => show.0,
-                    "NeedsAttention" => show.2,
-                    _ => show.1,
-                } {
+                if &*item.owner != owner || &*item.path != path {
                     continue;
                 }
-                let x0 = ctx.render_pos;
-                let mut done = false;
-                if !done && !item.icon_path.is_empty() {
-                    let icon = format!("{}/{}.svg", item.icon_path, item.icon);
-                    if icon::render(ctx, &icon).is_ok() {
-                        done = true;
+                match key {
+                    "icon" => {
+                        if !item.icon_path.is_empty() {
+                            return f(Value::Owned(format!("{}/{}", item.icon_path, item.icon)));
+                        }
+                        return f(Value::Borrow(&item.icon));
                     }
+                    "title" => return f(item.title.as_deref().map_or(Value::Null, Value::Borrow)),
+                    "status" => return f(Value::Borrow(&item.status)),
+                    "tooltip" => return f(item.tooltip.as_deref().map_or(Value::Null, Value::Borrow)),
+                    "id" => return f(Value::Borrow(&item.id)),
+                    _ => break,
                 }
-                if !done && !item.icon_path.is_empty() {
-                    let icon = format!("{}/{}.png", item.icon_path, item.icon);
-                    if icon::render(ctx, &icon).is_ok() {
-                        done = true;
-                    }
-                }
-                if !done && icon::render(ctx, &item.icon).is_ok() {
-                    done = true;
-                }
-                if !done {
-                    let title = item.title.as_deref().map_or(Value::Null, Value::Borrow);
-                    let item : Item = Module::new_value(title.into_owned()).into();
-                    Rc::new(item).render(ctx);
-                }
-                let x1 = ctx.render_pos;
-                let mut es = EventSink::from_tray(item.owner.clone(), item.path.clone());
-                es.offset_clamp(0.0, x0, x1);
-                es.add_hover(x0, x1, PopupDesc::Tray(TrayPopup {
-                    owner : item.owner.clone(),
-                    title : item.title.clone(),
-                    menu : item.menu.clone(),
-                    rendered_ids : Vec::new(),
-                }));
-                ev.merge(es);
-                ctx.render_pos += spacing;
             }
-        });
-    });
+            f(Value::Null)
+        })
+    })
+}
+
+pub fn write(name : &str, owner : &str, path : &str, key : &str, value : Value, rt : &Runtime) {
+    // Ignored for now, see EventSink::from_tray
+    let _ = (name, owner, path, key, value, rt);
 }
 
 pub fn do_click(owner : &str, path : &str, how : u32) {

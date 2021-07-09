@@ -253,10 +253,28 @@ target = 'source'
 
 [tray]
 type = "tray"
-font = "Liberation Sans 12"
-fg = "green"
-bg = "black"
-spacing = 2
+
+# Change the background of the tray icons based on urgency
+[tray.item]
+type = 'icon'
+name = "{item.icon}"
+fallback = "{item.title}"
+bg = "#000f"
+
+[tray.urgent]
+type = 'icon'
+name = "{item.icon}"
+fallback = "{item.title}"
+bg = "#800f"
+
+# Inactive icons are displayed at about half size
+# Omit this section to just hide them
+[tray.passive]
+type = 'icon'
+name = "{item.icon}"
+fallback = "{item.title}"
+bg = "#000e"
+margin = "0 0 10 0"
 
 [weather-cmd]
 type = "exec-json"
