@@ -402,6 +402,8 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<String, Varian
                         "IconThemePath" => value.as_str().map(|v| item.icon_path = v.into()),
                         "Status" => value.as_str().map(|v| item.status = v.into()),
                         "ToolTip" => value.0.as_iter().map(|mut iter| {
+                            // value is (icon-name, icon-bitmap, title, text)
+                            // see https://www.freedesktop.org/wiki/Specifications/StatusNotifierItem/StatusNotifierItem/#org.freedesktop.statusnotifieritem.tooltip
                             iter.nth(3)
                                 .and_then(|i| i.as_str())
                                 .map(|v| item.tooltip = Some(v.into()));

@@ -24,7 +24,7 @@ dlopen = ['smithay-client-toolkit/dlopen']
 [dependencies]
 # Basic runtime
 bytes = "*"
-env_logger = "*"
+env_logger = "0.8"
 futures-util = { version = "*", features = ['channel'] }
 json = "*"
 libc = "*"
@@ -56,4 +56,4 @@ chrono-tz = "*"
 dbus = { version = "*", features = ['futures'], optional = true }
 evalexpr = "*"
 libpulse-binding = { version = "*", features = ['pa_v14'], optional = true }
-regex = "*"
+regex = "1.5"
