@@ -19,6 +19,7 @@ use log::{debug,info,warn,error};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::fmt;
+use std::future::Future;
 use std::io;
 use std::io::Write;
 use std::os::unix::io::{AsRawFd,IntoRawFd};
@@ -215,6 +216,121 @@ impl ItemReference {
     }
 }
 
+#[derive(Debug)]
+pub struct Periodic<T> {
+    period : f64,
+    shared : Rc<(Cell<NotifierList>, Cell<Option<Instant>>, T)>,
+    timer : Cell<Option<RemoteHandle<()>>>,
+}
+
+impl<T : 'static> Periodic<T> {
+    pub fn new(period : f64, t : T) -> Self {
+        Periodic {
+            period,
+            shared: Rc::new((Cell::default(), Cell::default(), t)),
+            timer: Cell::default(),
+        }
+    }
+
+    pub fn data(&self) -> &T {
+        &self.shared.2
+    }
+
+    /// Read periodically using the given closure.
+    ///
+    /// If the closure returns `Some(reason)`, an update will happen; otherwise, the closure will
+    /// continue to be polled at the specified period.
+    pub fn read_refresh<F>(&self, rt : &Runtime, mut do_read : F)
+        where F : FnMut(&T) -> Option<&str> + 'static
+    {
+        self._read_refresh(rt, move |n, t| {
+            match (n, do_read(t)) {
+                (Some(notify), Some(reason)) => {
+                   notify.take().notify_data(reason);
+                }
+                _ => {}
+            }
+            None::<std::future::Ready<_>>
+        })
+    }
+
+    /// Read periodically using the given async closure, spawning it off if in sync context.
+    ///
+    /// The closure is responsible for change notification.
+    pub fn read_refresh_async<F, Fut>(&self, rt : &Runtime, mut do_read : F)
+        where F : FnMut(&T) -> Fut + 'static,
+            Fut : Future<Output=()> + 'static
+    {
+        self._read_refresh(rt, move |_n, t| {
+            Some(do_read(t))
+        });
+    }
+
+    fn _read_refresh<F, Fut>(&self, rt : &Runtime, mut do_read : F)
+        where F : FnMut(Option<&Cell<NotifierList>>, &T) -> Option<Fut> + 'static,
+            Fut : Future<Output=()> + 'static
+    {
+        let now = Instant::now();
+        self.shared.0.take_in(|notify| notify.add(rt));
+        if self.period > 0.0 {
+            let last = self.shared.1.get();
+            if let Some(last) = last {
+                // Read a new values if we are currently redrawing and it's at least 90% of the
+                // deadline.  This avoids waking up several times in a row to update each of a
+                // group of items that have almost the same deadline.
+                let early = last + Duration::from_secs_f64(self.period * 0.9);
+                if early > now {
+                    // just keep the timer active
+                    return;
+                }
+            }
+            // timer has expired, we should read
+        } else if self.shared.1.get().is_some() {
+            // one-shot read is already done
+            return;
+        }
+
+        self.shared.1.set(Some(now));
+        let fut = do_read(None, &self.shared.2);
+        if self.period > 0.0 {
+            let weak = Rc::downgrade(&self.shared);
+            let period = self.period;
+
+            let (task, rh) = async move {
+                match fut {
+                    Some(fut) => fut.await,
+                    None => {}
+                }
+                loop {
+                    tokio::time::sleep(Duration::from_secs_f64(period)).await;
+                    let shared = match weak.upgrade() {
+                        Some(v) => v,
+                        None => return,
+                    };
+                    // don't read uselessly if nobody is listening.  This never triggers on the
+                    // first iteration as we added a listener at the start of the function, but if
+                    // the first wakeup does not re-read, then we exit before making a second read.
+                    // When someone starts reading again, last_read value will be old and we will
+                    // spawn a new timer.
+                    if !shared.0.take_in(|n| n.is_active()) {
+                        return;
+                    }
+                    shared.1.set(Some(Instant::now()));
+                    let fut = do_read(Some(&shared.0), &shared.2);
+                    match fut {
+                        Some(fut) => fut.await,
+                        None => {}
+                    }
+                }
+            }.remote_handle();
+            self.timer.set(Some(rh));
+            spawn_noerr(task);
+        } else if let Some(fut) = fut {
+            spawn_noerr(fut);
+        }
+    }
+}
+
 /// Type-specific part of an [Item]
 #[derive(Debug)]
 pub enum Module {
@@ -234,18 +350,14 @@ pub enum Module {
     Clock {
         format : Box<str>,
         zone : Box<str>,
+        timer : Cell<Option<RemoteHandle<()>>>,
     },
     #[cfg(feature="dbus")]
     DbusCall {
-        value : Rc<DbusValue>,
-        poll : f64,
-        last_read : Cell<Option<Instant>>,
+        poll : Periodic<Rc<DbusValue>>,
     },
     Disk {
-        path : Box<str>,
-        poll : f64,
-        last_read : Cell<Option<Instant>>,
-        contents : Cell<libc::statvfs>,
+        poll : Periodic<(Box<str>, Cell<libc::statvfs>)>,
     },
     Eval {
         expr : EvalExpr,
@@ -300,11 +412,8 @@ pub enum Module {
         target : Box<str>,
     },
     ReadFile {
-        name : Box<str>,
         on_err : Box<str>,
-        poll : f64,
-        last_read : Cell<Option<Instant>>,
-        contents : Cell<String>,
+        poll : Periodic<(Box<str>, Cell<Option<String>>)>,
     },
     Regex {
         regex : regex::Regex,
@@ -381,7 +490,7 @@ impl Module {
             Some("clock") => {
                 let format = value.get("format").and_then(|v| v.as_str()).unwrap_or("%H:%M").into();
                 let zone = value.get("timezone").and_then(|v| v.as_str()).unwrap_or("").into();
-                Module::Clock { format, zone }
+                Module::Clock { format, zone, timer : Default::default() }
             }
             #[cfg(feature="dbus")]
             Some("dbus") => {
@@ -415,7 +524,6 @@ impl Module {
                     }
                 }
 
-                let poll = toml_to_f64(value.get("poll")).unwrap_or(0.0);
                 let rc = Rc::new(DbusValue {
                     bus_name, path, interface, member, args,
                     value : RefCell::new(None),
@@ -474,13 +582,17 @@ impl Module {
                     }
                     None => {}
                 }
-                Module::DbusCall { value : rc, poll, last_read: Cell::default() }
+                let poll = Periodic::new(toml_to_f64(value.get("poll")).unwrap_or(0.0), rc);
+                Module::DbusCall { poll }
             }
             Some("disk") => {
                 let path = value.get("path").and_then(|v| v.as_str()).unwrap_or("/").into();
-                let poll = toml_to_f64(value.get("poll")).unwrap_or(60.0);
                 let v : libc::statvfs = unsafe { std::mem::zeroed() };
-                Module::Disk { path, poll, last_read: Cell::default(), contents : Cell::new(v) }
+                let poll = Periodic::new(
+                    toml_to_f64(value.get("poll")).unwrap_or(60.0),
+                    (path, Cell::new(v))
+                );
+                Module::Disk { poll }
             }
             Some("eval") => {
                 match value.get("expr")
@@ -655,9 +767,12 @@ impl Module {
                     }
                 };
                 let on_err = value.get("on-err").and_then(|v| v.as_str()).unwrap_or_default().into();
-                let poll = toml_to_f64(value.get("poll")).unwrap_or(60.0);
+                let poll = Periodic::new(
+                    toml_to_f64(value.get("poll")).unwrap_or(60.0),
+                    (name, Cell::new(None)),
+                );
                 Module::ReadFile {
-                    name, on_err, poll, last_read: Cell::default(), contents : Cell::default()
+                    on_err, poll,
                 }
             }
             Some("sway-mode") => {
@@ -788,26 +903,6 @@ impl Module {
         }
     }
 
-    fn should_read_now(poll : f64, last_read : &Cell<Option<Instant>>, rt : &Runtime, who : &'static str) -> bool {
-        let now = Instant::now();
-        if poll > 0.0 {
-            let last = last_read.get();
-            if let Some(last) = last {
-                let next = last + Duration::from_secs_f64(poll);
-                let early = last + Duration::from_secs_f64(poll * 0.9);
-                if early > now {
-                    rt.set_wake_at(next, who);
-                    return false;
-                }
-            }
-            rt.set_wake_at(now + Duration::from_secs_f64(poll), who);
-        } else if last_read.get().is_some() {
-            return false;
-        }
-        last_read.set(Some(now));
-        true
-    }
-
     /// Read the value of a variable
     ///
     /// This is identical to read_in, but returns a String instead of using a callback closure.
@@ -880,11 +975,14 @@ impl Module {
                 rv.pop();
                 f(Value::Owned(rv))
             },
-            Module::Clock { format, zone } => {
+            Module::Clock { format, zone, timer } => {
                 let real_format = rt.format_or(&format, &name).into_text();
                 let real_zone = rt.format_or(&zone, &name).into_text();
 
-                let now = chrono::Utc::now();
+                // offset by 5ms as a (low) estimate of the frame rate
+                // this means we might rendering about 4ms prior to the actual tick
+                let now = chrono::Utc::now() + chrono::Duration::milliseconds(5);
+                let inow = Instant::now();
                 let subsec = chrono::Timelike::nanosecond(&now) as u64;
                 let next_sec = now + chrono::Duration::seconds(1);
                 let (value, nv);
@@ -904,6 +1002,8 @@ impl Module {
                     }
                 }
 
+                // Set a timer to expire when the subsecond offset will be zero
+                // add another 1ms delay because epoll only gets 1ms granularity
                 let delay;
                 if value != nv {
                     // we need to tick every second
@@ -914,30 +1014,34 @@ impl Module {
                     let sec = chrono::Timelike::second(&now) as u64;
                     delay = (1_000_000_000 * (60 - sec) + 999_999).checked_sub(subsec);
                 }
-                let wake = Instant::now() + delay.map_or(Duration::from_secs(1), Duration::from_nanos);
-
-                // Set a timer to expire when the subsecond offset will be zero
-                // add another 1ms delay because epoll only gets 1ms granularity
-                rt.set_wake_at(wake, "clock");
+                let wake = inow + delay.map_or(Duration::from_secs(1), Duration::from_nanos);
+                let mut notify = NotifierList::active(rt);
+                let (task, rh) = async move {
+                    tokio::time::sleep_until(wake.into()).await;
+                    notify.notify_data("clock");
+                }.remote_handle();
+                timer.set(Some(rh));
+                spawn_noerr(task);
 
                 f(Value::Owned(value))
             }
             #[cfg(feature="dbus")]
-            Module::DbusCall { value, poll, last_read } => {
-                if Self::should_read_now(*poll, last_read, rt, "dbus") {
-                    value.call_now();
-                }
-                value.read_in(key, rt, f)
+            Module::DbusCall { poll } => {
+                poll.read_refresh_async(rt, move |rc| {
+                    rc.clone().do_call()
+                });
+                poll.data().read_in(key, rt, f)
             },
-            Module::Disk { path, poll, last_read, contents } => {
-                if Self::should_read_now(*poll, last_read, rt, "disk") {
+            Module::Disk { poll } => {
+                poll.read_refresh(rt, |(path, contents)| {
                     let cstr = std::ffi::CString::new(path.as_bytes()).unwrap();
                     let rv = unsafe { libc::statvfs(cstr.as_ptr(), contents.as_ptr()) };
                     if rv != 0 {
                         warn!("Could not read disk at '{}': {}", path, std::io::Error::last_os_error());
                     }
-                }
-                let vfs = contents.get();
+                    Some(path)
+                });
+                let vfs = poll.data().1.get();
                 match key {
                     "size" => f(Value::Float((vfs.f_frsize * vfs.f_blocks) as f64)),
                     "free" => f(Value::Float((vfs.f_bsize * vfs.f_bfree) as f64)),
@@ -1116,25 +1220,37 @@ impl Module {
             Module::None => f(Value::Null),
             #[cfg(feature="pulse")]
             Module::Pulse { target } => pulse::read_in(name, target, key, rt, f),
-            Module::ReadFile { name, on_err, poll, last_read, contents } => {
+            Module::ReadFile { on_err, poll } => {
                 use std::io::Read;
-                if Self::should_read_now(*poll, last_read, rt, "read-file") {
+                poll.read_refresh(rt, move |(name, contents)| {
                     let mut v = String::with_capacity(4096);
                     match std::fs::File::open(&**name).and_then(|mut f| f.read_to_string(&mut v)) {
                         Ok(_len) => {
-                            contents.set(v);
+                            if contents.take_in(|prev| Some(&v) == prev.as_ref()) {
+                                None
+                            } else {
+                                contents.set(Some(v));
+                                Some(name)
+                            }
                         }
                         Err(e) => {
                             debug!("Could not read {}: {}", name, e);
-                            let v = rt.format_or(&on_err, &name).into_text().into();
-                            contents.set(v);
+                            if contents.take().is_some() {
+                                Some(name)
+                            } else {
+                                None
+                            }
                         }
                     }
-                }
+                });
+                let (_, contents) = poll.data();
                 if key == "raw" {
-                    contents.take_in(|s| f(Value::Borrow(s)))
+                    contents.take_in(|s| f(s.as_deref().map_or(Value::Null, Value::Borrow)))
                 } else {
-                    contents.take_in(|s| f(Value::Borrow(s.trim())))
+                    contents.take_in(|s| match s {
+                        Some(s) => f(Value::Borrow(s.trim())),
+                        None => f(rt.format_or(&on_err, &name)),
+                    })
                 }
             }
             Module::Regex { regex, text, replace } => {
@@ -1371,150 +1487,154 @@ impl Drop for DbusValue {
 
 #[cfg(feature="dbus")]
 impl DbusValue {
-    fn call_now(self : &Rc<Self>) {
-        let me = self.clone();
+    fn call_now(self : Rc<Self>) {
         spawn_noerr(async move {
-            use toml::value::Value;
-            let bus = SessionDBus::get();
-            let proxy = dbus::nonblock::Proxy::new(&*me.bus_name, &*me.path, Duration::from_secs(30), &bus.local);
-            let mut api = None;
-            if !me.args.iter().all(Value::is_str) {
-                api = me.sig.take_in(|s| s.clone());
-                if api.is_none() {
-                    use dbus::nonblock::stdintf::org_freedesktop_dbus::Introspectable;
-                    match proxy.introspect().await {
-                        Ok(xml) => {
-                            let mut reader = xml::EventReader::from_str(&xml);
-                            let mut sig = String::new();
-                            let mut in_iface = false;
-                            let mut in_method = false;
-                            loop {
-                                use xml::reader::XmlEvent;
-                                match reader.next() {
-                                    Ok(XmlEvent::StartElement { name, attributes, .. })
-                                        if name.local_name == "interface" =>
-                                    {
-                                        in_iface = attributes.iter().any(|attr| {
-                                            attr.name.local_name == "name" &&
-                                            attr.value == &*me.interface
-                                        });
-                                    }
-                                    Ok(XmlEvent::EndElement { name })
-                                        if name.local_name == "interface" =>
-                                    {
-                                        in_iface = false;
-                                    }
-                                    Ok(XmlEvent::StartElement { name, attributes, .. })
-                                        if name.local_name == "method" =>
-                                    {
-                                        in_method = attributes.iter().any(|attr| {
-                                            attr.name.local_name == "name" &&
-                                            attr.value == &*me.member
-                                        });
-                                    }
-                                    Ok(XmlEvent::EndElement { name })
-                                        if name.local_name == "interface" =>
-                                    {
-                                        in_method = false;
-                                    }
-                                    Ok(XmlEvent::StartElement { name, attributes, .. })
-                                        if in_iface && in_method &&
-                                            name.local_name == "arg" &&
-                                            attributes.iter().any(|attr| {
-                                                attr.name.local_name == "direction" &&
-                                                attr.value == "in"
-                                            }) =>
-                                    {
-                                        for attr in attributes {
-                                            if attr.name.local_name == "type" {
-                                                sig.push_str(&attr.value);
-                                                sig.push_str(",");
-                                            }
+            self.do_call().await;
+        });
+    }
+
+    async fn do_call(self : Rc<Self>) {
+        use toml::value::Value;
+        let bus = SessionDBus::get();
+        let proxy = dbus::nonblock::Proxy::new(&*self.bus_name, &*self.path, Duration::from_secs(30), &bus.local);
+        let mut api = None;
+        if !self.args.iter().all(Value::is_str) {
+            api = self.sig.take_in(|s| s.clone());
+            if api.is_none() {
+                use dbus::nonblock::stdintf::org_freedesktop_dbus::Introspectable;
+                match proxy.introspect().await {
+                    Ok(xml) => {
+                        let mut reader = xml::EventReader::from_str(&xml);
+                        let mut sig = String::new();
+                        let mut in_iface = false;
+                        let mut in_method = false;
+                        loop {
+                            use xml::reader::XmlEvent;
+                            match reader.next() {
+                                Ok(XmlEvent::StartElement { name, attributes, .. })
+                                    if name.local_name == "interface" =>
+                                {
+                                    in_iface = attributes.iter().any(|attr| {
+                                        attr.name.local_name == "name" &&
+                                        attr.value == &*self.interface
+                                    });
+                                }
+                                Ok(XmlEvent::EndElement { name })
+                                    if name.local_name == "interface" =>
+                                {
+                                    in_iface = false;
+                                }
+                                Ok(XmlEvent::StartElement { name, attributes, .. })
+                                    if name.local_name == "method" =>
+                                {
+                                    in_method = attributes.iter().any(|attr| {
+                                        attr.name.local_name == "name" &&
+                                        attr.value == &*self.member
+                                    });
+                                }
+                                Ok(XmlEvent::EndElement { name })
+                                    if name.local_name == "interface" =>
+                                {
+                                    in_method = false;
+                                }
+                                Ok(XmlEvent::StartElement { name, attributes, .. })
+                                    if in_iface && in_method &&
+                                        name.local_name == "arg" &&
+                                        attributes.iter().any(|attr| {
+                                            attr.name.local_name == "direction" &&
+                                            attr.value == "in"
+                                        }) =>
+                                {
+                                    for attr in attributes {
+                                        if attr.name.local_name == "type" {
+                                            sig.push_str(&attr.value);
+                                            sig.push_str(",");
                                         }
                                     }
-                                    Ok(XmlEvent::EndDocument) => break,
-                                    Ok(_) => {}
-                                    Err(e) => {
-                                        info!("Error introspecting {} {}: {}", me.bus_name, me.path, e);
-                                        *me.value.borrow_mut() = None;
-                                        return;
-                                    }
+                                }
+                                Ok(XmlEvent::EndDocument) => break,
+                                Ok(_) => {}
+                                Err(e) => {
+                                    info!("Error introspecting {} {}: {}", self.bus_name, self.path, e);
+                                    *self.value.borrow_mut() = None;
+                                    return;
                                 }
                             }
-                            sig.pop();
-                            api = Some(sig.into());
-                            me.sig.set(api.clone());
                         }
-                        Err(e) => {
-                            info!("Error introspecting {} {}: {}", me.bus_name, me.path, e);
-                            *me.value.borrow_mut() = None;
-                            return;
-                        }
-                    };
-                }
+                        sig.pop();
+                        api = Some(sig.into());
+                        self.sig.set(api.clone());
+                    }
+                    Err(e) => {
+                        info!("Error introspecting {} {}: {}", self.bus_name, self.path, e);
+                        *self.value.borrow_mut() = None;
+                        return;
+                    }
+                };
             }
+        }
 
-            struct A<'a>(&'a [toml::Value], Option<&'a str>);
-            impl dbus::arg::AppendAll for A<'_> {
-                fn append(&self, a: &mut dbus::arg::IterAppend<'_>) {
-                    use dbus::arg::Append;
-                    if let Some(sig) = self.1 {
-                        for (ty,arg) in sig.split(",").zip(self.0) {
-                            match ty {
-                                "s" => { arg.as_str().map(|s| s.append(a)); }
-                                "d" => {
-                                    arg.as_float()
-                                        .or_else(|| arg.as_integer().map(|i| i as f64))
-                                        .map(|f| f.append(a));
-                                }
-                                "y" => { arg.as_integer().map(|i| i as u8 ).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
-                                "n" => { arg.as_integer().map(|i| i as i16).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
-                                "q" => { arg.as_integer().map(|i| i as u16).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
-                                "i" => { arg.as_integer().map(|i| i as i32).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
-                                "u" => { arg.as_integer().map(|i| i as u32).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
-                                "x" => { arg.as_integer().map(|i| i as i64).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
-                                "t" => { arg.as_integer().map(|i| i as u64).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
-                                "b" => {
-                                    arg.as_bool()
-                                        .or_else(|| arg.as_integer().map(|i| i != 0))
-                                        .or_else(|| arg.as_float().map(|i| i != 0.0))
-                                        .map(|b| b.append(a));
-                                }
-                                _ => {
-                                    info!("Unsupported dbus argument type '{}'", ty);
-                                }
+        struct A<'a>(&'a [toml::Value], Option<&'a str>);
+        impl dbus::arg::AppendAll for A<'_> {
+            fn append(&self, a: &mut dbus::arg::IterAppend<'_>) {
+                use dbus::arg::Append;
+                if let Some(sig) = self.1 {
+                    for (ty,arg) in sig.split(",").zip(self.0) {
+                        match ty {
+                            "s" => { arg.as_str().map(|s| s.append(a)); }
+                            "d" => {
+                                arg.as_float()
+                                    .or_else(|| arg.as_integer().map(|i| i as f64))
+                                    .map(|f| f.append(a));
+                            }
+                            "y" => { arg.as_integer().map(|i| i as u8 ).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
+                            "n" => { arg.as_integer().map(|i| i as i16).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
+                            "q" => { arg.as_integer().map(|i| i as u16).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
+                            "i" => { arg.as_integer().map(|i| i as i32).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
+                            "u" => { arg.as_integer().map(|i| i as u32).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
+                            "x" => { arg.as_integer().map(|i| i as i64).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
+                            "t" => { arg.as_integer().map(|i| i as u64).or_else(|| arg.as_float().map(|f| f as _)).map(|i| i.append(a)); }
+                            "b" => {
+                                arg.as_bool()
+                                    .or_else(|| arg.as_integer().map(|i| i != 0))
+                                    .or_else(|| arg.as_float().map(|i| i != 0.0))
+                                    .map(|b| b.append(a));
+                            }
+                            _ => {
+                                info!("Unsupported dbus argument type '{}'", ty);
                             }
                         }
-                    } else {
-                        for arg in self.0.iter() {
-                            match arg {
-                                Value::String(s) => s.append(a),
-                                _ => {
-                                    info!("Invalid dbus argument '{}'", arg);
-                                }
+                    }
+                } else {
+                    for arg in self.0.iter() {
+                        match arg {
+                            Value::String(s) => s.append(a),
+                            _ => {
+                                info!("Invalid dbus argument '{}'", arg);
                             }
                         }
                     }
                 }
             }
-            struct R(Box<[Box<dyn dbus::arg::RefArg>]>);
-            impl dbus::arg::ReadAll for R {
-                fn read(i: &mut dbus::arg::Iter<'_>) -> Result<Self, dbus::arg::TypeMismatchError> {
-                    Ok(R(i.collect()))
-                }
+        }
+        struct R(Box<[Box<dyn dbus::arg::RefArg>]>);
+        impl dbus::arg::ReadAll for R {
+            fn read(i: &mut dbus::arg::Iter<'_>) -> Result<Self, dbus::arg::TypeMismatchError> {
+                Ok(R(i.collect()))
             }
-            match proxy.method_call(&*me.interface, &*me.member, A(&me.args, api.as_deref())).await {
-                Ok(R(rv)) => {
-                    *me.value.borrow_mut() = Some(rv);
-                }
-                Err(e) => {
-                    info!("Error calling {}.{}: {}", me.interface, me.member, e);
-                    *me.value.borrow_mut() = None;
-                }
+        }
+        match proxy.method_call(&*self.interface, &*self.member, A(&self.args, api.as_deref())).await {
+            Ok(R(rv)) => {
+                *self.value.borrow_mut() = Some(rv);
             }
-            me.interested.take().notify_data("dbus-read");
-        });
+            Err(e) => {
+                info!("Error calling {}.{}: {}", self.interface, self.member, e);
+                *self.value.borrow_mut() = None;
+            }
+        }
+        self.interested.take().notify_data("dbus-read");
     }
+
     pub fn read_in<F : FnOnce(Value) -> R, R>(&self, key : &str, rt : &Runtime, f : F) -> R {
         self.interested.take_in(|i| i.add(rt));
         let value = self.value.borrow();

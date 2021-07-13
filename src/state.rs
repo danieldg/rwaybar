@@ -1,5 +1,3 @@
-use futures_util::future::select;
-use futures_util::pin_mut;
 use log::{debug,info,warn,error};
 use smithay_client_toolkit::output::with_output_info;
 use smithay_client_toolkit::output::OutputInfo;
@@ -46,6 +44,14 @@ impl Notifier {
 pub struct NotifierList(Option<Notifier>);
 
 impl NotifierList {
+    pub fn active(rt : &Runtime) -> Self {
+        NotifierList(Some(Notifier { inner : rt.notify.inner.clone() }))
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.0.is_some()
+    }
+
     /// Add the currently-rendering bar to this list
     ///
     /// The next call to notify_data will redraw the bar that was rendering when this was called.
@@ -67,29 +73,10 @@ pub struct Runtime {
     pub items : HashMap<String, Rc<Item>>,
     item_var : Rc<Item>,
     notify : Notifier,
-    refresh : Rc<RefreshState>,
     read_depth : Cell<u8>,
 }
 
-#[derive(Default)]
-struct RefreshState {
-    time : Cell<Option<Instant>>,
-    cause : Cell<&'static str>,
-    notify : tokio::sync::Notify,
-}
-
 impl Runtime {
-    pub fn set_wake_at(&self, wake : Instant, who : &'static str) {
-        match self.refresh.time.get() {
-            Some(t) if t < wake => return,
-            _ => ()
-        }
-
-        self.refresh.time.set(Some(wake));
-        self.refresh.cause.set(who);
-        self.refresh.notify.notify_one();
-    }
-
     pub fn get_recursion_handle(&self) -> Option<impl Sized + '_> {
         let depth = self.read_depth.get();
         if depth > 80 {
@@ -205,7 +192,6 @@ impl State {
                 fonts : Vec::new(),
                 items : Default::default(),
                 item_var : Rc::new(Module::new_current_item().into()),
-                refresh : Default::default(),
                 notify : Notifier { inner : notify_inner.clone() },
                 read_depth : Cell::new(0),
             },
@@ -214,28 +200,6 @@ impl State {
         };
 
         state.load_config(false)?;
-
-        let notify = Notifier { inner : state.runtime.notify.inner.clone() };
-        let refresh = state.runtime.refresh.clone();
-        spawn_noerr(async move {
-            loop {
-                use futures_util::future::Either;
-                if let Some(deadline) = refresh.time.get() {
-                    let sleep = tokio::time::sleep_until(deadline.into());
-                    let wake = refresh.notify.notified();
-                    pin_mut!(sleep, wake);
-                    match select(sleep, wake).await {
-                        Either::Left(_) => {
-                            refresh.time.set(None);
-                            notify.notify_data(refresh.cause.get());
-                        }
-                        _ => {}
-                    }
-                } else {
-                    refresh.notify.notified().await;
-                }
-            }
-        });
 
         let sync_cb = state.wayland.wl_display.sync();
         sync_cb.quick_assign(move |_sync, _event, mut data| {

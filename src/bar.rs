@@ -15,8 +15,9 @@ use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
 
 use crate::item::*;
 use crate::render::RenderTarget;
-use crate::state::{Runtime,State};
+use crate::state::{NotifierList,Runtime,State};
 use crate::wayland::{Popup,WaylandClient};
+use crate::util::spawn_noerr;
 
 pub struct BarPopup {
     pub wl : Popup,
@@ -290,7 +291,11 @@ impl Bar {
         if let Some(popup) = &mut self.popup {
             let vanish = Instant::now() + std::time::Duration::from_millis(100);
             popup.vanish = Some(vanish);
-            runtime.set_wake_at(vanish, "bar-hover");
+            let mut notify = NotifierList::active(runtime);
+            spawn_noerr(async move {
+                tokio::time::sleep_until(vanish.into()).await;
+                notify.notify_data("bar-hover");
+            });
         }
     }
 
