@@ -35,6 +35,7 @@ enum NotifyState {
 struct NotifierInner {
     waker : Cell<Option<task::Waker>>,
     state : Cell<NotifyState>,
+    data_update_seq : Cell<u64>,
 }
 
 impl Notifier {
@@ -60,8 +61,8 @@ impl NotifierList {
         NotifierList(Some(Notifier { inner : rt.notify.inner.clone() }))
     }
 
-    pub fn is_active(&self) -> bool {
-        self.0.is_some()
+    pub fn data_update_seq(&self) -> u64 {
+        self.0.as_ref().map(|n| n.inner.data_update_seq.get()).unwrap_or_default()
     }
 
     /// Add the currently-rendering bar to this list
@@ -182,6 +183,7 @@ impl State {
         let notify_inner = Rc::new(NotifierInner {
             waker : Cell::new(None),
             state : Cell::new(NotifyState::NewData),
+            data_update_seq : Cell::new(1),
         });
 
         let output_status_listener = wayland.add_output_listener(move |output, _oi, mut data| {
@@ -362,6 +364,9 @@ impl State {
             NotifyState::DrawOnly => return,
             NotifyState::NewData => {}
         }
+
+        let seq = self.runtime.notify.inner.data_update_seq.get();
+        self.runtime.notify.inner.data_update_seq.set(seq + 1);
 
         for bar in &mut self.bars {
             bar.dirty = true;

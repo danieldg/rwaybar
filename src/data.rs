@@ -219,21 +219,34 @@ impl ItemReference {
 #[derive(Debug)]
 pub struct Periodic<T> {
     period : f64,
-    shared : Rc<(Cell<NotifierList>, Cell<Option<Instant>>, T)>,
+    shared : Rc<PeriodicInner<T>>,
     timer : Cell<Option<RemoteHandle<()>>>,
 }
 
+#[derive(Debug)]
+struct PeriodicInner<T> {
+    interested : Cell<NotifierList>,
+    last_read : Cell<u64>,
+    last_update : Cell<Option<Instant>>,
+    data : T,
+}
+
 impl<T : 'static> Periodic<T> {
-    pub fn new(period : f64, t : T) -> Self {
+    pub fn new(period : f64, data : T) -> Self {
         Periodic {
             period,
-            shared: Rc::new((Cell::default(), Cell::default(), t)),
+            shared: Rc::new(PeriodicInner {
+                interested : Cell::default(),
+                last_read : Cell::default(),
+                last_update : Cell::default(),
+                data
+            }),
             timer: Cell::default(),
         }
     }
 
     pub fn data(&self) -> &T {
-        &self.shared.2
+        &self.shared.data
     }
 
     /// Read periodically using the given closure.
@@ -270,28 +283,33 @@ impl<T : 'static> Periodic<T> {
         where F : FnMut(Option<&Cell<NotifierList>>, &T) -> Option<Fut> + 'static,
             Fut : Future<Output=()> + 'static
     {
-        let now = Instant::now();
-        self.shared.0.take_in(|notify| notify.add(rt));
-        if self.period > 0.0 {
-            let last = self.shared.1.get();
-            if let Some(last) = last {
-                // Read a new values if we are currently redrawing and it's at least 90% of the
-                // deadline.  This avoids waking up several times in a row to update each of a
-                // group of items that have almost the same deadline.
-                let early = last + Duration::from_secs_f64(self.period * 0.9);
-                if early > now {
-                    // just keep the timer active
-                    return;
-                }
-            }
-            // timer has expired, we should read
-        } else if self.shared.1.get().is_some() {
-            // one-shot read is already done
+        let last_update = self.shared.last_update.get();
+        if self.period <= 0.0 && last_update.is_some() {
+            // the one-shot read is already done
             return;
         }
 
-        self.shared.1.set(Some(now));
-        let fut = do_read(None, &self.shared.2);
+        let now = Instant::now();
+        let seq = self.shared.interested.take_in(|notify| {
+            notify.add(rt);
+            notify.data_update_seq()
+        });
+        debug_assert_ne!(seq, 0);
+        self.shared.last_read.set(seq);
+        if let Some(last_update) = last_update {
+            // Read a new values if we are currently redrawing and it's at least 90% of the
+            // deadline.  This avoids waking up several times in a row to update each of a
+            // group of items that have almost the same deadline.
+            let early = last_update + Duration::from_secs_f64(self.period * 0.9);
+            if early > now {
+                // just keep the timer active
+                return;
+            }
+        }
+        // last_update was too long ago, update now
+
+        self.shared.last_update.set(Some(now));
+        let fut = do_read(None, &self.shared.data);
         if self.period > 0.0 {
             let weak = Rc::downgrade(&self.shared);
             let period = self.period;
@@ -307,22 +325,35 @@ impl<T : 'static> Periodic<T> {
                         Some(v) => v,
                         None => return,
                     };
-                    // don't read uselessly if nobody is listening.  This never triggers on the
-                    // first iteration as we added a listener at the start of the function, but if
-                    // the first wakeup does not re-read, then we exit before making a second read.
-                    // When someone starts reading again, last_read value will be old and we will
-                    // spawn a new timer.
-                    if !shared.0.take_in(|n| n.is_active()) {
+
+                    // Try to avoid reading if nobody is listening.
+                    //
+                    // If someone is actively reading our value, then last_read and interest_seq
+                    // will be equal (since the sequence update and initial draw attempt are in the
+                    // same task, which is not this one).  If last_read has fallen behind, then we
+                    // know that all items that contain our data are already marked dirty, and will
+                    // be refreshed as soon as they become visible (even without our polling there
+                    // to nudge them).  When that happens, the read will notice the value is
+                    // out-of-date and fix that immediately, along with starting a new timer task.
+                    //
+                    // If interest_seq is 0, then nobody has read the value since the last update
+                    // notification that we sent, so the same logic applies.
+                    let interest_seq = shared.interested.take_in(|n| n.data_update_seq());
+
+                    if interest_seq != shared.last_read.get() {
                         return;
                     }
-                    shared.1.set(Some(Instant::now()));
-                    let fut = do_read(Some(&shared.0), &shared.2);
+
+                    shared.last_update.set(Some(Instant::now()));
+                    let fut = do_read(Some(&shared.interested), &shared.data);
                     match fut {
                         Some(fut) => fut.await,
                         None => {}
                     }
                 }
             }.remote_handle();
+
+            // ensure we only have one task working to update the value
             self.timer.set(Some(rh));
             spawn_noerr(task);
         } else if let Some(fut) = fut {
