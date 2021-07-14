@@ -1,4 +1,5 @@
 use log::{debug,info,warn,error};
+use futures_util::future::poll_fn;
 use smithay_client_toolkit::output::with_output_info;
 use smithay_client_toolkit::output::OutputInfo;
 use smithay_client_toolkit::output::OutputStatusListener;
@@ -7,6 +8,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::time::Instant;
 use std::rc::{self,Rc};
+use std::task;
 use wayland_client::protocol::wl_output::WlOutput;
 
 use crate::bar::Bar;
@@ -22,21 +24,31 @@ struct Notifier {
     inner : Rc<NotifierInner>,
 }
 
+#[derive(Debug,Copy,Clone,PartialEq,Eq)]
+enum NotifyState {
+    Idle,
+    DrawOnly,
+    NewData,
+}
+
 #[derive(Debug)]
 struct NotifierInner {
-    notify : tokio::sync::Notify,
-    data_update : Cell<bool>,
+    waker : Cell<Option<task::Waker>>,
+    state : Cell<NotifyState>,
 }
 
 impl Notifier {
     pub fn notify_data(&self, who : &str) {
         debug!("{} triggered refresh", who);
-        self.inner.data_update.set(true);
-        self.inner.notify.notify_one();
+        self.inner.state.set(NotifyState::NewData);
+        self.inner.waker.take().map(|w| w.wake());
     }
 
     pub fn notify_draw_only(&self) {
-        self.inner.notify.notify_one();
+        if self.inner.state.get() == NotifyState::Idle {
+            self.inner.state.set(NotifyState::DrawOnly);
+            self.inner.waker.take().map(|w| w.wake());
+        }
     }
 }
 
@@ -168,8 +180,8 @@ pub struct State {
 impl State {
     pub fn new(mut wayland : WaylandClient) -> Result<Rc<RefCell<Self>>, Box<dyn Error>> {
         let notify_inner = Rc::new(NotifierInner {
-            notify : tokio::sync::Notify::new(),
-            data_update : Cell::new(true),
+            waker : Cell::new(None),
+            state : Cell::new(NotifyState::NewData),
         });
 
         let output_status_listener = wayland.add_output_listener(move |output, _oi, mut data| {
@@ -222,7 +234,13 @@ impl State {
         let state = rv.clone();
         spawn_noerr(async move {
             loop {
-                notify_inner.notify.notified().await;
+                poll_fn(|ctx| {
+                    notify_inner.waker.set(Some(ctx.waker().clone()));
+                    match notify_inner.state.get() {
+                        NotifyState::Idle => task::Poll::Pending,
+                        _ => task::Poll::Ready(()),
+                    }
+                }).await;
                 let mut state = state.borrow_mut();
                 state.draw_now();
             }
@@ -307,7 +325,7 @@ impl State {
                 v.data.init(k, &self.runtime, None);
             }
         }
-        self.runtime.notify.inner.data_update.set(true);
+        self.runtime.notify.inner.state.set(NotifyState::NewData);
 
         self.bars.clear();
         for output in self.wayland.env.get_all_outputs() {
@@ -338,15 +356,16 @@ impl State {
     }
 
     fn set_data(&mut self) {
-        // Propagate the data_update field to all bar dirty fields
-        if !self.runtime.notify.inner.data_update.get() {
-            return;
+        // Propagate new_data notifications to all bar dirty fields
+        match self.runtime.notify.inner.state.replace(NotifyState::Idle) {
+            NotifyState::Idle => return,
+            NotifyState::DrawOnly => return,
+            NotifyState::NewData => {}
         }
 
         for bar in &mut self.bars {
             bar.dirty = true;
         }
-        self.runtime.notify.inner.data_update.set(false);
     }
 
     pub fn draw_now(&mut self) {
