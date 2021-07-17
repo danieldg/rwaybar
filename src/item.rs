@@ -102,32 +102,63 @@ impl Align {
 /// A visible item in a bar
 #[derive(Debug)]
 pub struct Item {
-    pub config : Option<toml::Value>,
+    pub format : ItemFormat,
     pub data : Module,
     events : EventSink,
 }
 
-/// Formatting information (colors, width, etc) for an [Item]
-#[derive(Debug,Clone,Default)]
-pub struct Formatting<'a> {
-    font : Option<&'a FontMapped>,
-    font_size : Option<f32>,
-    fg_rgba : Option<(u16, u16, u16, u16)>,
-    bg_rgba : Option<(u16, u16, u16, u16)>,
-    stroke_rgba : Option<(u16, u16, u16, u16)>,
-    stroke_size : Option<f32>,
-    border : Option<(f32, f32, f32, f32)>,
-    border_rgba : Option<(u16, u16, u16, u16)>,
-    min_width : Option<Width>,
-    max_width : Option<Width>,
-    align : Align,
-    margin : Option<(f32, f32, f32, f32)>,
-    padding : Option<(f32, f32, f32, f32)>,
-    alpha : Option<u16>,
+/// Formatting information for a visible bar item
+#[derive(Debug,Default)]
+pub struct ItemFormat {
+    markup : bool,
+    cfg : Option<toml::Value>,
 }
 
-impl<'a> Formatting<'a> {
-    fn expand(config : &toml::Value, runtime : &'a Runtime) -> Self {
+impl ItemFormat {
+    pub fn from_toml(config : &toml::Value) -> Self {
+        let mut rv = Self::default();
+        rv.markup = config.get("markup").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        rv.cfg = config.as_table()
+            .map(|t| t.iter()
+                .filter(|(k,_)| match &***k {
+                    "align" |
+                    "bg" |
+                    "bg-alpha" |
+                    "border" |
+                    "border-alpha" |
+                    "border-color" |
+                    "fg" |
+                    "fg-alpha" |
+                    "font" |
+                    "halign" |
+                    "margin" |
+                    "max-width" |
+                    "min-width" |
+                    "padding" |
+                    "text-outline" |
+                    "text-outline-alpha" |
+                    "text-outline-width" |
+                    "valign" => true,
+                    _ => false,
+                })
+                .map(|(k,v)| (k.clone(), v.clone()))
+                .collect::<toml::map::Map<_,_>>())
+            .filter(|m| !m.is_empty())
+            .map(toml::Value::Table);
+
+        rv
+    }
+
+    pub fn is_trivial(&self) -> bool {
+        self.cfg.is_none()
+    }
+
+    pub fn setup_ctx<'a, 'p : 'a, 'c>(&self, ctx : &'a mut Render<'p, 'c>) -> (Formatting, Render<'a, 'c>) {
+        let z = toml::Value::Integer(0);
+        let config = self.cfg.as_ref().unwrap_or(&z);
+        let fmt = Formatting::expand(config, ctx.runtime);
+        let runtime = &ctx.runtime;
         let get = |key| {
             config.get(key).and_then(|v| match v.as_str() {
                 Some(fmt) => runtime.format(&fmt).or_else(|e| {
@@ -147,6 +178,7 @@ impl<'a> Formatting<'a> {
                 None => v.as_float().map(|v| v as f32).or_else(|| v.as_integer().map(|i| i as f32)),
             })
         };
+
         let mut align = Align {
             horiz : get("halign").and_then(Align::parse_hv),
             vert : get("valign").and_then(Align::parse_hv),
@@ -165,37 +197,76 @@ impl<'a> Formatting<'a> {
             let font = runtime.fonts.iter().find(|f| f.name == font);
             (font, size)
         });
+
+        let fg_rgba = Formatting::parse_rgba(get("fg"), get_f32("fg-alpha"));
         let stroke_rgba = Formatting::parse_rgba(get("text-outline"), get_f32("text-outline-alpha"));
         let stroke_size = get_f32("text-outline-width");
+
+        let render = Render {
+            canvas : &mut *ctx.canvas,
+            align : ctx.align.merge(&align),
+            font : font.unwrap_or(&ctx.font),
+            font_size : font_size.unwrap_or(ctx.font_size),
+            font_color : fg_rgba.unwrap_or(ctx.font_color),
+            text_stroke : stroke_rgba.or(ctx.text_stroke),
+            text_stroke_size : stroke_size.or(ctx.text_stroke_size),
+            ..*ctx
+        };
+        (fmt, render)
+    }
+}
+
+/// Formatting that must be applied after rendering an item
+#[derive(Debug,Clone,Default,PartialEq)]
+pub struct Formatting {
+    bg_rgba : Option<(u16, u16, u16, u16)>,
+    border : Option<(f32, f32, f32, f32)>,
+    border_rgba : Option<(u16, u16, u16, u16)>,
+    min_width : Option<Width>,
+    max_width : Option<Width>,
+    margin : Option<(f32, f32, f32, f32)>,
+    padding : Option<(f32, f32, f32, f32)>,
+}
+
+impl Formatting {
+    fn expand(config : &toml::Value, runtime : &Runtime) -> Self {
+        let get = |key| {
+            config.get(key).and_then(|v| match v.as_str() {
+                Some(fmt) => runtime.format(&fmt).or_else(|e| {
+                    warn!("Error expanding '{}' when rendering: {}", fmt, e);
+                    Err(())
+                }).ok().map(Value::into_text),
+                None => Some(v.to_string().into())
+            })
+        };
+
+        let get_f32 = |key| {
+            config.get(key).and_then(|v| match v.as_str() {
+                Some(fmt) => runtime.format(&fmt).or_else(|e| {
+                    warn!("Error expanding '{}' when rendering: {}", fmt, e);
+                    Err(())
+                }).ok().and_then(|v| v.parse_f32()),
+                None => v.as_float().map(|v| v as f32).or_else(|| v.as_integer().map(|i| i as f32)),
+            })
+        };
         let min_width = get("min-width").and_then(Width::from_str);
         let max_width = get("max-width").and_then(Width::from_str);
-        let alpha = get_f32("alpha").map(|f| {
-            f32::min(65535.0, f32::max(0.0, f * 65535.0)) as u16
-        });
 
         let margin = get("margin").and_then(Formatting::parse_trbl);
         let border = get("border").and_then(Formatting::parse_trbl);
         let padding = get("padding").and_then(Formatting::parse_trbl);
 
         let bg_rgba = Formatting::parse_rgba(get("bg"), get_f32("bg-alpha"));
-        let fg_rgba = Formatting::parse_rgba(get("fg"), get_f32("fg-alpha"));
         let border_rgba = Formatting::parse_rgba(get("border-color"), get_f32("border-alpha"));
 
         Self {
-            font,
-            font_size,
-            fg_rgba,
             bg_rgba,
-            stroke_rgba,
-            stroke_size,
             border,
             border_rgba,
             min_width,
             max_width,
-            align,
             margin,
             padding,
-            alpha,
         }
     }
 
@@ -305,28 +376,7 @@ impl<'a> Formatting<'a> {
     }
 
     fn is_boring(&self) -> bool {
-        self.fg_rgba.is_none() &&
-        self.bg_rgba.is_none() &&
-        self.border.is_none() &&
-        self.border_rgba.is_none() &&
-        self.min_width.is_none() &&
-        self.max_width.is_none() &&
-        self.margin.is_none() &&
-        self.padding.is_none() &&
-        self.alpha.is_none()
-    }
-
-    fn setup_ctx<'p : 'a, 'c>(&'a self, ctx : &'a mut Render<'p, 'c>) -> Render<'a, 'c> {
-        Render {
-            canvas : &mut *ctx.canvas,
-            align : ctx.align.merge(&self.align),
-            font : self.font.unwrap_or(&ctx.font),
-            font_size : self.font_size.unwrap_or(ctx.font_size),
-            font_color : self.fg_rgba.unwrap_or(ctx.font_color),
-            text_stroke : self.stroke_rgba.or(ctx.text_stroke),
-            text_stroke_size : self.stroke_size.or(ctx.text_stroke_size),
-            ..*ctx
-        }
+        *self == Self::default()
     }
 }
 
@@ -495,7 +545,7 @@ impl EventSink {
 impl From<Module> for Item {
     fn from(data : Module) -> Self {
         Self {
-            config : None,
+            format : ItemFormat::default(),
             events : EventSink::default(),
             data
         }
@@ -505,7 +555,7 @@ impl From<Module> for Item {
 impl Item {
     pub fn none() -> Self {
         Self {
-            config : None,
+            format : ItemFormat::default(),
             events : EventSink::default(),
             data : Module::none(),
         }
@@ -517,12 +567,12 @@ impl Item {
         let center = Rc::new(cfg.get("center").map_or_else(Item::none, Item::from_toml_ref));
 
         Item {
+            events : EventSink::from_toml(&cfg),
+            format : ItemFormat::from_toml(&cfg),
             data : Module::Bar {
                 left, center, right,
-                config : cfg.clone(),
+                config : cfg,
             },
-            events : EventSink::from_toml(&cfg),
-            config : Some(cfg),
         }
     }
 
@@ -542,6 +592,7 @@ impl Item {
         if let Some(array) = value.as_array() {
             return Module::Group {
                 items : array.iter().map(Item::from_toml_ref).map(Rc::new).collect(),
+                condition : None,
                 tooltip : None,
                 spacing : "".into(),
             }.into();
@@ -555,8 +606,8 @@ impl Item {
             }
         }
         Item {
-            config : Some(value.clone()),
             events : EventSink::from_toml(value),
+            format : ItemFormat::from_toml(value),
             data,
         }
     }
@@ -564,14 +615,12 @@ impl Item {
     pub fn render(self : &Rc<Self>, parent_ctx : &mut Render) -> EventSink {
         let mut rv = self.events.clone();
 
-        let format = match self.config.as_ref().map(|cfg| Formatting::expand(cfg, &parent_ctx.runtime)) {
-            Some(f) => f,
-            None => {
-                self.render_inner(parent_ctx, &mut rv);
-                return rv;
-            }
-        };
-        let mut ctx = format.setup_ctx(parent_ctx);
+        if self.format.is_trivial() {
+            self.render_inner(parent_ctx, &mut rv);
+            return rv;
+        }
+
+        let (format, mut ctx) = self.format.setup_ctx(parent_ctx);
         if format.is_boring() {
             self.render_inner(&mut ctx, &mut rv);
             let (x,y) = (ctx.render_pos, ctx.render_ypos);
@@ -632,7 +681,7 @@ impl Item {
         if child_render_width < min_width {
             // child is smaller than the box; align it
             let expand = min_width - child_render_width;
-            match format.align.horiz.or(ctx.align.horiz) {
+            match ctx.align.horiz {
                 Some(f) => {
                     inner_x_offset = expand * f;
                     let x0 = inner_clip.0.floor() as usize;
@@ -766,11 +815,8 @@ impl Item {
                     None => {}
                 });
             }
-            Module::Group { items, tooltip, spacing } => {
-                if let Some(cond) = self.config.as_ref()
-                    .and_then(|c| c.get("condition"))
-                    .and_then(|v| v.as_str())
-                {
+            Module::Group { condition, items, tooltip, spacing } => {
+                if let Some(cond) = condition {
                     if !cond.is_empty() {
                         match ctx.runtime.format(cond) {
                             Ok(v) if v.as_bool() => {},
@@ -847,7 +893,7 @@ impl Item {
                 rv.merge(left_ev);
 
                 let mut group = Render {
-                    canvas : &mut canvas, 
+                    canvas : &mut canvas,
                     render_extents,
                     render_pos : 0.0,
                     render_ypos : None,
@@ -907,16 +953,14 @@ impl Item {
             }
             Module::Icon { name, fallback, tooltip } => {
                 let start_pos = ctx.render_pos;
-                let markup = self.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
+                let markup = self.format.markup;
                 let name = ctx.runtime.format_or(name, ctx.err_name).into_text();
                 match icon::render(ctx, &name) {
                     Ok(()) => {},
                     Err(()) => {
                         let value = ctx.runtime.format_or(fallback, ctx.err_name).into_owned();
                         let mut item : Item = Module::new_value(value).into();
-                        if markup {
-                            item.config = self.config.clone();
-                        }
+                        item.format.markup = markup;
                         Rc::new(item).render(ctx);
                     }
                 }
@@ -939,7 +983,7 @@ impl Item {
 
             // All other modules are rendered as text
             _ => {
-                let markup = self.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
+                let markup = self.format.markup;
                 let text = self.data.read_to_owned(ctx.err_name, "text", &ctx.runtime).into_text();
                 let main_scale = ctx.font.scale_from_pt(ctx.font_size);
                 let main_font = ctx.font.as_ref();
@@ -1099,7 +1143,7 @@ impl PopupDesc {
                     return;
                 }
 
-                let markup = source.config.as_ref().and_then(|c| c.get("markup")).and_then(|v| v.as_bool()).unwrap_or(false);
+                let markup = source.format.markup;
 
                 let (width, height) = render_font(ctx.canvas, ctx.font, ctx.font_size, ctx.font_color, &ctx.runtime, (2.0, 2.0), &value, markup);
                 ctx.render_pos = width + 4.0;

@@ -412,6 +412,7 @@ pub enum Module {
         tooltip : Option<Rc<Item>>,
     },
     Group {
+        condition : Option<Box<str>>,
         items : Vec<Rc<Item>>,
         tooltip : Option<Rc<Item>>,
         spacing : Box<str>,
@@ -707,6 +708,7 @@ impl Module {
             Some("group") => {
                 let spacing = toml_to_string(value.get("spacing")).unwrap_or_default().into();
                 let tooltip = value.get("tooltip").map(Item::from_toml_format).map(Rc::new);
+                let condition = toml_to_string(value.get("condition")).map(Into::into);
                 let items = [value.get("item"), value.get("items")]
                     .iter()
                     .filter_map(Option::as_deref)
@@ -717,6 +719,7 @@ impl Module {
                     .collect();
 
                 Module::Group {
+                    condition,
                     items,
                     tooltip,
                     spacing,

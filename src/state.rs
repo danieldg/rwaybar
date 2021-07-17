@@ -440,14 +440,9 @@ impl State {
                 table.insert("name".into(), data.name.clone().into());
             }
 
-            let bar = Bar::new(&self.wayland, &output, data.scale_factor, cfg, i);
+            let bar = Bar::new(&self.wayland, &output, &data, cfg, i);
             self.bars.retain(|bar| {
-                bar.cfg_index != i ||
-                    bar.item.config
-                        .as_ref()
-                        .and_then(|c| c.get("name"))
-                        .and_then(|n| n.as_str())
-                    != Some(&data.name)
+                bar.cfg_index != i || &*bar.name != data.name
             });
             self.bars.push(bar);
             self.wayland.flush();

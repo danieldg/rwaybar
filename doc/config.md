@@ -70,7 +70,6 @@ All formatting values are subject to [text expansion](#text-expansion).
 Key | Value | Details
 ----|-------|---------
 `align` | `north`, `south`, `east`, `west`, `center` | Simple alignment of the item.  See the `halign` and `valign` properties for more control.
-`alpha` | `0.7` (70% opaque) | Applies transparency to the block as a whole - text, images, border, and background.  This is most useful on either the `bar` as a whole or on items like `tray` that don't have their own alpha settings.
 `bg` | `red` or `#ff0000` | Background color (without transparency)
 `bg-alpha` | 0.2 (20% opaque) | Background opacity
 `border` | `1 2 3 4` (pixels) | Border width for the top, right, bottom, and left sides.  Like CSS, you can omit some of the values if they are the same.

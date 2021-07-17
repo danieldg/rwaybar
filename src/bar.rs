@@ -3,6 +3,7 @@ use std::convert::TryInto;
 use std::time::Instant;
 use std::rc::Rc;
 use raqote::DrawTarget;
+use smithay_client_toolkit::output::OutputInfo;
 use wayland_client::Attached;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -27,6 +28,7 @@ pub struct BarPopup {
 
 /// A single taskbar on a single output
 pub struct Bar {
+    pub name : Box<str>,
     pub surf : Attached<WlSurface>,
     pub ls_surf : Attached<ZwlrLayerSurfaceV1>,
     pub popup : Option<BarPopup>,
@@ -44,7 +46,8 @@ pub struct Bar {
 }
 
 impl Bar {
-    pub fn new(wayland : &WaylandClient, output : &WlOutput, scale : i32, cfg : toml::Value, cfg_index : usize) -> Bar {
+    pub fn new(wayland : &WaylandClient, output : &WlOutput, output_data : &OutputInfo, cfg : toml::Value, cfg_index : usize) -> Bar {
+        let scale = output_data.scale_factor;
         let ls : Attached<ZwlrLayerShellV1> = wayland.env.require_global();
         let surf : Attached<_> = wayland.env.create_surface();
         let ls_surf = ls.get_layer_surface(&surf, Some(output), Layer::Top, "bar".to_owned());
@@ -136,6 +139,7 @@ impl Bar {
         surf.commit();
 
         Bar {
+            name : output_data.name.clone().into(),
             surf,
             ls_surf : ls_surf.into(),
             item : Rc::new(Item::new_bar(cfg)),
