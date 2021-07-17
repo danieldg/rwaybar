@@ -14,11 +14,12 @@ use wayland_protocols::wlr::unstable::layer_shell::v1::client as layer_shell;
 use layer_shell::zwlr_layer_shell_v1::{ZwlrLayerShellV1, Layer};
 use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
 
+use crate::event::EventSink;
 use crate::item::*;
-use crate::render::RenderTarget;
+use crate::render::{Align,Render,RenderTarget};
 use crate::state::{NotifierList,Runtime,State};
-use crate::wayland::{Popup,WaylandClient};
 use crate::util::spawn_noerr;
+use crate::wayland::{Popup,WaylandClient};
 
 pub struct BarPopup {
     pub wl : Popup,

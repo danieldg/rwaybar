@@ -4,6 +4,7 @@ mod bar;
 mod data;
 #[cfg(feature="dbus")]
 mod dbus;
+mod event;
 mod font;
 mod icon;
 mod item;

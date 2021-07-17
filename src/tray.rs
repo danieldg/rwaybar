@@ -1,11 +1,13 @@
-use crate::util::{Cell,spawn};
-use crate::dbus::get as get_dbus;
-use crate::dbus::SigWatcherToken;
-use crate::dbus as dbus_util;
 use crate::data::{IterationItem,Value};
+use crate::dbus as dbus_util;
+use crate::dbus::SigWatcherToken;
+use crate::dbus::get as get_dbus;
+use crate::event::EventSink;
 use crate::font::render_font;
-use crate::item::{Item,Render,EventSink,PopupDesc};
+use crate::item::{Item,PopupDesc};
+use crate::render::Render;
 use crate::state::{Runtime,NotifierList};
+use crate::util::{Cell,spawn};
 use dbus::arg::{ArgType,RefArg,Variant};
 use dbus::channel::Sender;
 use dbus::message::{MatchRule,Message};
@@ -760,7 +762,8 @@ pub fn write(name : &str, owner : &str, path : &str, key : &str, value : Value, 
     let _ = (name, owner, path, key, value, rt);
 }
 
-pub fn do_click(owner : &str, path : &str, how : u32) {
+/// A click or scroll on the tray icon itself
+pub fn do_click(owner : &Rc<str>, path : &Rc<str>, how : u32) {
     let method = match how {
         0 => "Activate",
         1 => "ContextMenu",
@@ -769,21 +772,21 @@ pub fn do_click(owner : &str, path : &str, how : u32) {
         7 | 8 => "horizontal",
         _ => return,
     };
-    let owner = owner.to_owned();
-    let path = path.to_owned();
     DATA.with(|cell| {
         let tray = cell.get();
         let tray = tray.as_ref().unwrap();
         tray.items.take_in(|items| {
             for item in items {
-                if &*item.owner != owner || &*item.path != path {
+                if item.owner != *owner || item.path != *path {
                     continue;
                 }
+                let owner = owner.clone();
+                let path = path.clone();
                 let sni_path = if item.is_kde { "org.kde.StatusNotifierItem" } else { "org.freedesktop.StatusNotifierItem" };
                 let id = item.id.clone();
                 spawn("Tray click", async move {
                     let dbus = get_dbus();
-                    let proxy = Proxy::new(&owner, &path, Duration::from_secs(10), &dbus.local);
+                    let proxy = Proxy::new(&*owner, &*path, Duration::from_secs(10), &dbus.local);
                     debug!("Invoking {} on {}", method, id);
                     if how < 3 {
                         proxy.method_call(sni_path, method, (0i32,0i32)).await?;

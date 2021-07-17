@@ -1,103 +1,16 @@
-use crate::data::{Action,Module,ModuleContext,ItemReference,IterationItem,Value};
-use crate::state::Runtime;
-use crate::font::{FontMapped,draw_font_with,layout_font,render_font};
+//! Graphical rendering of an [Item]
+use crate::data::{Module,ModuleContext,ItemReference,IterationItem,Value};
+use crate::event::EventSink;
+use crate::font::{draw_font_with,layout_font,render_font};
 use crate::icon;
+use crate::render::{Render,Align,Width};
+use crate::state::Runtime;
 #[cfg(feature="dbus")]
 use crate::tray;
 use log::{debug,warn,error};
 use raqote::DrawTarget;
 use std::borrow::Cow;
 use std::rc::Rc;
-
-/// State available to an [Item] render function
-pub struct Render<'a, 'c> {
-    pub canvas : &'a mut DrawTarget<&'c mut [u32]>,
-
-    pub render_extents : (f32, f32, f32, f32),
-    pub render_pos : f32,
-    pub render_ypos : Option<f32>,
-    pub render_flex : bool,
-
-    pub font : &'a FontMapped,
-    pub font_size : f32,
-    pub font_color : (u16, u16, u16, u16),
-    pub text_stroke : Option<(u16, u16, u16, u16)>,
-    pub text_stroke_size : Option<f32>,
-
-    pub align : Align,
-    pub err_name : &'a str,
-    pub runtime : &'a Runtime,
-}
-
-#[derive(Debug,Clone,Copy,PartialEq)]
-enum Width {
-    /// Some fraction (0.0-1.0) of the total width
-    Fraction(f32),
-    /// Some number of pixels
-    Pixels(f32),
-}
-
-impl Width {
-    pub fn from_str(value : Cow<str>) -> Option<Self> {
-        if value.ends_with('%') {
-            let value = &value[..value.len() - 1];
-            let pct = value.parse::<f32>().ok()?;
-            return Some(Width::Fraction(pct / 100.0));
-        }
-        if value.contains('.') {
-            value.parse().ok().map(Width::Fraction)
-        } else {
-            value.parse().ok().map(Width::Pixels)
-        }
-    }
-}
-
-pub const MIDDLE : f32 = 0.5;
-
-#[derive(Default,Debug,Copy,Clone,PartialEq)]
-pub struct Align {
-    pub horiz : Option<f32>,
-    pub vert : Option<f32>,
-}
-
-impl Align {
-    pub fn bar_default() -> Self {
-        Align {
-            horiz : None,
-            vert : Some(MIDDLE),
-        }
-    }
-
-    pub fn parse_hv(value : Cow<str>) -> Option<f32> {
-        if value.ends_with('%') {
-            let value = &value[..value.len() - 1];
-            let pct = value.parse::<f32>().ok()?;
-            return Some(pct / 100.0);
-        }
-        value.parse().ok()
-    }
-
-    pub fn from_name(&mut self, value : Option<Cow<str>>) {
-        match value.as_deref() {
-            Some("north")  => *self = Align { horiz : Some(MIDDLE), vert : Some(0.0) },
-            Some("south")  => *self = Align { horiz : Some(MIDDLE), vert : Some(1.0) },
-            Some("east")   => *self = Align { horiz : Some(0.0), vert : Some(MIDDLE) },
-            Some("west")   => *self = Align { horiz : Some(1.0), vert : Some(MIDDLE) },
-            Some("center") => *self = Align { horiz : Some(MIDDLE), vert : Some(MIDDLE) },
-            Some("") | None => {}
-            Some(x) => {
-                error!("Unknown alignment {}", x);
-            }
-        }
-    }
-
-    pub fn merge(&self, child : &Self) -> Self {
-        Align {
-            horiz : child.horiz.or(self.horiz),
-            vert : child.vert.or(self.vert),
-        }
-    }
-}
 
 /// A visible item in a bar
 #[derive(Debug)]
@@ -380,168 +293,6 @@ impl Formatting {
     }
 }
 
-/// A single click action associated with the area that activates it
-#[derive(Debug,Clone)]
-struct EventListener {
-    x_min : f32,
-    x_max : f32,
-    buttons : u32,
-    item : Option<IterationItem>,
-    target : Action,
-}
-
-/// A list of [EventListener]s
-#[derive(Debug,Default,Clone)]
-pub struct EventSink {
-    handlers : Vec<EventListener>,
-    hovers : Vec<(f32, f32, PopupDesc)>,
-}
-
-impl EventSink {
-    fn from_toml(value : &toml::Value) -> Self {
-        let mut sink = EventSink::default();
-        sink.add_click(value.get("on-click"), 1 << 0);
-        sink.add_click(value.get("on-click-right"), 1 << 1);
-        sink.add_click(value.get("on-click-middle"), 1 << 2);
-        sink.add_click(value.get("on-click-back"), 1 << 3);
-        sink.add_click(value.get("on-click-backward"), 1 << 3);
-        sink.add_click(value.get("on-click-forward"), 1 << 4);
-        sink.add_click(value.get("on-scroll-up"), 1 << 5);
-        sink.add_click(value.get("on-scroll-down"), 1 << 6);
-        sink.add_click(value.get("on-vscroll"), 3 << 5);
-        sink.add_click(value.get("on-scroll-left"), 1 << 7);
-        sink.add_click(value.get("on-scroll-right"), 1 << 8);
-        sink.add_click(value.get("on-hscroll"), 3 << 7);
-        sink.add_click(value.get("on-scroll"), 15 << 5);
-        sink
-    }
-
-    fn add_click(&mut self, value : Option<&toml::Value>, buttons : u32) {
-        if let Some(value) = value {
-            self.handlers.push(EventListener {
-                x_min : 0.0,
-                x_max : 1e20,
-                buttons,
-                item : None,
-                target : Action::from_toml(value)
-            })
-        }
-    }
-
-    #[cfg(feature="dbus")]
-    pub fn from_tray(owner : Rc<str>, path : Rc<str>) -> Self {
-        let mut sink = EventSink::default();
-        sink.handlers.push(EventListener {
-            x_min : -1e20,
-            x_max : 1e20,
-            buttons : 7 | (15 << 5),
-            item : None,
-            target : Action::from_tray(owner, path),
-        });
-        sink
-    }
-
-    pub fn merge(&mut self, sink : Self) {
-        self.handlers.extend(sink.handlers);
-        self.hovers.extend(sink.hovers);
-    }
-
-    pub fn offset_clamp(&mut self, offset : f32, min : f32, max : f32) {
-        for h in &mut self.handlers {
-            h.x_min += offset;
-            h.x_max += offset;
-            if h.x_min < min {
-                h.x_min = min;
-            } else if h.x_min > max {
-                h.x_min = max;
-            }
-            if h.x_max < min {
-                h.x_max = min;
-            } else if h.x_max > max {
-                h.x_max = max;
-            }
-        }
-        for (x_min, x_max, _) in &mut self.hovers {
-            *x_min += offset;
-            *x_max += offset;
-            if *x_min < min {
-                *x_min = min;
-            } else if *x_min > max {
-                *x_min = max;
-            }
-            if *x_max < min {
-                *x_max = min;
-            } else if *x_max > max {
-                *x_max = max;
-            }
-        }
-    }
-
-    pub fn button(&mut self, x : f32, y : f32, button : u32, runtime : &mut Runtime) {
-        let _ = y;
-        for h in &mut self.handlers {
-            if x < h.x_min || x > h.x_max {
-                continue;
-            }
-            if (h.buttons & (1 << button)) == 0 {
-                continue;
-            }
-            if h.item.is_none() {
-                h.target.invoke(runtime, button);
-            } else {
-                let item_var = runtime.get_item_var();
-                item_var.set(h.item.clone());
-                h.target.invoke(runtime, button);
-                item_var.set(None);
-            }
-        }
-    }
-
-    #[cfg_attr(not(feature="dbus"), allow(unused))]
-    pub fn add_hover(&mut self, min : f32, max : f32, desc : PopupDesc) {
-        self.hovers.push((min, max, desc));
-    }
-
-    pub fn get_hover(&mut self, x : f32, y : f32) -> Option<(f32, f32, &mut PopupDesc)> {
-        let _ = y;
-        for &mut (min, max, ref mut text) in &mut self.hovers {
-            if x >= min && x < max {
-                return Some((min, max, text));
-            }
-        }
-        None
-    }
-
-    pub fn for_active_regions(&self, mut f : impl FnMut(f32, f32)) {
-        let mut ha = self.handlers.iter().peekable();
-        let mut ho = self.hovers.iter().peekable();
-        loop {
-            let a_min = ha.peek().map_or(f32::NAN, |e| e.x_min);
-            let o_min = ho.peek().map_or(f32::NAN, |e| e.0);
-            let min = f32::min(a_min, o_min);
-            let mut max;
-            if min == a_min {
-                max = ha.next().unwrap().x_max;
-            } else if min == o_min {
-                max = ho.next().unwrap().1;
-            } else {
-                // NaN
-                return;
-            }
-            loop {
-                if ha.peek().map_or(f32::NAN, |e| e.x_min) <= max + 1.0 {
-                    max = f32::max(max, ha.next().map_or(f32::NAN, |e| e.x_max));
-                } else if ho.peek().map_or(f32::NAN, |e| e.0) <= max + 1.0 {
-                    max = f32::max(max, ho.next().map_or(f32::NAN, |e| e.1));
-                } else {
-                    break;
-                }
-            }
-            f(min, max);
-        }
-    }
-}
-
 impl From<Module> for Item {
     fn from(data : Module) -> Self {
         Self {
@@ -788,9 +539,7 @@ impl Item {
         let mut rv = self.render(ctx);
         let x1 = ctx.render_pos;
         rv.offset_clamp(0.0, x0, x1);
-        for h in &mut rv.handlers {
-            h.item.get_or_insert_with(|| item.clone());
-        }
+        rv.set_item(item);
         ev.merge(rv);
         item_var.set(prev);
     }
@@ -829,7 +578,6 @@ impl Item {
                 }
                 let mut ypos = ctx.render_ypos.map(|p| (p, p));
                 let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse_f32()).unwrap_or(0.0);
-                let xstart = ctx.render_pos;
                 ctx.render_pos += spacing;
                 for item in items {
                     item.render_clamped(ctx, rv);
@@ -846,11 +594,10 @@ impl Item {
                 }
                 ctx.render_ypos.as_mut().map(|p| *p = ypos.unwrap().1);
                 if let Some(item) = tooltip {
-                    let xend = ctx.render_pos;
-                    rv.hovers.push((xstart, xend, PopupDesc::RenderItem {
+                    rv.add_tooltip(PopupDesc::RenderItem {
                         item : item.clone(),
                         iter : ctx.runtime.copy_item_var(),
-                    }));
+                    });
                 }
             }
             Module::FocusList { source, others, focused, spacing } => {
@@ -868,9 +615,7 @@ impl Item {
                     };
                     let x1 = ctx.render_pos;
                     ev.offset_clamp(0.0, x0, x1);
-                    for h in &mut ev.handlers {
-                        h.item.get_or_insert_with(|| item.clone());
-                    }
+                    ev.set_item(&item);
                     rv.merge(ev);
                     ctx.render_pos += spacing;
                 });
@@ -952,7 +697,6 @@ impl Item {
                 ctx.render_pos = clip_x1;
             }
             Module::Icon { name, fallback, tooltip } => {
-                let start_pos = ctx.render_pos;
                 let markup = self.format.markup;
                 let name = ctx.runtime.format_or(name, ctx.err_name).into_text();
                 match icon::render(ctx, &name) {
@@ -965,11 +709,10 @@ impl Item {
                     }
                 }
                 if !tooltip.is_empty() {
-                    let end_pos = ctx.render_pos;
-                    rv.hovers.push((start_pos, end_pos, PopupDesc::TextItem {
+                    rv.add_tooltip(PopupDesc::TextItem {
                         source : self.clone(),
                         iter : ctx.runtime.copy_item_var(),
-                    }));
+                    });
                 }
             },
             Module::SwayTree(tree) => {
@@ -1045,22 +788,21 @@ impl Item {
                     *yrec = ystart + height - main_scale * main_font.descender() as f32;
                 }
 
-                let xpos = xstart;
                 match &self.data {
                     Module::Formatted { tooltip : Some(item), .. } => {
-                        rv.hovers.push((xpos, xpos + width, PopupDesc::RenderItem {
+                        rv.add_tooltip(PopupDesc::RenderItem {
                             item : item.clone(),
                             iter : ctx.runtime.copy_item_var(),
-                        }));
+                        });
                     }
                     Module::Formatted { tooltip : None, .. } => {}
                     _ => {
                         let tt = self.data.read_to_owned(ctx.err_name, "tooltip", &ctx.runtime).into_text();
                         if !tt.is_empty() {
-                            rv.hovers.push((xpos, xpos + width, PopupDesc::TextItem {
+                            rv.add_tooltip(PopupDesc::TextItem {
                                 source : self.clone(),
                                 iter : ctx.runtime.copy_item_var(),
-                            }));
+                            });
                         }
                     }
                 }
@@ -1157,7 +899,15 @@ impl PopupDesc {
     #[cfg_attr(not(feature="dbus"), allow(unused))]
     pub fn button(&mut self, x : f64, y : f64, button : u32, runtime : &mut Runtime) {
         match self {
-            PopupDesc::RenderItem { .. } => { }
+            PopupDesc::RenderItem { item, iter } => {
+                if let Some(ii) = iter.as_ref() {
+                    let mut events = item.events.clone();
+                    events.set_item(ii);
+                    events.button(x as f32, y as f32, button, runtime);
+                } else {
+                    item.events.button(x as f32, y as f32, button, runtime);
+                }
+            }
             PopupDesc::TextItem { .. } => { }
             #[cfg(feature="dbus")]
             PopupDesc::Tray(tray) => tray.button(x, y, button, runtime),

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs::{self,File};
 use std::io;
 use std::path::{PathBuf,Component};
-use crate::item::Render;
+use crate::render::Render;
 
 thread_local! {
     static CACHE : RefCell<HashMap<(String, u32), Option<OwnedImage>>> = Default::default();
