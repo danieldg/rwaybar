@@ -61,7 +61,7 @@ impl Drop for TrayItem {
 
 #[derive(Debug,Default)]
 struct Tray {
-    reg_db : Cell<Vec<String>>,
+    reg_db : Cell<Vec<(String, bool)>>,
     items : Cell<Vec<TrayItem>>,
     interested : Cell<NotifierList>,
 }
@@ -89,7 +89,7 @@ impl Tray {
                     let tray = cell.get();
                     let tray = tray.as_ref().unwrap();
                     tray.reg_db.take_in(|reg_db| {
-                        reg_db.retain(|path| {
+                        reg_db.retain(|(path, _is_kde)| {
                             if let Some(pos) = path.find('/') {
                                 let owner = &path[..pos];
                                 if old == owner || name == owner {
@@ -122,12 +122,13 @@ impl Tray {
                 Some(iface @ "org.freedesktop.StatusNotifierWatcher") => {
                     match msg.member().as_deref() {
                         Some("RegisterStatusNotifierItem") => {
+                            let is_kde = iface == "org.kde.StatusNotifierWatcher";
                             if let Some(path) = msg.get1::<String>() {
                                 if path.starts_with('/') {
                                     let service = format!("{}{}", msg.sender().unwrap(), path);
                                     local.send(Message::new_signal("/StatusNotifierWatcher", iface, "StatusNotifierItemRegistered").unwrap()
                                         .append1(&service)).unwrap();
-                                    reg_db.push(service);
+                                    reg_db.push((service, is_kde));
                                     reg_db.sort();
                                     reg_db.dedup();
                                     rsp = Some(msg.return_with_args(()));
@@ -136,7 +137,7 @@ impl Tray {
                                     let service = format!("{}/StatusNotifierItem", path);
                                     local.send(Message::new_signal("/StatusNotifierWatcher", iface, "StatusNotifierItemRegistered").unwrap()
                                         .append1(&service)).unwrap();
-                                    reg_db.push(service);
+                                    reg_db.push((service, is_kde));
                                     reg_db.sort();
                                     reg_db.dedup();
                                     rsp = Some(msg.return_with_args(()));
@@ -157,14 +158,15 @@ impl Tray {
                     match msg.member().as_deref() {
                         Some("Get") => {
                             let (mut iface, prop) = msg.get2::<String,String>();
-                            match iface.as_deref() {
-                                Some("org.kde.StatusNotifierWatcher") |
-                                Some("org.freedesktop.StatusNotifierWatcher") => {}
-                                _ => iface = None,
-                            }
+                            let is_kde = match iface.as_deref() {
+                                Some("org.kde.StatusNotifierWatcher") => true,
+                                Some("org.freedesktop.StatusNotifierWatcher") => false,
+                                _ => { iface = None; false }
+                            };
                             match (iface, prop.as_deref()) {
                                 (Some(_), Some("RegisteredStatusNotifierItems")) => {
-                                    rsp = Some(msg.return_with_args((Variant(&*reg_db),)));
+                                    let db : Vec<_> = reg_db.iter().filter(|v| v.1 == is_kde).map(|v| &v.0).collect();
+                                    rsp = Some(msg.return_with_args((Variant(db),)));
                                 }
                                 (Some(_), Some("IsStatusNotifierHostRegistered")) => {
                                     rsp = Some(msg.return_with_args((Variant(true),)));
@@ -177,11 +179,15 @@ impl Tray {
                         }
                         Some("GetAll") => {
                             let iface = msg.get1::<String>();
-                            match iface.as_deref() {
-                                Some("org.kde.StatusNotifierWatcher") |
-                                Some("org.freedesktop.StatusNotifierWatcher") => {
+                            match match iface.as_deref() {
+                                Some("org.kde.StatusNotifierWatcher") => Some(true),
+                                Some("org.freedesktop.StatusNotifierWatcher") => Some(false),
+                                _ => None
+                            } {
+                                Some(is_kde) => {
+                                    let db : Vec<_> = reg_db.iter().filter(|v| v.1 == is_kde).map(|v| &v.0).collect();
                                     let rv : Vec<(String, Variant<&dyn RefArg>)> = vec![
-                                        ("RegisteredStatusNotifierItems".into(), Variant(&*reg_db)),
+                                        ("RegisteredStatusNotifierItems".into(), Variant(&db)),
                                         ("IsStatusNotifierHostRegistered".into(), Variant(&true)),
                                         ("ProtocolVersion".into(), Variant(&0i32)),
                                     ];
