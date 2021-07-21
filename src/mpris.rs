@@ -1,20 +1,15 @@
-use crate::dbus::get as get_dbus;
-use crate::dbus as dbus_util;
+use crate::dbus::DBus;
 use crate::data::{IterationItem,Value};
 use crate::state::{Runtime,NotifierList};
 use crate::util::{self,Cell};
-use dbus::message::Message;
-use dbus::nonblock::Proxy;
-use dbus::nonblock::stdintf::org_freedesktop_dbus::Properties;
-use dbus::nonblock::stdintf::org_freedesktop_dbus::PropertiesPropertiesChanged;
-use dbus::arg::Variant;
-use dbus::arg::RefArg;
 use once_cell::unsync::OnceCell;
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::error::Error;
 use std::rc::Rc;
-use std::time::Duration;
 use log::{debug,warn,error};
+use zvariant::Value as Variant;
+use zvariant::OwnedValue;
 
 #[derive(Debug,Eq,PartialEq,Copy,Clone)]
 enum PlayState {
@@ -39,7 +34,7 @@ struct Player {
     name : String,
     owner : String,
     playing : Option<PlayState>,
-    meta : Option<HashMap<String, Variant<Box<dyn RefArg>>>>,
+    meta : Option<HashMap<String, OwnedValue>>,
 }
 
 #[derive(Debug,Default)]
@@ -52,32 +47,78 @@ struct Inner {
 struct MediaPlayer2(Cell<Option<Inner>>);
 
 async fn initial_query(target : Rc<MediaPlayer2>, name : String) -> Result<(), Box<dyn Error>> {
-    let dbus = get_dbus();
-    let meta_bus = Proxy::new("org.freedesktop.DBus", "/org/freedesktop/DBus", Duration::from_secs(10), &dbus.local);
-    let (owner,) = meta_bus.method_call("org.freedesktop.DBus", "GetNameOwner", (&name,)).await?;
-    let player = Proxy::new(&name, "/org/mpris/MediaPlayer2", Duration::from_secs(10), &dbus.local);
-    let status : String = player.get("org.mpris.MediaPlayer2.Player", "PlaybackStatus").await?;
-    let playing = PlayState::parse(&status);
-    let meta = player.get("org.mpris.MediaPlayer2.Player", "Metadata").await?;
+    let dbus = DBus::get_session();
+    let owner : String = dbus.call(zbus::Message::method(
+        None,
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        Some("org.freedesktop.DBus"),
+        "GetNameOwner",
+        &(&name,)
+    )?).await?.body()?;
+
+    let rc = target.clone();
+    let no = owner.clone();
+    dbus.spawn_call_err(zbus::Message::method(
+        None,
+        Some(&name),
+        "/org/mpris/MediaPlayer2",
+        Some("org.freedesktop.DBus.Properties"),
+        "Get",
+        &("org.mpris.MediaPlayer2.Player", "PlaybackStatus")
+    )?, move |msg| {
+        let playing : Variant = msg.body()?;
+        let playing = match playing.downcast_ref() {
+            Some(playing) => PlayState::parse(playing),
+            _ => return Ok(()),
+        };
+        rc.0.take_in_some(|inner| {
+            for player in &mut inner.players {
+                if player.owner != no {
+                    continue;
+                }
+                player.playing = playing;
+            }
+        });
+        Ok(())
+    }, |err : zbus::Error| warn!("Could not read MPRIS properties: {}", err));
+
+    let rc = target.clone();
+    let no = owner.clone();
+    dbus.spawn_call_err(zbus::Message::method(
+        None,
+        Some(&name),
+        "/org/mpris/MediaPlayer2",
+        Some("org.freedesktop.DBus.Properties"),
+        "Get",
+        &("org.mpris.MediaPlayer2.Player", "Metadata")
+    )?, move |msg| {
+        let meta : OwnedValue = msg.body()?;
+        let meta = match (*meta).clone() {
+            Variant::Dict(meta) => meta.try_into().ok(),
+            _ => None,
+        };
+
+        rc.0.take_in_some(|inner| {
+            for player in &mut inner.players {
+                if player.owner != no {
+                    continue;
+                }
+                player.meta = meta;
+                break;
+            }
+            inner.interested.notify_data("mpris:init");
+        });
+        Ok(())
+    }, |err : zbus::Error| warn!("Could not read MPRIS properties: {}", err));
 
     target.0.take_in_some(|inner| {
-        for player in &mut inner.players {
-            if player.owner != owner {
-                continue;
-            }
-            // if it already exists, our values are likely to be out of date
-            player.name = name;
-            player.playing = player.playing.or(playing);
-            player.meta.get_or_insert(meta);
-            return;
-        }
         inner.players.push(Player {
             name,
             owner,
-            playing,
-            meta : Some(meta),
+            playing : None,
+            meta : None,
         });
-        inner.interested.notify_data("mpris:init");
     });
 
     Ok(())
@@ -93,24 +134,19 @@ impl MediaPlayer2 {
 
         let mpris = rv.clone();
         util::spawn("MPRIS setup", async move {
-            let dbus = get_dbus();
-            let meta_bus = Proxy::new("org.freedesktop.DBus", "/org/freedesktop/DBus", Duration::from_secs(10), &dbus.local);
-
+            let dbus = DBus::get_session();
             // Watch for property updates to any active mpris player and update our internal map
             let target = mpris.clone();
-            dbus.add_property_change_watcher(move |msg, ppc, _dbus| {
-                if msg.path().as_deref() != Some("/org/mpris/MediaPlayer2") {
-                    return;
+            dbus.add_property_change_watcher(move |hdr, iface, changed, _inval| {
+                match target.handle_mpris_update(hdr, iface, changed) {
+                    Ok(()) => (),
+                    Err(e) => warn!("MPRIS update error: {}", e),
                 }
-                if ppc.interface_name != "org.mpris.MediaPlayer2.Player" {
-                    return;
-                }
-                target.handle_mpris_update(msg, ppc);
-            }).await;
+            });
 
             // Watch for new players and player exits
             let this = mpris.clone();
-            dbus.add_name_watcher(move |name, old, new, _dbus| {
+            dbus.add_name_watcher(move |name, old, new| {
                 if !new.is_empty() && name.starts_with("org.mpris.MediaPlayer2.") {
                     util::spawn("MPRIS state query", initial_query(this.clone(), name.to_owned()));
                 }
@@ -119,7 +155,7 @@ impl MediaPlayer2 {
                         let interested = &mut inner.interested;
                         inner.players.retain(|player| {
                             if player.owner == name || player.name == name {
-                                interested.notify_data("mpris:new");
+                                interested.notify_data("mpris:remove");
                                 false
                             } else {
                                 true
@@ -127,18 +163,30 @@ impl MediaPlayer2 {
                         });
                     });
                 }
-            }).await;
+            });
 
             // Now that watching is active, populate our map with initial values for all active players
-            let (names,) : (Vec<String>,) = meta_bus.method_call("org.freedesktop.DBus", "ListNames", ()).await?;
-            for name in names {
-                if !name.starts_with("org.mpris.MediaPlayer2.") {
-                    continue;
-                }
+            dbus.spawn_call_err(zbus::Message::method(
+                None,
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                Some("org.freedesktop.DBus"),
+                "ListNames",
+                &()
+            )?, move |msg| {
+                let names : Vec<String> = msg.body()?;
+                for name in names {
+                    if !name.starts_with("org.mpris.MediaPlayer2.") {
+                        continue;
+                    }
 
-                // query them all in parallel
-                util::spawn("MPRIS state query", initial_query(mpris.clone(), name));
-            }
+                    // query them all in parallel
+                    util::spawn("MPRIS state query", initial_query(mpris.clone(), name));
+                }
+                Ok(())
+            }, |err : Box<dyn Error>| {
+                log::info!("MPRIS setup error: {}", err);
+            });
 
             Ok(())
         });
@@ -146,9 +194,18 @@ impl MediaPlayer2 {
         rv
     }
 
-    fn handle_mpris_update(&self, msg : &Message, p : &PropertiesPropertiesChanged) {
-        let src = msg.sender().unwrap();
-        assert!(src.starts_with(':'));
+    fn handle_mpris_update(&self, hdr : &zbus::MessageHeader, iface : &str, changed : &HashMap<&str, OwnedValue>) -> zbus::Result<()> {
+        if hdr.path()?.map(|p| p.as_str()) != Some("/org/mpris/MediaPlayer2") {
+            return Ok(());
+        }
+        let src = hdr.sender()?.unwrap_or_default();
+        if !src.starts_with(':') {
+            log::warn!("Ignoring MPRIS update from {}", src);
+            return Ok(());
+        }
+        if iface != "org.mpris.MediaPlayer2.Player" {
+            return Ok(());
+        }
         self.0.take_in_some(|inner| {
             let mut new = None;
             let found = inner.players.iter_mut().find(|p| *p.owner == *src);
@@ -157,15 +214,18 @@ impl MediaPlayer2 {
                 player.owner = (*src).to_owned();
                 player
             });
-            for (prop, value) in &p.changed_properties {
-                match prop.as_str() {
+            for (&prop, value) in changed {
+                match prop {
                     "PlaybackStatus" => {
-                        value.as_str().map(|status| {
+                        if let Ok(status) = value.try_into() {
                             player.playing = PlayState::parse(status);
-                        });
+                        }
                     }
                     "Metadata" => {
-                        player.meta = dbus_util::read_hash_map(&value.0);
+                        player.meta = match (**value).clone() {
+                            Variant::Dict(meta) => meta.try_into().ok(),
+                            _ => None,
+                        };
                     }
                     _ => ()
                 }
@@ -175,6 +235,7 @@ impl MediaPlayer2 {
             }
             inner.interested.notify_data("mpris:props");
         });
+        Ok(())
     }
 }
 
@@ -223,14 +284,23 @@ pub fn read_in<F : FnOnce(Value) -> R, R>(_name : &str, target : &str, key : &st
                         f(Value::Borrow(player.name.get(skip..).unwrap_or_default()))
                     }
                     "length" => {
-                        match player.meta.as_ref().and_then(|md| md.get("mpris:length")).and_then(|v| v.as_u64()) {
-                            Some(len) => f(Value::Float(len as f64 / 1_000_000.0)),
-                            None => f(Value::Null),
+                        match player.meta.as_ref()
+                            .and_then(|md| md.get("mpris:length"))
+                            .and_then(|v| v.downcast_ref::<u64>())
+                        {
+                            Some(len) => f(Value::Float(*len as f64 / 1_000_000.0)),
+                            _ => f(Value::Null),
                         }
                     }
                     _ if field.contains('.') => {
                         let real_field = field.replace('.', ":");
-                        f(Value::Borrow(player.meta.as_ref().and_then(|md| md.get(&real_field).or(md.get(field))).and_then(|v| v.as_str()).unwrap_or("")))
+                        match player.meta.as_ref()
+                            .and_then(|md| md.get(&real_field).or(md.get(field)))
+                            .and_then(|v| v.downcast_ref::<str>())
+                        {
+                            Some(v) => f(Value::Borrow(v)),
+                            _ => f(Value::Null),
+                        }
                     }
                     // See http://www.freedesktop.org/wiki/Specifications/mpris-spec/metadata for
                     // a list of valid names
@@ -239,17 +309,19 @@ pub fn read_in<F : FnOnce(Value) -> R, R>(_name : &str, target : &str, key : &st
                         let mut tmp = String::new();
                         let value = player.meta.as_ref()
                             .and_then(|md| md.get(&xeasm))
-                            .and_then(|variant| {
-                                // Support both strings and lists of strings
-                                variant.0.as_str()
-                                    .or_else(|| variant.0.as_iter().map(|iter| {
-                                        for v in iter.filter_map(|e| e.as_str()) {
-                                            tmp.push_str(v);
+                            .map(|variant| match &**variant {
+                                Variant::Str(v) => v.as_str(),
+                                Variant::Array(a) => {
+                                    for e in a.get().iter() {
+                                        if let Variant::Str(s) = e {
+                                            tmp.push_str(s);
                                             tmp.push_str(", ");
                                         }
-                                        tmp.pop(); tmp.pop();
-                                        tmp.as_str()
-                                    }))
+                                    }
+                                    tmp.pop(); tmp.pop();
+                                    tmp.as_str()
+                                }
+                                _ => ""
                             })
                             .unwrap_or("");
                         f(Value::Borrow(value))
@@ -307,26 +379,34 @@ pub fn write(_name : &str, target : &str, key : &str, command : Value, _rt : &Ru
                 None => { warn!("No player found when sending {}", key); return }
             };
 
-            let name = player.owner.clone();
-            let command = command.into_text().into_owned();
-
-            util::spawn("MPRIS click", async move {
-                let dbus = get_dbus();
-                let player = Proxy::new(&name, "/org/mpris/MediaPlayer2", Duration::from_secs(10), &dbus.local);
-                match command.as_str() {
-                    "Next" | "Previous" | "Pause" | "PlayPause" | "Stop" | "Play" => {
-                        player.method_call("org.mpris.MediaPlayer2.Player", command, ()).await?;
-                    }
-                    // TODO seek, volume?
-                    "Raise" | "Quit" => {
-                        player.method_call("org.mpris.MediaPlayer2", command, ()).await?;
-                    }
-                    _ => {
-                        error!("Unknown command {}", command);
-                    }
+            let dbus = DBus::get_session();
+            let command = command.into_text();
+            match &*command {
+                "Next" | "Previous" | "Pause" | "PlayPause" | "Stop" | "Play" => {
+                    dbus.send(zbus::Message::method(
+                        None,
+                        Some(&player.owner),
+                        "/org/mpris/MediaPlayer2",
+                        Some("org.mpris.MediaPlayer2.Player"),
+                        &command,
+                        &()
+                    ).unwrap());
                 }
-                Ok(())
-            });
+                // TODO seek, volume?
+                "Raise" | "Quit" => {
+                    dbus.send(zbus::Message::method(
+                        None,
+                        Some(&player.owner),
+                        "/org/mpris/MediaPlayer2",
+                        Some("org.mpris.MediaPlayer2"),
+                        &command,
+                        &()
+                    ).unwrap());
+                }
+                _ => {
+                    error!("Unknown command {}", command);
+                }
+            }
         })
     })
 }

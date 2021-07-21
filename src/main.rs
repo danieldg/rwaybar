@@ -37,9 +37,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (client, wl_queue) = WaylandClient::new()?;
 
     tokio::task::LocalSet::new().block_on(&rt, async move {
-        #[cfg(feature="dbus")]
-        dbus::init()?;
-
         let state = State::new(client)?;
 
         match wayland::run_queue(wl_queue, state).await? {

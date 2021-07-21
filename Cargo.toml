@@ -15,6 +15,7 @@ lto = true
 
 [features]
 default = ['pulse', 'dbus']
+dbus = []
 pulse = ['libpulse-binding']
 # This changes the static dependency on libxkbcommon.so to an optional run-time
 # dependency, but also changes the wayland-client code to link to the C
@@ -25,12 +26,14 @@ dlopen = ['smithay-client-toolkit/dlopen']
 # Basic runtime
 bytes = "*"
 env_logger = "0.8"
+futures = { version = "*" }
 futures-util = { version = "*", features = ['channel'] }
 json = "*"
 libc = "*"
 log = "*"
 memmap2 = "*"
 once_cell = "*"
+serde = "1"
 strfmt = "=0.1.6"
 tokio = { version = "1", features = ['rt', 'net', 'signal', 'sync', 'io-util', 'time'] }
 toml = "*"
@@ -53,7 +56,8 @@ wayland-protocols = "*"
 # Module specific
 chrono = "*"
 chrono-tz = "*"
-dbus = { version = "*", features = ['futures'], optional = true }
 evalexpr = "*"
 libpulse-binding = { version = "*", features = ['pa_v14'], optional = true }
 regex = "1.5"
+zbus = "1.9"
+zvariant = "2.7"
