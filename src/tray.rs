@@ -69,7 +69,7 @@ impl Tray {
                 DATA.with(|cell| {
                     let tray = cell.get();
                     let tray = tray.as_ref().unwrap();
-                    match tray.handle_snw(msg) {
+                    match tray.handle_snw(&msg) {
                         Ok(()) => (),
                         Err(e) => warn!("Error in StatusNotifierWatcher: {}", e),
                     }
@@ -117,7 +117,7 @@ impl Tray {
         Tray::default()
     }
 
-    fn handle_snw(&self, msg : zbus::Message) -> zbus::Result<()> {
+    fn handle_snw(&self, msg : &zbus::Message) -> zbus::Result<()> {
         let hdr = msg.header()?;
         let dbus = DBus::get_session();
         let mut rsp = zbus::Message::method_error(None, &msg, "org.freedesktop.DBus.Error.UnknownMethod", &"Method not found")?;
@@ -442,7 +442,7 @@ fn do_add_item(is_kde : bool, item : String) {
         let props = dbus.call(zbus::Message::method(
             None,
             Some(&owner),
-            &path,
+            &*path,
             Some("org.freedesktop.DBus.Properties"),
             "GetAll",
             &sni_path,
@@ -659,7 +659,7 @@ async fn refresh_menu(menu : Rc<TrayPopupMenu>) -> Result<(), Box<dyn Error>> {
     dbus.call(zbus::Message::method(
         None,
         Some(&menu.owner),
-        &menu_path,
+        &*menu_path,
         Some("com.canonical.dbusmenu"),
         "AboutToShow",
         &0i32,
@@ -692,7 +692,7 @@ async fn refresh_menu(menu : Rc<TrayPopupMenu>) -> Result<(), Box<dyn Error>> {
     let rv = dbus.call(zbus::Message::method(
         None,
         Some(&menu.owner),
-        &menu_path,
+        &*menu_path,
         Some("com.canonical.dbusmenu"),
         "GetLayout",
         &(0i32, -1i32, &["type", "label", "visible", "enabled"] as &[&str])
@@ -780,7 +780,7 @@ impl TrayPopup {
                 dbus.send(zbus::Message::method(
                     None,
                     Some(&self.owner),
-                    menu_path,
+                    &**menu_path,
                     Some("com.canonical.dbusmenu"),
                     "Event",
                     &(id, "clicked", Variant::I32(0), ts as u32)
@@ -886,7 +886,7 @@ pub fn do_click(owner : &Rc<str>, path : &Rc<str>, how : u32) {
                     dbus.send(zbus::Message::method(
                         None,
                         Some(owner),
-                        path,
+                        &**path,
                         Some(sni_path),
                         method,
                         &(0i32,0i32)
@@ -895,7 +895,7 @@ pub fn do_click(owner : &Rc<str>, path : &Rc<str>, how : u32) {
                     dbus.send(zbus::Message::method(
                         None,
                         Some(owner),
-                        path,
+                        &**path,
                         Some(sni_path),
                         "Scroll",
                         &(15i32,method)

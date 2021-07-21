@@ -17,14 +17,15 @@ use std::fmt;
 use std::io;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use zbus::azync::connection::Connection;
+use std::sync::Arc;
+use zbus::azync::Connection;
 use zvariant::Value as Variant;
 use zvariant::OwnedValue;
 
 pub struct DBus {
-    api : util::Cell<HashMap<Cow<'static,str>, Box<dyn FnMut(zbus::Message)>>>,
-    send : UnboundedSender<(zbus::Message, Option<Box<dyn FnOnce(zbus::Result<zbus::Message>)>>)>,
-    pending_calls : util::Cell<HashMap<u32, Box<dyn FnOnce(zbus::Result<zbus::Message>)>>>,
+    api : util::Cell<HashMap<Cow<'static,str>, Box<dyn FnMut(Arc<zbus::Message>)>>>,
+    send : UnboundedSender<(zbus::Message, Option<Box<dyn FnOnce(zbus::Result<Arc<zbus::Message>>)>>)>,
+    pending_calls : util::Cell<HashMap<u32, Box<dyn FnOnce(zbus::Result<Arc<zbus::Message>>)>>>,
 
     sig_watchers : util::Cell<Vec<Box<dyn SignalWatcherCall>>>,
     prop_watchers : util::Cell<Vec<Box<dyn FnMut(&zbus::MessageHeader, &str, &HashMap<&str, OwnedValue>, &[&str])>>>,
@@ -159,12 +160,12 @@ impl DBus {
         let _ = self.send.unbounded_send((msg, None));
     }
 
-    pub fn spawn_call(&self, msg : zbus::Message, cb : impl FnOnce(zbus::Result<zbus::Message>) + 'static) {
+    pub fn spawn_call(&self, msg : zbus::Message, cb : impl FnOnce(zbus::Result<Arc<zbus::Message>>) + 'static) {
         let _ = self.send.unbounded_send((msg, Some(Box::new(cb))));
     }
 
     pub fn spawn_call_err<E : From<zbus::Error>>(&self, msg : zbus::Message,
-        cb : impl FnOnce(zbus::Message) -> Result<(), E> + 'static,
+        cb : impl FnOnce(Arc<zbus::Message>) -> Result<(), E> + 'static,
         err : impl FnOnce(E) + 'static
     ) {
         self.spawn_call(msg, |res| {
@@ -176,7 +177,7 @@ impl DBus {
         });
     }
 
-    pub async fn call(&self, msg : zbus::Message) -> zbus::Result<zbus::Message> {
+    pub async fn call(&self, msg : zbus::Message) -> zbus::Result<Arc<zbus::Message>> {
         let (send, recv) = oneshot::channel();
         let _ = self.send.unbounded_send((msg, Some(Box::new(|res| {
             let _ = send.send(res);
@@ -249,13 +250,13 @@ impl DBus {
         }
     }
 
-    pub fn add_api(&self, name : impl Into<Cow<'static, str>>, imp : Box<dyn FnMut(zbus::Message)>) {
+    pub fn add_api(&self, name : impl Into<Cow<'static, str>>, imp : Box<dyn FnMut(Arc<zbus::Message>)>) {
         if self.api.take_in(|api| api.insert(name.into(), imp)).is_some() {
             panic!("Object already exists");
         }
     }
 
-    fn dispatch(&self, msg : zbus::Message) -> zbus::Result<()> {
+    fn dispatch(&self, msg : Arc<zbus::Message>) -> zbus::Result<()> {
         use zbus::MessageType;
         let head = msg.header()?;
         let mtype = head.message_type()?;
@@ -540,7 +541,7 @@ impl DbusValue {
             match dbus.call(zbus::Message::method(
                 None,
                 Some(&self.bus_name),
-                &self.path,
+                &*self.path,
                 Some("org.freedesktop.DBus.Introspectable"),
                 "Introspect",
                 &(),
@@ -694,7 +695,7 @@ impl DbusValue {
         let reply = dbus.call(zbus::Message::method(
             None,
             Some(&self.bus_name),
-            &self.path,
+            &*self.path,
             Some(&self.interface),
             &self.member,
             &args,
