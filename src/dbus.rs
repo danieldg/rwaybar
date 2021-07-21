@@ -13,6 +13,7 @@ use once_cell::unsync::OnceCell;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::fmt;
 use std::io;
 use std::ptr::NonNull;
@@ -394,10 +395,6 @@ impl Drop for DbusValue {
     }
 }
 
-thread_local! {
-    static DYN_SIG : util::Cell<Option<zvariant::Signature<'static>>> = util::Cell::new(None);
-}
-
 impl DbusValue {
     pub fn from_toml(value : &toml::Value) -> Option<Rc<Self>> {
         let dbus = match value.get("bus").and_then(|v| v.as_str()) {
@@ -614,12 +611,11 @@ impl DbusValue {
             }
         }
 
-        let mut args = Some(zvariant::StructureBuilder::new());
-        fn add_arg<'a, T>(args : &mut Option<zvariant::StructureBuilder<'a>>, v : T)
+        let mut args = zvariant::StructureBuilder::new();
+        fn add_arg<'a, T>(args : &mut zvariant::StructureBuilder<'a>, v : T)
             where T : zvariant::Type + Into<Variant<'a>>
         {
-            let builder = args.take().unwrap();
-            *args = Some(builder.add_field(v));
+            args.push_field(v);
         }
 
         if let Some(sig) = api {
@@ -675,23 +671,7 @@ impl DbusValue {
                 }
             }
         }
-        let args = A(args.unwrap().build());
-        DYN_SIG.with(|v| v.set(Some(args.0.signature())));
-        struct A<'a>(zvariant::Structure<'a>);
-
-        impl<'a> serde::Serialize for A<'a> {
-            fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
-                where S: serde::Serializer
-            {
-                self.0.serialize(s)
-            }
-        }
-        impl<'a> zvariant::Type for A<'a> {
-            fn signature() -> zvariant::Signature<'static> {
-                DYN_SIG.with(|v| v.take_in_some(|v| v.clone()).unwrap())
-            }
-        }
-
+        let args = args.build();
         let reply = dbus.call(zbus::Message::method(
             None,
             Some(&self.bus_name),
@@ -700,43 +680,10 @@ impl DbusValue {
             &self.member,
             &args,
         )?).await?;
-        let sig = reply.body_signature()?.to_owned();
-        DYN_SIG.with(|v| v.set(Some(sig)));
 
-        struct R(OwnedValue);
-        impl zvariant::Type for R {
-            fn signature() -> zvariant::Signature<'static> {
-                DYN_SIG.with(|v| v.take_in_some(|v| v.clone()).unwrap())
-            }
-        }
-        impl<'d> serde::Deserialize<'d> for R {
-            fn deserialize<D : serde::Deserializer<'d>>(de : D) -> Result<R, D::Error> {
-                // Variant expects to deserializes as a (signature, value) struct, so just feed it
-                // that using the return value signature modified to be a struct
-                let sig = DYN_SIG.with(|v| v.take_in_some(|v| format!("({})", v.as_str())));
-                let seq = serde::de::value::SeqAccessDeserializer::new(VariantBuilder(sig, Some(de)));
-                Variant::deserialize(seq).map(Into::into).map(R)
-            }
-        }
-        struct VariantBuilder<D>(Option<String>, Option<D>);
-        impl<'de, D> serde::de::SeqAccess<'de> for VariantBuilder<D>
-            where D: serde::Deserializer<'de>
-        {
-            type Error = D::Error;
-            fn next_element_seed<T:serde::de::DeserializeSeed<'de>>(&mut self, t: T) -> Result<Option<T::Value>,D::Error> {
-                if let Some(sig) = self.0.take() {
-                    let de = serde::de::IntoDeserializer::into_deserializer(sig);
-                    return t.deserialize(de).map(Some);
-                }
-                self.1.take().map(|de| t.deserialize(de)).transpose()
-            }
-        }
+        let sig = format!("({})", reply.body_signature()?.as_str()).try_into()?;
+        *self.value.borrow_mut() = Some(Variant::Structure(reply.body_with_signature(&sig)?).into());
 
-        *self.value.borrow_mut() = match reply.body() {
-            Ok(R(v)) => Some(v),
-            Err(_) => None,
-        };
-        DYN_SIG.with(|v| v.set(None));
         self.interested.take().notify_data("dbus-read");
         Ok(())
     }
