@@ -317,6 +317,7 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
         "AddMatch",
         &snw_rule,
     )?);
+
     dbus.add_signal_watcher(move |_path, iface, memb, msg| {
         if iface != snw_path {
             return;
@@ -341,15 +342,14 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
         let hdr = msg.header().unwrap();
         let owner = hdr.sender().unwrap().unwrap().to_owned();
         spawn("Tray item refresh", async move {
-            let dbus = DBus::get_session();
-            let props = dbus.call(zbus::Message::method(
-                None,
+            let zbus = DBus::get_session().connection().await;
+            let props = zbus.call_method(
                 Some(&owner),
                 &path,
                 Some("org.freedesktop.DBus.Properties"),
                 "GetAll",
                 &()
-            )?).await?;
+            ).await?;
             let props = props.body()?;
 
             handle_item_update(&owner, &path, &props);
@@ -365,14 +365,15 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
         "RegisterStatusNotifierHost",
         &name
     )?);
-    match dbus.call(zbus::Message::method(
-        None,
+
+    let zbus = dbus.connection().await;
+    match zbus.call_method(
         Some(snw_path),
         "/StatusNotifierWatcher",
         Some("org.freedesktop.DBus.Properties"),
         "Get",
         &(snw_path, "RegisteredStatusNotifierItems"),
-    )?).await?.body()? {
+    ).await?.body()? {
         Variant::Array(items) => for item in items.get() {
             do_add_item(is_kde, item.try_into()?);
         }
@@ -386,6 +387,7 @@ fn do_add_item(is_kde : bool, item : String) {
     let sni_path = if is_kde { "org.kde.StatusNotifierItem" } else { "org.freedesktop.StatusNotifierItem" };
     spawn("Tray item inspection", async move {
         let dbus = DBus::get_session();
+        let zbus = dbus.connection().await;
 
         let (owner, path) : (Rc<str>, Rc<str>) = match item.find('/') {
             Some(pos) => (Rc::from(&item[..pos]), Rc::from(&item[pos..])),
@@ -439,14 +441,13 @@ fn do_add_item(is_kde : bool, item : String) {
             return Ok(());
         }
 
-        let props = dbus.call(zbus::Message::method(
-            None,
+        let props = zbus.call_method(
             Some(&owner),
             &*path,
             Some("org.freedesktop.DBus.Properties"),
             "GetAll",
             &sni_path,
-        )?).await?;
+        ).await?;
 
         let props = props.body()?;
         handle_item_update(&owner, &path, &props);
@@ -655,15 +656,15 @@ async fn refresh_menu(menu : Rc<TrayPopupMenu>) -> Result<(), Box<dyn Error>> {
         None => return Ok(())
     };
     let dbus = DBus::get_session();
+    let zbus = dbus.connection().await;
 
-    dbus.call(zbus::Message::method(
-        None,
+    zbus.call_method(
         Some(&menu.owner),
         &*menu_path,
         Some("com.canonical.dbusmenu"),
         "AboutToShow",
         &0i32,
-    )?).await?;
+    ).await?;
 
     if menu.dbus_token.take_in(|t| !t.is_active()) {
         menu.add_remove_match(&dbus, "AddMatch");
@@ -689,14 +690,13 @@ async fn refresh_menu(menu : Rc<TrayPopupMenu>) -> Result<(), Box<dyn Error>> {
 
     // ? MatchRule::new_signal("com.canonical.dbusmenu", "ItemActivationRequested");
 
-    let rv = dbus.call(zbus::Message::method(
-        None,
+    let rv = zbus.call_method(
         Some(&menu.owner),
         &*menu_path,
         Some("com.canonical.dbusmenu"),
         "GetLayout",
         &(0i32, -1i32, &["type", "label", "visible", "enabled"] as &[&str])
-    )?).await?;
+    ).await?;
     let (_rev, (_id, _props, contents)) : (u32, (i32, HashMap<&str, Variant>, Vec<Variant>)) = rv.body()?;
 
     let mut items = Vec::new();

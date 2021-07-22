@@ -4,7 +4,6 @@ use crate::state::NotifierList;
 use crate::util;
 use crate::util::{Cell,spawn_noerr};
 use futures::channel::mpsc::{self,UnboundedSender};
-use futures::channel::oneshot;
 use futures_util::StreamExt;
 use futures_util::future::Either;
 use futures_util::future::select;
@@ -15,10 +14,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt;
-use std::io;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::task;
 use zbus::azync::Connection;
 use zvariant::Value as Variant;
 use zvariant::OwnedValue;
@@ -27,6 +26,8 @@ pub struct DBus {
     api : util::Cell<HashMap<Cow<'static,str>, Box<dyn FnMut(Arc<zbus::Message>)>>>,
     send : UnboundedSender<(zbus::Message, Option<Box<dyn FnOnce(zbus::Result<Arc<zbus::Message>>)>>)>,
     pending_calls : util::Cell<HashMap<u32, Box<dyn FnOnce(zbus::Result<Arc<zbus::Message>>)>>>,
+
+    bus: util::Cell<Result<Connection, Vec<task::Waker>>>,
 
     sig_watchers : util::Cell<Vec<Box<dyn SignalWatcherCall>>>,
     prop_watchers : util::Cell<Vec<Box<dyn FnMut(&zbus::MessageHeader, &str, &HashMap<&str, OwnedValue>, &[&str])>>>,
@@ -61,11 +62,32 @@ impl DBus {
         })
     }
 
+    pub async fn connection(&self) -> Connection {
+        futures::future::poll_fn(|ctx| {
+            match self.bus.replace(Err(Vec::new())) {
+                Err(mut wakers) => {
+                    let me = ctx.waker();
+                    if !wakers.iter().any(|w| w.will_wake(me)) {
+                        wakers.push(me.clone());
+                    }
+                    self.bus.set(Err(wakers));
+                    task::Poll::Pending
+                }
+                Ok(conn) => {
+                    let rv = conn.clone();
+                    self.bus.set(Ok(conn));
+                    task::Poll::Ready(rv)
+                }
+            }
+        }).await
+    }
+
     fn new(is_session : bool) -> Rc<Self> {
         let (send, mut recv) = mpsc::unbounded();
         let tb = Rc::new(DBus {
             api : Default::default(),
             send,
+            bus : Cell::new(Err(Vec::new())),
             pending_calls : Default::default(),
             sig_watchers : Default::default(),
             prop_watchers : Default::default(),
@@ -134,24 +156,34 @@ impl DBus {
             } else {
                 zbus = Connection::new_system().await?;
             }
-            loop {
-                match select(recv.next(), zbus.next()).await {
-                    Either::Left((Some((msg, cb)), _)) => {
-                        let seq = zbus.send_message(msg).await?;
-                        if let Some(cb) = cb {
-                            this.pending_calls.take_in(|pend| pend.insert(seq, cb));
-                        }
-                    }
-                    Either::Right((Some(msg), _)) => {
-                        this.dispatch(msg?)?;
-                    }
-                    Either::Left((None, _)) => unreachable!(),
-                    Either::Right((None, _)) => {
-                        error!("D-Bus connection failed");
-                        return Ok(());
+            match this.bus.replace(Ok(zbus.clone())) {
+                Ok(_) => unreachable!(),
+                Err(wakers) => {
+                    for waker in wakers {
+                        waker.wake();
                     }
                 }
             }
+            zbus.clone().executor().run(async move {
+                loop {
+                    match select(zbus.next(), recv.next()).await {
+                        Either::Left((Some(msg), _)) => {
+                            this.dispatch(msg?)?;
+                        }
+                        Either::Right((Some((msg, cb)), _)) => {
+                            let seq = zbus.send_message(msg).await?;
+                            if let Some(cb) = cb {
+                                this.pending_calls.take_in(|pend| pend.insert(seq, cb));
+                            }
+                        }
+                        Either::Left((None, _)) => {
+                            error!("D-Bus connection failed");
+                            return Ok(());
+                        }
+                        Either::Right((None, _)) => unreachable!(),
+                    }
+                }
+            }).await
         });
 
         tb
@@ -176,14 +208,6 @@ impl DBus {
                 Err(e) => err(e.into()),
             }
         });
-    }
-
-    pub async fn call(&self, msg : zbus::Message) -> zbus::Result<Arc<zbus::Message>> {
-        let (send, recv) = oneshot::channel();
-        let _ = self.send.unbounded_send((msg, Some(Box::new(|res| {
-            let _ = send.send(res);
-        }))));
-        recv.await.unwrap_or_else(|_| Err(zbus::Error::Io(io::ErrorKind::TimedOut.into())))
     }
 
     pub fn add_signal_watcher<F>(&self, f : F)
@@ -531,19 +555,20 @@ impl DbusValue {
     async fn try_call(self : Rc<Self>) -> zbus::Result<()> {
         use toml::value::Value;
         let dbus = &*self.bus;
+        let zbus = dbus.connection().await;
 
         let mut api = self.sig.take_in(|s| s.clone());
 
         if api.is_none() {
-            match dbus.call(zbus::Message::method(
-                None,
+            let msg = zbus.call_method(
                 Some(&self.bus_name),
                 &*self.path,
                 Some("org.freedesktop.DBus.Introspectable"),
                 "Introspect",
                 &(),
-            )?).await?.body() {
-                Ok(xml) => {
+            ).await;
+            match msg.as_ref().map(|m| m.body()) {
+                Ok(Ok(xml)) => {
                     let mut reader = xml::EventReader::from_str(xml);
                     let mut sig = String::new();
                     let mut in_iface = false;
@@ -592,18 +617,22 @@ impl DbusValue {
                                     }
                                 }
                             }
-                            Ok(XmlEvent::EndDocument) => break,
+                            Ok(XmlEvent::EndDocument) => {
+                                sig.pop();
+                                api = Some(sig.into());
+                                self.sig.set(api.clone());
+                                break;
+                            }
                             Ok(_) => {}
                             Err(e) => {
                                 info!("Error introspecting {} {}: {}", self.bus_name, self.path, e);
-                                *self.value.borrow_mut() = None;
-                                return Ok(());
+                                break;
                             }
                         }
                     }
-                    sig.pop();
-                    api = Some(sig.into());
-                    self.sig.set(api.clone());
+                }
+                Ok(Err(e)) => {
+                    info!("Error introspecting {} {}: {}", self.bus_name, self.path, e);
                 }
                 Err(e) => {
                     info!("Error introspecting {} {}: {}", self.bus_name, self.path, e);
@@ -612,41 +641,34 @@ impl DbusValue {
         }
 
         let mut args = zvariant::StructureBuilder::new();
-        fn add_arg<'a, T>(args : &mut zvariant::StructureBuilder<'a>, v : T)
-            where T : zvariant::Type + Into<Variant<'a>>
-        {
-            args.push_field(v);
-        }
-
         if let Some(sig) = api {
-            let args = &mut args;
             for (ty,arg) in sig.split(",").zip(self.args.iter()) {
                 match match ty {
-                    "s" => { arg.as_str().map(|s| add_arg(args, s)) }
+                    "s" => { arg.as_str().map(|s| args.push_field(s)) }
                     "d" => {
                         arg.as_float()
                             .or_else(|| arg.as_integer().map(|i| i as f64))
-                            .map(|f| add_arg(args, f))
+                            .map(|f| args.push_field(f))
                     }
-                    "y" => { arg.as_integer().map(|i| i as u8 ).or_else(|| arg.as_float().map(|f| f as _)).map(|i| add_arg(args, i)) }
-                    "n" => { arg.as_integer().map(|i| i as i16).or_else(|| arg.as_float().map(|f| f as _)).map(|i| add_arg(args, i)) }
-                    "q" => { arg.as_integer().map(|i| i as u16).or_else(|| arg.as_float().map(|f| f as _)).map(|i| add_arg(args, i)) }
-                    "i" => { arg.as_integer().map(|i| i as i32).or_else(|| arg.as_float().map(|f| f as _)).map(|i| add_arg(args, i)) }
-                    "u" => { arg.as_integer().map(|i| i as u32).or_else(|| arg.as_float().map(|f| f as _)).map(|i| add_arg(args, i)) }
-                    "x" => { arg.as_integer().map(|i| i as i64).or_else(|| arg.as_float().map(|f| f as _)).map(|i| add_arg(args, i)) }
-                    "t" => { arg.as_integer().map(|i| i as u64).or_else(|| arg.as_float().map(|f| f as _)).map(|i| add_arg(args, i)) }
+                    "y" => { arg.as_integer().map(|i| i as u8 ).or_else(|| arg.as_float().map(|f| f as _)).map(|i| args.push_field(i)) }
+                    "n" => { arg.as_integer().map(|i| i as i16).or_else(|| arg.as_float().map(|f| f as _)).map(|i| args.push_field(i)) }
+                    "q" => { arg.as_integer().map(|i| i as u16).or_else(|| arg.as_float().map(|f| f as _)).map(|i| args.push_field(i)) }
+                    "i" => { arg.as_integer().map(|i| i as i32).or_else(|| arg.as_float().map(|f| f as _)).map(|i| args.push_field(i)) }
+                    "u" => { arg.as_integer().map(|i| i as u32).or_else(|| arg.as_float().map(|f| f as _)).map(|i| args.push_field(i)) }
+                    "x" => { arg.as_integer().map(|i| i as i64).or_else(|| arg.as_float().map(|f| f as _)).map(|i| args.push_field(i)) }
+                    "t" => { arg.as_integer().map(|i| i as u64).or_else(|| arg.as_float().map(|f| f as _)).map(|i| args.push_field(i)) }
                     "b" => {
                         arg.as_bool()
                             .or_else(|| arg.as_integer().map(|i| i != 0))
                             .or_else(|| arg.as_float().map(|i| i != 0.0))
-                            .map(|b| add_arg(args, b))
+                            .map(|b| args.push_field(b))
                     }
                     "v" => match arg {
                         // best guess as to the type of a variant parameter
-                        Value::String(s) => Some(add_arg(args, Variant::from(s))),
-                        Value::Integer(i) => Some(add_arg(args, Variant::from(i))),
-                        Value::Float(f) => Some(add_arg(args, Variant::from(f))),
-                        Value::Boolean(b) => Some(add_arg(args, Variant::from(b))),
+                        Value::String(s) => Some(args.push_field(Variant::from(s))),
+                        Value::Integer(i) => Some(args.push_field(Variant::from(i))),
+                        Value::Float(f) => Some(args.push_field(Variant::from(f))),
+                        Value::Boolean(b) => Some(args.push_field(Variant::from(b))),
                         _ => None,
                     }
                     _ => None,
@@ -661,10 +683,10 @@ impl DbusValue {
             // no introspection, we just have to guess the argument types
             for arg in self.args.iter() {
                 match arg {
-                    Value::String(s) => add_arg(&mut args, s),
-                    Value::Integer(i) => add_arg(&mut args, i),
-                    Value::Float(f) => add_arg(&mut args, f),
-                    Value::Boolean(b) => add_arg(&mut args, b),
+                    Value::String(s) => args.push_field(s),
+                    Value::Integer(i) => args.push_field(i),
+                    Value::Float(f) => args.push_field(f),
+                    Value::Boolean(b) => args.push_field(b),
                     _ => {
                         info!("Invalid dbus argument '{}'", arg);
                     }
@@ -672,14 +694,13 @@ impl DbusValue {
             }
         }
         let args = args.build();
-        let reply = dbus.call(zbus::Message::method(
-            None,
+        let reply = zbus.call_method(
             Some(&self.bus_name),
             &*self.path,
             Some(&self.interface),
             &self.member,
             &args,
-        )?).await?;
+        ).await?;
 
         let sig = format!("({})", reply.body_signature()?.as_str()).try_into()?;
         *self.value.borrow_mut() = Some(Variant::Structure(reply.body_with_signature(&sig)?).into());
@@ -742,12 +763,6 @@ impl DbusValue {
                     .ok()
                     .unwrap_or(0);
                 match s.fields().get(i) {
-                    Some(v) => Self::read_variant(v, keys, rt, f),
-                    None => f(Value::Null),
-                }
-            }
-            Variant::Maybe(m) => {
-                match m.inner() {
                     Some(v) => Self::read_variant(v, keys, rt, f),
                     None => f(Value::Null),
                 }

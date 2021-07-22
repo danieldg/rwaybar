@@ -48,14 +48,14 @@ struct MediaPlayer2(Cell<Option<Inner>>);
 
 async fn initial_query(target : Rc<MediaPlayer2>, name : String) -> Result<(), Box<dyn Error>> {
     let dbus = DBus::get_session();
-    let owner : String = dbus.call(zbus::Message::method(
-        None,
+    let zbus = dbus.connection().await;
+    let owner : String = zbus.call_method(
         Some("org.freedesktop.DBus"),
         "/org/freedesktop/DBus",
         Some("org.freedesktop.DBus"),
         "GetNameOwner",
-        &(&name,)
-    )?).await?.body()?;
+        &name,
+    ).await?.body()?;
 
     let rc = target.clone();
     let no = owner.clone();
