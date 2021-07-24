@@ -267,8 +267,11 @@ impl WaylandClient {
                         // TODO support gestures?  Wait for Up, detect Cancel
                         for bar in &mut state.bars {
                             if surface == *bar.surf {
-                                bar.sink.button(x as f32, y as f32, 0, &mut state.runtime);
+                                bar.sink.button(x as f32, y as f32, 9, &mut state.runtime);
                                 break;
+                            }
+                            if bar.popup.as_ref().map_or(false, |p| *p.wl.surf == surface) {
+                                bar.popup_button(x,y,9, &mut state.runtime);
                             }
                         }
                     }

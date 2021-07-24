@@ -28,7 +28,8 @@ pub struct EventSink {
 impl EventSink {
     pub fn from_toml(value : &toml::Value) -> Self {
         let mut sink = EventSink::default();
-        sink.add_click(value.get("on-click"), 1 << 0);
+        sink.add_click(value.get("on-click"), 1 << 0 | 1 << 9);
+        sink.add_click(value.get("on-click-left"), 1 << 0);
         sink.add_click(value.get("on-click-right"), 1 << 1);
         sink.add_click(value.get("on-click-middle"), 1 << 2);
         sink.add_click(value.get("on-click-back"), 1 << 3);
@@ -41,6 +42,7 @@ impl EventSink {
         sink.add_click(value.get("on-scroll-right"), 1 << 8);
         sink.add_click(value.get("on-hscroll"), 3 << 7);
         sink.add_click(value.get("on-scroll"), 15 << 5);
+        sink.add_click(value.get("on-tap"), 1 << 9);
         sink
     }
 

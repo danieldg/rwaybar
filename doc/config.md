@@ -95,11 +95,13 @@ when the block is clicked.
 
 Key | Details
 ----|--------
-`on-click` | Left (primary) button
+`on-click` | Left button or tap
+`on-click-left` | Left button
 `on-click-right` | Right button
 `on-click-middle` |
 `on-click-backward` | May also be known as "side"
 `on-click-forward` | May also be known as "extra"
+`on-tap` | For touchscreens
 `on-scroll-up` |
 `on-scroll-down` |
 `on-vscroll` | A combination of up and down
