@@ -345,7 +345,7 @@ impl State {
                     });
                 }
             }
-            self.request_draw();
+            self.runtime.notify.notify_data("reload");
         } else {
             self.set_data();
         }
