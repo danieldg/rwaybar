@@ -5,8 +5,6 @@ use crate::util;
 use crate::util::{Cell,spawn_noerr};
 use futures::channel::mpsc::{self,UnboundedSender};
 use futures_util::StreamExt;
-use futures_util::future::Either;
-use futures_util::future::select;
 use log::{info,warn,error};
 use once_cell::unsync::OnceCell;
 use std::borrow::Cow;
@@ -149,8 +147,8 @@ impl DBus {
         });
 
         let this = tb.clone();
-        util::spawn("D-Bus I/O loop", async move {
-            let mut zbus;
+        util::spawn("DBus Sender", async move {
+            let zbus;
             if is_session {
                 zbus = Connection::new_session().await?;
             } else {
@@ -164,26 +162,19 @@ impl DBus {
                     }
                 }
             }
-            zbus.clone().executor().run(async move {
-                loop {
-                    match select(zbus.next(), recv.next()).await {
-                        Either::Left((Some(msg), _)) => {
-                            this.dispatch(msg?)?;
-                        }
-                        Either::Right((Some((msg, cb)), _)) => {
-                            let seq = zbus.send_message(msg).await?;
-                            if let Some(cb) = cb {
-                                this.pending_calls.take_in(|pend| pend.insert(seq, cb));
-                            }
-                        }
-                        Either::Left((None, _)) => {
-                            error!("D-Bus connection failed");
-                            return Ok(());
-                        }
-                        Either::Right((None, _)) => unreachable!(),
+            util::spawn("Incoming DBus Events", this.clone().dispatcher(zbus.clone()));
+
+            let rv = zbus.executor().run(async {
+                while let Some((msg, cb)) = recv.next().await {
+                    let seq = zbus.send_message(msg).await?;
+                    if let Some(cb) = cb {
+                        this.pending_calls.take_in(|pend| pend.insert(seq, cb));
                     }
                 }
-            }).await
+                Ok(())
+            }).await;
+            error!("Unexpected termination of D-Bus output stream");
+            rv
         });
 
         tb
@@ -279,6 +270,14 @@ impl DBus {
         if self.api.take_in(|api| api.insert(name.into(), imp)).is_some() {
             panic!("Object already exists");
         }
+    }
+
+    async fn dispatcher(self : Rc<Self>, mut zbus : Connection) -> Result<(), Box<dyn std::error::Error>>  {
+        while let Some(msg) = zbus.next().await {
+            self.dispatch(msg?)?;
+        }
+        error!("Unexpected end of D-Bus message stream");
+        Ok(())
     }
 
     fn dispatch(&self, msg : Arc<zbus::Message>) -> zbus::Result<()> {
