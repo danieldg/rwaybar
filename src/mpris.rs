@@ -60,8 +60,8 @@ async fn initial_query(target : Rc<MediaPlayer2>, name : String) -> Result<(), B
     let rc = target.clone();
     let no = owner.clone();
     dbus.spawn_call_err(zbus::Message::method(
-        None,
-        Some(&name),
+        None::<&str>,
+        Some(&*name),
         "/org/mpris/MediaPlayer2",
         Some("org.freedesktop.DBus.Properties"),
         "Get",
@@ -86,8 +86,8 @@ async fn initial_query(target : Rc<MediaPlayer2>, name : String) -> Result<(), B
     let rc = target.clone();
     let no = owner.clone();
     dbus.spawn_call_err(zbus::Message::method(
-        None,
-        Some(&name),
+        None::<&str>,
+        Some(&*name),
         "/org/mpris/MediaPlayer2",
         Some("org.freedesktop.DBus.Properties"),
         "Get",
@@ -167,7 +167,7 @@ impl MediaPlayer2 {
 
             // Now that watching is active, populate our map with initial values for all active players
             dbus.spawn_call_err(zbus::Message::method(
-                None,
+                None::<&str>,
                 Some("org.freedesktop.DBus"),
                 "/org/freedesktop/DBus",
                 Some("org.freedesktop.DBus"),
@@ -198,7 +198,7 @@ impl MediaPlayer2 {
         if hdr.path()?.map(|p| p.as_str()) != Some("/org/mpris/MediaPlayer2") {
             return Ok(());
         }
-        let src = hdr.sender()?.unwrap_or_default();
+        let src = hdr.sender()?.map_or("", |s| s.as_str());
         if !src.starts_with(':') {
             log::warn!("Ignoring MPRIS update from {}", src);
             return Ok(());
@@ -384,22 +384,22 @@ pub fn write(_name : &str, target : &str, key : &str, command : Value, _rt : &Ru
             match &*command {
                 "Next" | "Previous" | "Pause" | "PlayPause" | "Stop" | "Play" => {
                     dbus.send(zbus::Message::method(
-                        None,
-                        Some(&player.owner),
+                        None::<&str>,
+                        Some(&*player.owner),
                         "/org/mpris/MediaPlayer2",
                         Some("org.mpris.MediaPlayer2.Player"),
-                        &command,
+                        &*command,
                         &()
                     ).unwrap());
                 }
                 // TODO seek, volume?
                 "Raise" | "Quit" => {
                     dbus.send(zbus::Message::method(
-                        None,
-                        Some(&player.owner),
+                        None::<&str>,
+                        Some(&*player.owner),
                         "/org/mpris/MediaPlayer2",
                         Some("org.mpris.MediaPlayer2"),
-                        &command,
+                        &*command,
                         &()
                     ).unwrap());
                 }

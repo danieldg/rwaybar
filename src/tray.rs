@@ -43,7 +43,7 @@ impl Drop for TrayItem {
     fn drop(&mut self) {
         let dbus = DBus::get_session();
         dbus.send(zbus::Message::method(
-            None,
+            None::<&str>,
             Some("org.freedesktop.DBus"),
             "/org/freedesktop/DBus",
             Some("org.freedesktop.DBus"),
@@ -93,8 +93,8 @@ impl Tray {
                                 if old == owner || name == owner {
                                     let iface = if *is_kde { "org.kde.StatusNotifierWatcher" } else { "org.freedesktop.StatusNotifierWatcher" };
                                     dbus.send(zbus::Message::signal(
-                                        None,
-                                        None,
+                                        None::<&str>,
+                                        None::<&str>,
                                         "/StatusNotifierWatcher",
                                         iface,
                                         "StatusNotifierItemUnregistered",
@@ -120,20 +120,20 @@ impl Tray {
     fn handle_snw(&self, msg : &zbus::Message) -> zbus::Result<()> {
         let hdr = msg.header()?;
         let dbus = DBus::get_session();
-        let mut rsp = zbus::Message::method_error(None, &msg, "org.freedesktop.DBus.Error.UnknownMethod", &"Method not found")?;
+        let mut rsp = zbus::Message::method_error(None::<&str>, &msg, "org.freedesktop.DBus.Error.UnknownMethod", &"Method not found")?;
         let rv = self.reg_db.take_in(|reg_db| {
-            match hdr.interface().ok().flatten().as_deref() {
+            match hdr.interface().ok().flatten().map(|i| i.as_str()) {
                 Some(iface @ "org.kde.StatusNotifierWatcher") |
                 Some(iface @ "org.freedesktop.StatusNotifierWatcher") => {
-                    match hdr.member()?.as_deref() {
+                    match hdr.member()?.map(|m| m.as_str()) {
                         Some("RegisterStatusNotifierItem") => {
                             let is_kde = iface == "org.kde.StatusNotifierWatcher";
                             let path : &str = msg.body()?;
                             if path.starts_with('/') {
                                 let service = format!("{}{}", hdr.sender()?.unwrap(), path);
                                 dbus.send(zbus::Message::signal(
-                                    None,
-                                    None,
+                                    None::<&str>,
+                                    None::<&str>,
                                     "/StatusNotifierWatcher",
                                     iface,
                                     "StatusNotifierItemRegistered",
@@ -142,13 +142,13 @@ impl Tray {
                                 reg_db.push((service, is_kde));
                                 reg_db.sort();
                                 reg_db.dedup();
-                                rsp = zbus::Message::method_reply(None, &msg, &())?;
+                                rsp = zbus::Message::method_reply(None::<&str>, &msg, &())?;
                             } else if path.starts_with(':') {
                                 // kde uses this style
                                 let service = format!("{}/StatusNotifierItem", path);
                                 dbus.send(zbus::Message::signal(
-                                    None,
-                                    None,
+                                    None::<&str>,
+                                    None::<&str>,
                                     "/StatusNotifierWatcher",
                                     iface,
                                     "StatusNotifierItemRegistered",
@@ -157,27 +157,27 @@ impl Tray {
                                 reg_db.push((service, is_kde));
                                 reg_db.sort();
                                 reg_db.dedup();
-                                rsp = zbus::Message::method_reply(None, &msg, &())?;
+                                rsp = zbus::Message::method_reply(None::<&str>, &msg, &())?;
                             } else {
                                 warn!("Unknown RegisterStatusNotifierItem from {:?}: {}", hdr.sender(), path);
                             }
                         }
                         Some("RegisterStatusNotifierHost") => {
                             dbus.send(zbus::Message::signal(
-                                None,
-                                None,
+                                None::<&str>,
+                                None::<&str>,
                                 "/StatusNotifierWatcher",
                                 iface,
                                 "StatusNotifierHostRegistered",
                                 &()
                             )?);
-                            rsp = zbus::Message::method_reply(None, &msg, &())?;
+                            rsp = zbus::Message::method_reply(None::<&str>, &msg, &())?;
                         }
                         _ => {}
                     }
                 }
                 Some("org.freedesktop.DBus.Properties") => {
-                    match hdr.member()?.as_deref() {
+                    match hdr.member()?.map(|m| m.as_str()) {
                         Some("Get") => {
                             let (iface, mut prop) : (&str, &str) = msg.body()?;
                             let is_kde = match iface {
@@ -188,13 +188,13 @@ impl Tray {
                             match prop {
                                 "RegisteredStatusNotifierItems" => {
                                     let db : Vec<_> = reg_db.iter().filter(|v| v.1 == is_kde).map(|v| &v.0).collect();
-                                    rsp = zbus::Message::method_reply(None, &msg, &Variant::new(db))?;
+                                    rsp = zbus::Message::method_reply(None::<&str>, &msg, &Variant::new(db))?;
                                 }
                                 "IsStatusNotifierHostRegistered" => {
-                                    rsp = zbus::Message::method_reply(None, &msg, &Variant::Bool(true))?;
+                                    rsp = zbus::Message::method_reply(None::<&str>, &msg, &Variant::Bool(true))?;
                                 }
                                 "ProtocolVersion" => {
-                                    rsp = zbus::Message::method_reply(None, &msg, &Variant::I32(0))?;
+                                    rsp = zbus::Message::method_reply(None::<&str>, &msg, &Variant::I32(0))?;
                                 }
                                 _ => {}
                             }
@@ -214,7 +214,7 @@ impl Tray {
                                         ("ProtocolVersion".into(), Variant::I32(0)),
                                     ];
                                     let rv : HashMap<_,_> = rv.into_iter().collect();
-                                    rsp = zbus::Message::method_reply(None, &msg, &rv)?;
+                                    rsp = zbus::Message::method_reply(None::<&str>, &msg, &rv)?;
                                 }
                                 _ => {}
                             }
@@ -223,9 +223,9 @@ impl Tray {
                     }
                 }
                 Some("org.freedesktop.DBus.Introspectable") => {
-                    match hdr.member()? {
+                    match hdr.member()?.map(|m| m.as_str()) {
                         Some("Introspect") => {
-                            rsp = zbus::Message::method_reply(None, &msg, &concat!(
+                            rsp = zbus::Message::method_reply(None::<&str>, &msg, &concat!(
                                 r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">"#,
                                 r#"<node><interface name="org.freedesktop.StatusNotifierWatcher">"#,
                                     r#"<method name="RegisterStatusNotifierItem"><arg name="name" direction="in" type="s"/></method>"#,
@@ -269,7 +269,7 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
     let name = format!("org.{}.StatusNotifierHost-{}", who, std::process::id());
 
     dbus.send(zbus::Message::method(
-        None,
+        None::<&str>,
         Some("org.freedesktop.DBus"),
         "/org/freedesktop/DBus",
         Some("org.freedesktop.DBus"),
@@ -278,7 +278,7 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
     )?);
 
     dbus.spawn_call_err(zbus::Message::method(
-        None,
+        None::<&str>,
         Some("org.freedesktop.DBus"),
         "/org/freedesktop/DBus",
         Some("org.freedesktop.DBus"),
@@ -289,7 +289,7 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
         match msg.body()? {
             RequestNameReply::PrimaryOwner => {
                 let dbus = DBus::get_session();
-                dbus.send(zbus::Message::signal(None, None, "/StatusNotifierWatcher", snw_path, "StatusNotifierHostRegistered", &())?);
+                dbus.send(zbus::Message::signal(None::<&str>, None::<&str>, "/StatusNotifierWatcher", snw_path, "StatusNotifierHostRegistered", &())?);
             }
             _ => {}
         }
@@ -310,7 +310,7 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
     });
 
     dbus.send(zbus::Message::method(
-        None,
+        None::<&str>,
         Some("org.freedesktop.DBus"),
         "/org/freedesktop/DBus",
         Some("org.freedesktop.DBus"),
@@ -344,7 +344,7 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
         spawn("Tray item refresh", async move {
             let zbus = DBus::get_session().connection().await;
             let props = zbus.call_method(
-                Some(&owner),
+                Some(&*owner),
                 &path,
                 Some("org.freedesktop.DBus.Properties"),
                 "GetAll",
@@ -358,7 +358,7 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
     });
 
     dbus.send(zbus::Message::method(
-        None,
+        None::<&str>,
         Some(snw_path),
         "/StatusNotifierWatcher",
         Some(snw_path),
@@ -396,7 +396,7 @@ fn do_add_item(is_kde : bool, item : String) {
         let rule = format!("type='signal',interface='{}',sender='{}',path='{}'", sni_path, owner, path);
 
         dbus.send(zbus::Message::method(
-            None,
+            None::<&str>,
             Some("org.freedesktop.DBus"),
             "/org/freedesktop/DBus",
             Some("org.freedesktop.DBus"),
@@ -442,7 +442,7 @@ fn do_add_item(is_kde : bool, item : String) {
         }
 
         let props = zbus.call_method(
-            Some(&owner),
+            Some(&*owner),
             &*path,
             Some("org.freedesktop.DBus.Properties"),
             "GetAll",
@@ -619,7 +619,7 @@ impl TrayPopupMenu {
     fn add_remove_match(&self, dbus : &DBus, method : &str) {
         if let Some(menu_path) = self.menu_path.take_in(|m| m.clone()) {
             dbus.send(zbus::Message::method(
-                None,
+                None::<&str>,
                 Some("org.freedesktop.DBus"),
                 "/org/freedesktop/DBus",
                 Some("org.freedesktop.DBus"),
@@ -627,7 +627,7 @@ impl TrayPopupMenu {
                 &format!("type='signal',interface='com.canonical.dbusmenu',member='ItemsPropertiesUpdated',sender='{}',path='{}'", self.owner, menu_path),
             ).unwrap());
             dbus.send(zbus::Message::method(
-                None,
+                None::<&str>,
                 Some("org.freedesktop.DBus"),
                 "/org/freedesktop/DBus",
                 Some("org.freedesktop.DBus"),
@@ -659,7 +659,7 @@ async fn refresh_menu(menu : Rc<TrayPopupMenu>) -> Result<(), Box<dyn Error>> {
     let zbus = dbus.connection().await;
 
     zbus.call_method(
-        Some(&menu.owner),
+        Some(&*menu.owner),
         &*menu_path,
         Some("com.canonical.dbusmenu"),
         "AboutToShow",
@@ -675,7 +675,7 @@ async fn refresh_menu(menu : Rc<TrayPopupMenu>) -> Result<(), Box<dyn Error>> {
             }
             if let Some(menu) = weak.upgrade() {
                 let hdr = msg.header().unwrap();
-                if hdr.sender().ok().flatten() != Some(&*menu.owner) ||
+                if hdr.sender().ok().flatten().map_or(true, |s| *s != &*menu.owner) ||
                     menu.menu_path.take_in(|mp| Some(msg_path.as_str()) != mp.as_deref())
                 {
                     return;
@@ -691,7 +691,7 @@ async fn refresh_menu(menu : Rc<TrayPopupMenu>) -> Result<(), Box<dyn Error>> {
     // ? MatchRule::new_signal("com.canonical.dbusmenu", "ItemActivationRequested");
 
     let rv = zbus.call_method(
-        Some(&menu.owner),
+        Some(&*menu.owner),
         &*menu_path,
         Some("com.canonical.dbusmenu"),
         "GetLayout",
@@ -778,8 +778,8 @@ impl TrayPopup {
                 let dbus = DBus::get_session();
                 debug!("Clicking {} {} id {}", self.owner, menu_path, id);
                 dbus.send(zbus::Message::method(
-                    None,
-                    Some(&self.owner),
+                    None::<&str>,
+                    Some(&*self.owner),
                     &**menu_path,
                     Some("com.canonical.dbusmenu"),
                     "Event",
@@ -884,8 +884,8 @@ pub fn do_click(owner : &Rc<str>, path : &Rc<str>, how : u32) {
                 debug!("Invoking {} on {}", method, item.id);
                 if how < 3 {
                     dbus.send(zbus::Message::method(
-                        None,
-                        Some(owner),
+                        None::<&str>,
+                        Some(&**owner),
                         &**path,
                         Some(sni_path),
                         method,
@@ -893,8 +893,8 @@ pub fn do_click(owner : &Rc<str>, path : &Rc<str>, how : u32) {
                     ).unwrap());
                 } else {
                     dbus.send(zbus::Message::method(
-                        None,
-                        Some(owner),
+                        None::<&str>,
+                        Some(&**owner),
                         &**path,
                         Some(sni_path),
                         "Scroll",

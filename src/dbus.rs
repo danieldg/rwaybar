@@ -10,7 +10,6 @@ use once_cell::unsync::OnceCell;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::convert::TryInto;
 use std::fmt;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -238,7 +237,7 @@ impl DBus {
             w.len() == 1
         }) {
             self.send(zbus::Message::method(
-                None,
+                None::<&str>,
                 Some("org.freedesktop.DBus"),
                 "/org/freedesktop/DBus",
                 Some("org.freedesktop.DBus"),
@@ -256,7 +255,7 @@ impl DBus {
             w.len() == 1
         }) {
             self.send(zbus::Message::method(
-                None,
+                None::<&str>,
                 Some("org.freedesktop.DBus"),
                 "/org/freedesktop/DBus",
                 Some("org.freedesktop.DBus"),
@@ -291,8 +290,8 @@ impl DBus {
                 if let Some(object) = path.and_then(|p| objects.get_mut(p)) {
                     (object)(msg);
                 } else if path == Some("/") &&
-                    head.interface()? == Some("org.freedesktop.DBus.Introspectable") &&
-                    head.member()? == Some("Introspect")
+                    head.interface()?.map_or(false, |v| *v == "org.freedesktop.DBus.Introspectable") &&
+                    head.member()?.map_or(false, |v| *v == "Introspect")
                 {
                     let mut rv = String::new();
                     rv.push_str(r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd"><node>"#);
@@ -301,10 +300,10 @@ impl DBus {
                         write!(rv, r#"<node name="{}"/>"#, &node[1..]).unwrap();
                     }
                     rv.push_str(r#"</node>"#);
-                    let reply = zbus::Message::method_reply(None, &msg, &rv)?;
+                    let reply = zbus::Message::method_reply(None::<&str>, &msg, &rv)?;
                     self.send(reply);
                 } else {
-                    let reply = zbus::Message::method_error(None, &msg, "org.freedesktop.DBus.Error.UnknownMethod", &"Path not found")?;
+                    let reply = zbus::Message::method_error(None::<&str>, &msg, "org.freedesktop.DBus.Error.UnknownMethod", &"Path not found")?;
                     self.send(reply);
                 }
                 self.api.take_in(|api| {
@@ -478,7 +477,7 @@ impl DbusValue {
                     expr.push_str("'");
                 }
                 dbus.send(zbus::Message::method(
-                    None,
+                    None::<&str>,
                     Some("org.freedesktop.DBus"),
                     "/org/freedesktop/DBus",
                     Some("org.freedesktop.DBus"),
@@ -560,7 +559,7 @@ impl DbusValue {
 
         if api.is_none() {
             let msg = zbus.call_method(
-                Some(&self.bus_name),
+                Some(&*self.bus_name),
                 &*self.path,
                 Some("org.freedesktop.DBus.Introspectable"),
                 "Introspect",
@@ -694,15 +693,14 @@ impl DbusValue {
         }
         let args = args.build();
         let reply = zbus.call_method(
-            Some(&self.bus_name),
+            Some(&*self.bus_name),
             &*self.path,
-            Some(&self.interface),
-            &self.member,
+            Some(&*self.interface),
+            &*self.member,
             &args,
         ).await?;
 
-        let sig = format!("({})", reply.body_signature()?.as_str()).try_into()?;
-        *self.value.borrow_mut() = Some(Variant::Structure(reply.body_with_signature(&sig)?).into());
+        *self.value.borrow_mut() = Some(Variant::Structure(reply.body_as_structure()?).into());
 
         self.interested.take().notify_data("dbus-read");
         Ok(())
