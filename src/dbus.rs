@@ -700,7 +700,7 @@ impl DbusValue {
             &args,
         ).await?;
 
-        *self.value.borrow_mut() = Some(Variant::Structure(reply.body_as_structure()?).into());
+        *self.value.borrow_mut() = Some(Variant::Structure(reply.body()?).into());
 
         self.interested.take().notify_data("dbus-read");
         Ok(())
