@@ -1467,7 +1467,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "zbus"
-version = "2.0.0-beta.5"
+version = "2.0.0-beta.6"
 dependencies = [
  "async-broadcast",
  "async-channel",
@@ -1499,7 +1499,7 @@ dependencies = [
 
 [[package]]
 name = "zbus_macros"
-version = "2.0.0-beta.5"
+version = "2.0.0-beta.6"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1519,7 +1519,7 @@ dependencies = [
 
 [[package]]
 name = "zvariant"
-version = "2.7.0"
+version = "2.8.0"
 dependencies = [
  "byteorder",
  "enumflags2",
@@ -1530,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "zvariant_derive"
-version = "2.7.0"
+version = "2.8.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",

@@ -15,7 +15,7 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task;
-use zbus::azync::Connection;
+use zbus::azync::{Connection,ConnectionBuilder};
 use zvariant::Value as Variant;
 use zvariant::OwnedValue;
 
@@ -149,9 +149,9 @@ impl DBus {
         util::spawn("DBus Sender", async move {
             let zbus;
             if is_session {
-                zbus = Connection::new_session().await?;
+                zbus = ConnectionBuilder::session()?.build().await?;
             } else {
-                zbus = Connection::new_system().await?;
+                zbus = ConnectionBuilder::system()?.build().await?;
             }
             match this.bus.replace(Ok(zbus.clone())) {
                 Ok(_) => unreachable!(),
