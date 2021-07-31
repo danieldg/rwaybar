@@ -1,12 +1,15 @@
 use crate::data::{IterationItem,Value};
-use crate::dbus::{DBus,SigWatcherToken};
+use crate::dbus::DBus;
 use crate::event::EventSink;
 use crate::font::render_font;
 use crate::item::{Item,PopupDesc};
 use crate::render::Render;
 use crate::state::{Runtime,NotifierList};
-use crate::util::{Cell,spawn};
+use crate::util::{Cell,spawn,spawn_noerr};
+use futures::future::RemoteHandle;
+use futures_util::FutureExt;
 use once_cell::unsync::OnceCell;
+use async_oncecell::OnceCell as AsyncOnceCell;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::error::Error;
@@ -17,6 +20,112 @@ use std::time::{SystemTime,Duration,UNIX_EPOCH};
 use log::{debug,warn};
 use zvariant::Value as Variant;
 use zvariant::OwnedValue;
+use zbus::dbus_proxy;
+use zbus::fdo;
+
+#[dbus_proxy(interface="com.canonical.dbusmenu")]
+trait DBusMenu {
+    /*
+    <property name="Version" type="u" access="read"/>
+    <property name="Status" type="s" access="read"/>
+
+    <signal name="ItemsPropertiesUpdated">
+      <arg type="a(ia{sv})" direction="out"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="DBusMenuItemList"/>
+      <arg type="a(ias)" direction="out"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out1" value="DBusMenuItemKeysList"/>
+    </signal>
+    <signal name="LayoutUpdated">
+      <arg name="revision" type="u" direction="out"/>
+      <arg name="parentId" type="i" direction="out"/>
+    </signal>
+    <signal name="ItemActivationRequested">
+      <arg name="id" type="i" direction="out"/>
+      <arg name="timeStamp" type="u" direction="out"/>
+    </signal>
+
+    <method name="GetProperty">
+      <arg type="v" direction="out"/>
+      <arg name="id" type="i" direction="in"/>
+      <arg name="property" type="s" direction="in"/>
+    </method>
+    <method name="GetGroupProperties">
+      <arg type="a(ia{sv})" direction="out"/>
+      <arg name="ids" type="ai" direction="in"/>
+      <arg name="propertyNames" type="as" direction="in"/>
+    </method>
+*/
+    fn about_to_show(&self, id: i32) -> fdo::Result<bool>;
+
+    fn get_layout(&self, parent_id: i32, recursion_depth: i32, property_names: &[&str])
+        -> fdo::Result<(u32, (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>))>;
+
+    // TODO noreply
+    fn event(&self, id: i32, event_id: &str, data: &Variant<'_>, timestamp: u32)
+        -> fdo::Result<()>;
+}
+
+#[dbus_proxy(interface="org.freedesktop.StatusNotifierItem")]
+// Note: override interface to org.kde.StatusNotifierItem if needed
+trait StatusNotifierItem {
+/*
+ * Can't actually use the properties because caching is broken
+ * (thanks a lot, KDE)
+    <property access="read" type="s" name="Category"/>
+    <property access="read" type="s" name="Id"/>
+    <property access="read" type="s" name="Title"/>
+    <property access="read" type="s" name="Status"/>
+    <property access="read" type="i" name="WindowId"/>
+    <property access="read" type="s" name="IconThemePath"/>
+    <property access="read" type="o" name="Menu"/>
+    <property access="read" type="b" name="ItemIsMenu"/>
+    <property access="read" type="s" name="IconName"/>
+    <property access="read" type="a(iiay)" name="IconPixmap">
+      <annotation value="KDbusImageVector" name="org.qtproject.QtDBus.QtTypeName"/>
+    </property>
+    <property access="read" type="s" name="OverlayIconName"/>
+    <property access="read" type="a(iiay)" name="OverlayIconPixmap">
+      <annotation value="KDbusImageVector" name="org.qtproject.QtDBus.QtTypeName"/>
+    </property>
+    <property access="read" type="s" name="AttentionIconName"/>
+    <property access="read" type="a(iiay)" name="AttentionIconPixmap">
+      <annotation value="KDbusImageVector" name="org.qtproject.QtDBus.QtTypeName"/>
+    </property>
+    <property access="read" type="s" name="AttentionMovieName"/>
+    <property access="read" type="(sa(iiay)ss)" name="ToolTip">
+      <annotation value="KDbusToolTipStruct" name="org.qtproject.QtDBus.QtTypeName"/>
+    </property>
+
+ * Methods are called as sync/NoReply
+    <method name="ContextMenu">
+      <arg direction="in" type="i" name="x"/>
+      <arg direction="in" type="i" name="y"/>
+    </method>
+    <method name="Activate">
+      <arg direction="in" type="i" name="x"/>
+      <arg direction="in" type="i" name="y"/>
+    </method>
+    <method name="SecondaryActivate">
+      <arg direction="in" type="i" name="x"/>
+      <arg direction="in" type="i" name="y"/>
+    </method>
+    <method name="Scroll">
+      <arg direction="in" type="i" name="delta"/>
+      <arg direction="in" type="s" name="orientation"/>
+    </method>
+
+ * Signals could be useful, but not as they are now.
+    <signal name="NewTitle"/>
+    <signal name="NewIcon"/>
+    <signal name="NewAttentionIcon"/>
+    <signal name="NewOverlayIcon"/>
+    <signal name="NewMenu"/>
+    <signal name="NewToolTip"/>
+    <signal name="NewStatus">
+      <arg type="s" name="status"/>
+    </signal>
+*/
+}
 
 thread_local! {
     static DATA : ManuallyDrop<OnceCell<Tray>> = Default::default();
@@ -26,6 +135,7 @@ thread_local! {
 struct TrayItem {
     owner : Rc<str>,
     path : Rc<str>,
+    // sni: AsyncStatusNotifierItemProxy<'static>,
     is_kde : bool,
 
     rule : Box<str>,
@@ -404,6 +514,15 @@ fn do_add_item(is_kde : bool, item : String) {
             &rule,
         )?);
 
+        /* This is a nice idea but not actually useful
+        let sni = AsyncStatusNotifierItemProxy::builder(&zbus)
+            .destination(String::from(&*owner))?
+            .path(String::from(&*path))?
+            .interface(sni_path)?
+            .build()
+            .await?;
+        */
+
         let item = TrayItem {
             owner : owner.clone(),
             path : path.clone(),
@@ -418,8 +537,9 @@ fn do_add_item(is_kde : bool, item : String) {
             menu : Rc::new(TrayPopupMenu {
                 owner : owner.clone(),
                 menu_path : Default::default(),
+                menu: Default::default(),
+                watcher: Default::default(),
                 fresh : Cell::new(None),
-                dbus_token : Default::default(),
                 items : Default::default(),
                 interested : Default::default(),
             }),
@@ -513,8 +633,9 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<&str, OwnedVal
                                 item.menu = Rc::new(TrayPopupMenu {
                                     owner : item.owner.clone(),
                                     menu_path : Cell::new(Some(v)),
+                                    menu: Default::default(),
+                                    watcher: Default::default(),
                                     fresh : Default::default(),
-                                    dbus_token : Default::default(),
                                     items : Default::default(),
                                     interested : Default::default(),
                                 });
@@ -531,7 +652,6 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<&str, OwnedVal
 
 #[derive(Clone,Debug)]
 pub struct TrayPopup {
-    owner : Rc<str>,
     title : Option<Rc<str>>,
     tooltip : Option<Rc<str>>,
     menu : Rc<TrayPopupMenu>,
@@ -540,8 +660,7 @@ pub struct TrayPopup {
 
 impl PartialEq for TrayPopup {
     fn eq(&self, rhs : &Self) -> bool {
-        Rc::ptr_eq(&self.owner, &rhs.owner) &&
-            Rc::ptr_eq(&self.menu, &rhs.menu)
+        Rc::ptr_eq(&self.menu, &rhs.menu)
     }
 }
 
@@ -549,8 +668,9 @@ impl PartialEq for TrayPopup {
 struct TrayPopupMenu {
     owner : Rc<str>,
     menu_path : Cell<Option<Rc<str>>>,
+    menu : AsyncOnceCell<AsyncDBusMenuProxy<'static>>,
+    watcher : OnceCell<RemoteHandle<()>>,
     fresh : Cell<Option<Instant>>,
-    dbus_token : Cell<SigWatcherToken>,
     items : Cell<Vec<MenuItem>>,
     interested : Cell<NotifierList>,
 }
@@ -616,8 +736,91 @@ impl TrayPopupMenu {
             }
         }
     }
+
+    async fn get_proxy<'a>(self : &'a Rc<Self>) -> Result<Option<&'a AsyncDBusMenuProxy<'static>>, Box<dyn Error>> {
+        if let Some(dbm) = self.menu.get() {
+            return Ok(Some(dbm));
+        }
+
+        let menu_path = match self.menu_path.take_in(|m| m.clone()) {
+            Some(mp) => mp,
+            None => return Ok(None)
+        };
+        let dbus = DBus::get_session();
+        let zbus = dbus.connection().await;
+        let dbm = self.menu.get_or_try_init(async {
+            AsyncDBusMenuProxy::builder(&zbus)
+                .destination(String::from(&*self.owner))?
+                .path(String::from(&*menu_path))?
+                .build().await
+        }).await?;
+        self.watcher.get_or_init(|| {
+            use futures_util::StreamExt;
+            let weak = Rc::downgrade(&self);
+            let mut conn = dbm.connection().clone();
+            let (task, rh) = async move {
+                while let Some(Ok(msg)) = conn.next().await {
+                    if let Some(menu) = weak.upgrade() {
+                        menu.refrsh_signal(&msg).await;
+                    }
+                }
+            }.remote_handle();
+            spawn_noerr(task);
+            rh
+        });
+
+        Ok(Some(dbm))
+    }
+
+    async fn refrsh_signal(self: Rc<Self>, msg: &zbus::Message) {
+        if msg.primary_header().msg_type() != zbus::MessageType::Signal {
+            return;
+        }
+        let dbm = self.proxy().unwrap();
+        let hdr = msg.header().unwrap();
+        if hdr.interface() != Ok(Some(&dbm.interface())) ||
+            hdr.path() != Ok(Some(&dbm.path())) ||
+            hdr.sender().ok().flatten().map(|s| s.as_str()) != Some(&*self.owner)
+        {
+            return;
+        }
+
+        if self.fresh.replace(None).is_some() {
+            match self.refresh().await {
+                Ok(()) => (),
+                Err(e) => {
+                    warn!("Error refreshing menu: {}", e);
+                }
+            }
+        }
+    }
+
+    fn proxy(&self) -> Option<&AsyncDBusMenuProxy<'static>> {
+        self.menu.get()
+    }
+
+    async fn refresh(self : Rc<Self>) -> Result<(), Box<dyn Error>> {
+        let dbm = match self.get_proxy().await? {
+            Some(dbm) => dbm,
+            None => return Ok(()),
+        };
+
+        dbm.about_to_show(0).await?;
+
+        let (_rev, (_id, _props, contents)) = dbm.get_layout(0, -1, &["type", "label", "visible", "enabled"] as &[&str]).await?;
+
+        let mut items = Vec::new();
+        TrayPopupMenu::add_items(&mut items, contents.iter().map(|v| &**v), 0);
+        self.items.set(items);
+        self.interested.take().notify_data("tray:menu");
+        self.fresh.set(Some(Instant::now()));
+
+        Ok(())
+    }
+
     fn add_remove_match(&self, dbus : &DBus, method : &str) {
         if let Some(menu_path) = self.menu_path.take_in(|m| m.clone()) {
+            // NoReply would be nice
             dbus.send(zbus::Message::method(
                 None::<&str>,
                 Some("org.freedesktop.DBus"),
@@ -640,73 +843,11 @@ impl TrayPopupMenu {
 
 impl Drop for TrayPopupMenu {
     fn drop(&mut self) {
-        let mut token = self.dbus_token.take();
-        if !token.is_active() {
-            return;
-        }
         let dbus = DBus::get_session();
         self.add_remove_match(&dbus, "RemoveMatch");
-        dbus.stop_signal_watcher(&mut token);
     }
 }
 
-async fn refresh_menu(menu : Rc<TrayPopupMenu>) -> Result<(), Box<dyn Error>> {
-    let menu_path = match menu.menu_path.take_in(|m| m.clone()) {
-        Some(mp) => mp,
-        None => return Ok(())
-    };
-    let dbus = DBus::get_session();
-    let zbus = dbus.connection().await;
-
-    zbus.call_method(
-        Some(&*menu.owner),
-        &*menu_path,
-        Some("com.canonical.dbusmenu"),
-        "AboutToShow",
-        &0i32,
-    ).await?;
-
-    if menu.dbus_token.take_in(|t| !t.is_active()) {
-        menu.add_remove_match(&dbus, "AddMatch");
-        let weak = Rc::downgrade(&menu);
-        let token = dbus.add_signal_watcher(move |msg_path, msg_iface, _member, msg| {
-            if msg_iface != "com.canonical.dbusmenu" {
-                return;
-            }
-            if let Some(menu) = weak.upgrade() {
-                let hdr = msg.header().unwrap();
-                if hdr.sender().ok().flatten().map_or(true, |s| *s != &*menu.owner) ||
-                    menu.menu_path.take_in(|mp| Some(msg_path.as_str()) != mp.as_deref())
-                {
-                    return;
-                }
-                if menu.fresh.replace(None).is_none() {
-                    spawn("Tray menu refresh", refresh_menu(menu));
-                }
-            }
-        });
-        menu.dbus_token.set(token);
-    }
-
-    // ? MatchRule::new_signal("com.canonical.dbusmenu", "ItemActivationRequested");
-
-    let rv = zbus.call_method(
-        Some(&*menu.owner),
-        &*menu_path,
-        Some("com.canonical.dbusmenu"),
-        "GetLayout",
-        &(0i32, -1i32, &["type", "label", "visible", "enabled"] as &[&str])
-    ).await?;
-    let (_rev, (_id, _props, contents)) : (u32, (i32, HashMap<&str, Variant>, Vec<Variant>)) = rv.body()?;
-
-    let mut items = Vec::new();
-    TrayPopupMenu::add_items(&mut items, contents.iter(), 0);
-    menu.items.set(items);
-    menu.interested.take().notify_data("tray:menu");
-    menu.fresh.set(Some(Instant::now()));
-
-    Ok(())
-}
 
 impl TrayPopup {
     pub fn render(&mut self, ctx : &mut Render) {
@@ -729,7 +870,7 @@ impl TrayPopup {
         {
             // need to kick off the first refresh
             let menu = self.menu.clone();
-            spawn("Tray menu population", refresh_menu(menu));
+            spawn("Tray menu population", menu.refresh());
         }
 
         self.menu.interested.take_in(|i| i.add(ctx.runtime));
@@ -770,22 +911,22 @@ impl TrayPopup {
         let y = y as f32;
         let _ = (x, button);
         for &(min, max, id) in &self.rendered_ids {
-            let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
             if y < min || y > max {
                 continue;
             }
-            self.menu.menu_path.take_in_some(|menu_path| {
+            if let Some(dbm) = self.menu.proxy() {
+                let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+                debug!("Clicking {} {} id {}", dbm.destination(), dbm.path(), id);
                 let dbus = DBus::get_session();
-                debug!("Clicking {} {} id {}", self.owner, menu_path, id);
                 dbus.send(zbus::Message::method(
                     None::<&str>,
-                    Some(&*self.owner),
-                    &**menu_path,
-                    Some("com.canonical.dbusmenu"),
+                    Some(dbm.destination()),
+                    dbm.path(),
+                    Some(dbm.interface()),
                     "Event",
                     &(id, "clicked", Variant::I32(0), ts as u32)
                 ).unwrap());
-            });
+            }
         }
     }
 }
@@ -820,7 +961,7 @@ pub fn show(ctx : &mut Render, rv : &mut EventSink, [passive, active, urgent]: [
             let mut es = EventSink::from_tray(owner.clone(), path);
             es.offset_clamp(0.0, x0, x1);
             es.add_hover(x0, x1, PopupDesc::Tray(TrayPopup {
-                owner, title, menu, tooltip, rendered_ids : Vec::new(),
+                title, menu, tooltip, rendered_ids : Vec::new(),
             }));
             rv.merge(es);
         }
