@@ -45,6 +45,7 @@ trait MediaPlayer2 {
     fn supported_uri_schemes(&self) -> zbus::Result<Vec<String>>;
 }
 
+// TODO need nonblocking caching
 #[dbus_proxy(interface = "org.mpris.MediaPlayer2.Player")]
 trait Player {
     /// Next method

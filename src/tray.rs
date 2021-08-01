@@ -145,6 +145,7 @@ struct TrayItem {
     icon_path : Box<str>,
     status : Box<str>,
     tooltip : Option<Rc<str>>,
+    inspection: Option<RemoteHandle<()>>,
     menu : Rc<TrayPopupMenu>,
 }
 
@@ -415,7 +416,7 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
         }
         let src = msg.sender().unwrap().unwrap();
         let path = msg.path().unwrap().unwrap();
-        handle_item_update(&src, &path, props);
+        handle_item_update(&src, &path, props, false);
     });
 
     dbus.send(zbus::Message::method(
@@ -427,6 +428,7 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
         &snw_rule,
     )?);
 
+    let zbus = dbus.connection().await;
     dbus.add_signal_watcher(move |_path, iface, memb, msg| {
         if iface != snw_path {
             return;
@@ -436,7 +438,7 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
             _ => return,
         };
         match memb {
-            "StatusNotifierItemRegistered" => do_add_item(is_kde, item),
+            "StatusNotifierItemRegistered" => do_add_item(&zbus, is_kde, item),
             "StatusNotifierItemUnregistered" => do_del_item(item),
             _ => ()
         }
@@ -447,22 +449,40 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
         if iface != sni_path {
             return;
         }
-        let path = path.to_owned();
         let hdr = msg.header().unwrap();
-        let owner = hdr.sender().unwrap().unwrap().to_owned();
-        spawn("Tray item refresh", async move {
-            let zbus = DBus::get_session().connection().await;
-            let props = zbus.call_method(
-                Some(&*owner),
-                &path,
-                Some("org.freedesktop.DBus.Properties"),
-                "GetAll",
-                &()
-            ).await?;
-            let props = props.body()?;
+        let owner = hdr.sender().unwrap().unwrap();
 
-            handle_item_update(&owner, &path, &props);
-            Ok(())
+        DATA.with(|cell| {
+            let tray = cell.get();
+            let tray = tray.as_ref().unwrap();
+            tray.items.take_in(|items| {
+                for item in items {
+                    if &*item.owner != &**owner || &*item.path != &**path {
+                        continue;
+                    }
+
+                    let owner = item.owner.clone();
+                    let path = item.path.clone();
+
+                    // Only re-inspect if we aren't already doing that
+                    item.inspection.get_or_insert_with(|| {
+                        spawn_handle("Tray item refresh", async move {
+                            let zbus = DBus::get_session().connection().await;
+                            let props = zbus.call_method(
+                                Some(&*owner),
+                                &*path,
+                                Some("org.freedesktop.DBus.Properties"),
+                                "GetAll",
+                                &()
+                            ).await?;
+                            let props = props.body()?;
+
+                            handle_item_update(&owner, &path, &props, true);
+                            Ok(())
+                        })
+                    });
+                }
+            });
         });
     });
 
@@ -484,7 +504,7 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
         &(snw_path, "RegisteredStatusNotifierItems"),
     ).await?.body()? {
         Variant::Array(items) => for item in items.get() {
-            do_add_item(is_kde, item.try_into()?);
+            do_add_item(&zbus, is_kde, item.try_into()?);
         }
         _ => {}
     }
@@ -492,85 +512,88 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn do_add_item(is_kde : bool, item : String) {
+fn do_add_item(zbus: &zbus::azync::Connection, is_kde : bool, item : String) {
+    let zbus = zbus.clone();
     let sni_path = if is_kde { "org.kde.StatusNotifierItem" } else { "org.freedesktop.StatusNotifierItem" };
-    spawn("Tray item inspection", async move {
-        let dbus = DBus::get_session();
-        let zbus = dbus.connection().await;
+    let dbus = DBus::get_session();
 
-        let (owner, path) : (Rc<str>, Rc<str>) = match item.find('/') {
-            Some(pos) => (Rc::from(&item[..pos]), Rc::from(&item[pos..])),
-            None => return Ok(()),
-        };
-        let rule = format!("type='signal',interface='{}',sender='{}',path='{}'", sni_path, owner, path);
+    let (owner, path) : (Rc<str>, Rc<str>) = match item.find('/') {
+        Some(pos) => (Rc::from(&item[..pos]), Rc::from(&item[pos..])),
+        None => return,
+    };
+    let rule = format!("type='signal',interface='{}',sender='{}',path='{}'", sni_path, owner, path);
 
-        dbus.send(zbus::Message::method(
-            None::<&str>,
-            Some("org.freedesktop.DBus"),
-            "/org/freedesktop/DBus",
-            Some("org.freedesktop.DBus"),
-            "AddMatch",
-            &rule,
-        )?);
+    dbus.send(zbus::Message::method(
+        None::<&str>,
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        Some("org.freedesktop.DBus"),
+        "AddMatch",
+        &rule,
+    ).unwrap());
 
-        /* This is a nice idea but not actually useful
-        let sni = AsyncStatusNotifierItemProxy::builder(&zbus)
-            .destination(String::from(&*owner))?
-            .path(String::from(&*path))?
-            .interface(sni_path)?
-            .build()
-            .await?;
-        */
+    /* This is a nice idea but not actually useful
+     * It also needs AsyncOnceCell now
+    let sni = AsyncStatusNotifierItemProxy::builder(&zbus)
+        .destination(String::from(&*owner))?
+        .path(String::from(&*path))?
+        .interface(sni_path)?
+        .build()
+        .await?;
+    */
 
-        let item = TrayItem {
-            owner : owner.clone(),
-            path : path.clone(),
-            is_kde,
-            id : String::new(),
-            title : None,
-            icon : Default::default(),
-            icon_path : Default::default(),
-            status : Default::default(),
-            tooltip : None,
-            rule : rule.into(),
-            menu : Rc::new(TrayPopupMenu {
-                owner : owner.clone(),
-                menu_path : Default::default(),
-                menu: Default::default(),
-                watcher: Default::default(),
-                fresh : Cell::new(None),
-                items : Default::default(),
-                interested : Default::default(),
-            }),
-        };
+    let inspection = Some(spawn_handle("Tray item inspection", {
+        let owner = owner.clone();
+        let path = path.clone();
+        async move {
+            let props = zbus.call_method(
+                Some(&*owner),
+                &*path,
+                Some("org.freedesktop.DBus.Properties"),
+                "GetAll",
+                &sni_path,
+            ).await?;
 
-        if DATA.with(|cell| {
-            let tray = cell.get();
-            let tray = tray.as_ref().unwrap();
-            tray.items.take_in(|items| {
-                for item in &*items {
-                    if &*item.owner == &*owner && item.path == path {
-                        return true;
-                    }
-                }
-                items.push(item);
-                false
-            })
-        }) {
-            return Ok(());
+            let props = props.body()?;
+            handle_item_update(&owner, &path, &props, true);
+            Ok(())
         }
+    }));
 
-        let props = zbus.call_method(
-            Some(&*owner),
-            &*path,
-            Some("org.freedesktop.DBus.Properties"),
-            "GetAll",
-            &sni_path,
-        ).await?;
-
-        let props = props.body()?;
-        handle_item_update(&owner, &path, &props);
-        Ok(())
+    let item = TrayItem {
+        owner : owner.clone(),
+        path : path.clone(),
+        is_kde,
+        id : String::new(),
+        title : None,
+        icon : Default::default(),
+        icon_path : Default::default(),
+        status : Default::default(),
+        tooltip : None,
+        rule : rule.into(),
+        inspection,
+        menu : Rc::new(TrayPopupMenu {
+            owner : owner.clone(),
+            menu_path : Default::default(),
+            menu: Default::default(),
+            watcher: Default::default(),
+            refresh : Cell::new(None),
+            fresh : Cell::new(None),
+            items : Default::default(),
+            interested : Default::default(),
+        }),
+    };
+    DATA.with(|cell| {
+        let tray = cell.get();
+        let tray = tray.as_ref().unwrap();
+        tray.items.take_in(|items| {
+            for item in &*items {
+                if &*item.owner == &*owner && item.path == path {
+                    return;
+                }
+            }
+            items.push(item);
+        })
     });
 }
 
@@ -590,7 +613,7 @@ fn do_del_item(item : String) {
     });
 }
 
-fn handle_item_update(owner : &str, path : &str, props : &HashMap<&str, OwnedValue>) {
+fn handle_item_update(owner : &str, path : &str, props : &HashMap<&str, OwnedValue>, inspect_done: bool) {
     DATA.with(|cell| {
         let tray = cell.get();
         let tray = tray.as_ref().unwrap();
@@ -634,6 +657,7 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<&str, OwnedVal
                                     menu_path : Cell::new(Some(v)),
                                     menu: Default::default(),
                                     watcher: Default::default(),
+                                    refresh : Cell::new(None),
                                     fresh : Default::default(),
                                     items : Default::default(),
                                     interested : Default::default(),
@@ -642,6 +666,11 @@ fn handle_item_update(owner : &str, path : &str, props : &HashMap<&str, OwnedVal
                         })); }
                         _ => ()
                     }
+                }
+
+                if inspect_done {
+                    // Note: the current task is cancelled now
+                    item.inspection = None;
                 }
             }
         });
@@ -669,6 +698,7 @@ struct TrayPopupMenu {
     menu_path : Cell<Option<Rc<str>>>,
     menu : AsyncOnceCell<AsyncDBusMenuProxy<'static>>,
     watcher : OnceCell<RemoteHandle<()>>,
+    refresh: Cell<Option<RemoteHandle<()>>>,
     fresh : Cell<Option<Instant>>,
     items : Cell<Vec<MenuItem>>,
     interested : Cell<NotifierList>,
@@ -868,7 +898,9 @@ impl TrayPopup {
         {
             // need to kick off the first refresh
             let menu = self.menu.clone();
-            spawn("Tray menu population", menu.refresh());
+            self.menu.refresh.set(Some(
+                spawn_handle("Tray menu population", menu.refresh())
+            ));
         }
 
         self.menu.interested.take_in(|i| i.add(ctx.runtime));
