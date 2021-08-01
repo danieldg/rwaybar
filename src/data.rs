@@ -11,10 +11,9 @@ use crate::state::Runtime;
 use crate::sway;
 #[cfg(feature="dbus")]
 use crate::tray;
-use crate::util::{Cell,Fd,toml_to_string,toml_to_f64,spawn_noerr};
+use crate::util::{Cell,Fd,toml_to_string,toml_to_f64,spawn_noerr,spawn_handle};
 use evalexpr::Node as EvalExpr;
 use futures_util::future::RemoteHandle;
-use futures_util::FutureExt;
 use json::JsonValue;
 use log::{debug,info,warn,error};
 use std::borrow::Cow;
@@ -316,7 +315,7 @@ impl<T : 'static> Periodic<T> {
             let weak = Rc::downgrade(&self.shared);
             let period = self.period;
 
-            let (task, rh) = async move {
+            let rh = spawn_handle("Periodic", async move {
                 match fut {
                     Some(fut) => fut.await,
                     None => {}
@@ -325,7 +324,7 @@ impl<T : 'static> Periodic<T> {
                     tokio::time::sleep(Duration::from_secs_f64(period)).await;
                     let shared = match weak.upgrade() {
                         Some(v) => v,
-                        None => return,
+                        None => return Ok(()),
                     };
 
                     // Try to avoid reading if nobody is listening.
@@ -343,7 +342,7 @@ impl<T : 'static> Periodic<T> {
                     let interest_seq = shared.interested.take_in(|n| n.data_update_seq());
 
                     if interest_seq != shared.last_read.get() {
-                        return;
+                        return Ok(());
                     }
 
                     shared.last_update.set(Some(Instant::now()));
@@ -353,11 +352,9 @@ impl<T : 'static> Periodic<T> {
                         None => {}
                     }
                 }
-            }.remote_handle();
-
+            });
             // ensure we only have one task working to update the value
             self.timer.set(Some(rh));
-            spawn_noerr(task);
         } else if let Some(fut) = fut {
             spawn_noerr(fut);
         }
@@ -849,7 +846,7 @@ impl Module {
                         unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK); }
                         stdin.set(Some(pipe_in));
                         value.set(Some(rc.clone()));
-                        handle.set(Some(do_exec_json(fd, name.to_owned(), rc)));
+                        handle.set(Some(spawn_handle("ExecJson", do_exec_json(fd, name.to_owned(), rc))));
                     }
                 }
             }
@@ -970,12 +967,11 @@ impl Module {
                 }
                 let wake = inow + delay.map_or(Duration::from_secs(1), Duration::from_nanos);
                 let mut notify = NotifierList::active(rt);
-                let (task, rh) = async move {
+                timer.set(Some(spawn_handle("Clock tick", async move {
                     tokio::time::sleep_until(wake.into()).await;
                     notify.notify_data("clock");
-                }.remote_handle();
-                timer.set(Some(rh));
-                spawn_noerr(task);
+                    Ok(())
+                })));
 
                 f(Value::Owned(value))
             }
@@ -1329,8 +1325,8 @@ impl Module {
     }
 }
 
-fn do_exec_json(fd : i32, name : String, value : Rc<(Cell<JsonValue>, Cell<NotifierList>)>) -> RemoteHandle<()> {
-    let (task, rh) = async move {
+use std::error::Error;
+async fn do_exec_json(fd : i32, name : String, value : Rc<(Cell<JsonValue>, Cell<NotifierList>)>) -> Result<(), Box<dyn Error>> {
         let afd = AsyncFd::new(Fd(fd)).expect("Invalid FD from ChildStdin");
         let mut buffer : Vec<u8> = Vec::with_capacity(1024);
 
@@ -1339,7 +1335,7 @@ fn do_exec_json(fd : i32, name : String, value : Rc<(Cell<JsonValue>, Cell<Notif
                 Ok(h) => h,
                 Err(e) => {
                     warn!("Unable to wait for child read: {}", e);
-                    return;
+                    return Ok(());
                 }
             };
             'reading : loop {
@@ -1353,7 +1349,7 @@ fn do_exec_json(fd : i32, name : String, value : Rc<(Cell<JsonValue>, Cell<Notif
                     match rv {
                         0 => {
                             libc::close(fd);
-                            return;
+                            return Ok(());
                         }
                         len if rv > 0 && rv <= max_len as _ => {
                             buffer.set_len(start + len as usize);
@@ -1368,7 +1364,7 @@ fn do_exec_json(fd : i32, name : String, value : Rc<(Cell<JsonValue>, Cell<Notif
                                 }
                                 _ => {
                                     warn!("Got {} on child read; discontinuing", e);
-                                    return;
+                                    return Ok(());
                                 }
                             }
                         }
@@ -1396,7 +1392,4 @@ fn do_exec_json(fd : i32, name : String, value : Rc<(Cell<JsonValue>, Cell<Notif
                 }
             }
         }
-    }.remote_handle();
-    spawn_noerr(task);
-    rh
 }
