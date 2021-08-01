@@ -10,6 +10,119 @@ use std::rc::Rc;
 use log::{debug,warn,error};
 use zvariant::Value as Variant;
 use zvariant::OwnedValue;
+use zbus::dbus_proxy;
+
+#[dbus_proxy(interface = "org.mpris.MediaPlayer2")]
+trait MediaPlayer2 {
+    /// Quit method
+    fn quit(&self) -> zbus::Result<()>;
+
+    /// Raise method
+    fn raise(&self) -> zbus::Result<()>;
+
+    /// CanQuit property
+    #[dbus_proxy(property)]
+    fn can_quit(&self) -> zbus::Result<bool>;
+
+    /// CanRaise property
+    #[dbus_proxy(property)]
+    fn can_raise(&self) -> zbus::Result<bool>;
+
+    /// DesktopEntry property
+    #[dbus_proxy(property)]
+    fn desktop_entry(&self) -> zbus::Result<String>;
+
+    /// Identity property
+    #[dbus_proxy(property)]
+    fn identity(&self) -> zbus::Result<String>;
+
+    /// SupportedMimeTypes property
+    #[dbus_proxy(property)]
+    fn supported_mime_types(&self) -> zbus::Result<Vec<String>>;
+
+    /// SupportedUriSchemes property
+    #[dbus_proxy(property)]
+    fn supported_uri_schemes(&self) -> zbus::Result<Vec<String>>;
+}
+
+#[dbus_proxy(interface = "org.mpris.MediaPlayer2.Player")]
+trait Player {
+    /// Next method
+    fn next(&self) -> zbus::Result<()>;
+
+    /// Pause method
+    fn pause(&self) -> zbus::Result<()>;
+
+    /// Play method
+    fn play(&self) -> zbus::Result<()>;
+
+    /// PlayPause method
+    fn play_pause(&self) -> zbus::Result<()>;
+
+    /// Previous method
+    fn previous(&self) -> zbus::Result<()>;
+
+    /// Seek method
+    fn seek(&self, offset: i64) -> zbus::Result<()>;
+
+    /// SetPosition method
+    fn set_position(
+        &self,
+        trackid: &zvariant::ObjectPath<'_>,
+        position: i64,
+    ) -> zbus::Result<()>;
+
+    /// Stop method
+    fn stop(&self) -> zbus::Result<()>;
+
+    /// Seeked signal
+    #[dbus_proxy(signal)]
+    fn seeked(&self, position: i64) -> zbus::Result<()>;
+
+    /// CanControl property
+    #[dbus_proxy(property)]
+    fn can_control(&self) -> zbus::Result<bool>;
+
+    /// CanGoNext property
+    #[dbus_proxy(property)]
+    fn can_go_next(&self) -> zbus::Result<bool>;
+
+    /// CanGoPrevious property
+    #[dbus_proxy(property)]
+    fn can_go_previous(&self) -> zbus::Result<bool>;
+
+    /// CanPause property
+    #[dbus_proxy(property)]
+    fn can_pause(&self) -> zbus::Result<bool>;
+
+    /// CanPlay property
+    #[dbus_proxy(property)]
+    fn can_play(&self) -> zbus::Result<bool>;
+
+    /// CanSeek property
+    #[dbus_proxy(property)]
+    fn can_seek(&self) -> zbus::Result<bool>;
+
+    /// Metadata property
+    #[dbus_proxy(property)]
+    fn metadata(
+        &self,
+    ) -> zbus::Result<OwnedValue>; // HashMap<String, zvariant::OwnedValue>>;
+
+    /// PlaybackStatus property
+    #[dbus_proxy(property)]
+    fn playback_status(&self) -> zbus::Result<String>;
+
+    /// Position property
+    #[dbus_proxy(property)]
+    fn position(&self) -> zbus::Result<i64>;
+
+    /// Volume property
+    #[dbus_proxy(property)]
+    fn volume(&self) -> zbus::Result<f64>;
+    #[dbus_proxy(property)]
+    fn set_volume(&self, value: f64) -> zbus::Result<()>;
+}
 
 #[derive(Debug,Eq,PartialEq,Copy,Clone)]
 enum PlayState {
