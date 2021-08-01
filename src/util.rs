@@ -1,4 +1,6 @@
 use log::error;
+use futures::FutureExt;
+use futures::future::RemoteHandle;
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
@@ -129,4 +131,19 @@ pub fn spawn(owner : &'static str, fut : impl Future<Output=Result<(), Box<dyn E
             }
         }
     });
+}
+
+pub fn spawn_handle(owner : &'static str, fut : impl Future<Output=Result<(), Box<dyn Error>>> + 'static)
+    -> RemoteHandle<()>
+{
+    let (task, rh) = async move {
+        match fut.await {
+            Ok(()) => {}
+            Err(e) => {
+                error!("{}: {}", owner, e);
+            }
+        }
+    }.remote_handle();
+    spawn_noerr(task);
+    rh
 }
