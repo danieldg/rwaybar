@@ -5,9 +5,8 @@ use crate::font::render_font;
 use crate::item::{Item,PopupDesc};
 use crate::render::Render;
 use crate::state::{Runtime,NotifierList};
-use crate::util::{Cell,spawn,spawn_noerr};
+use crate::util::{Cell,spawn,spawn_handle};
 use futures::future::RemoteHandle;
-use futures_util::FutureExt;
 use once_cell::unsync::OnceCell;
 use async_oncecell::OnceCell as AsyncOnceCell;
 use std::collections::HashMap;
@@ -746,9 +745,9 @@ impl TrayPopupMenu {
             Some(mp) => mp,
             None => return Ok(None)
         };
-        let dbus = DBus::get_session();
-        let zbus = dbus.connection().await;
         let dbm = self.menu.get_or_try_init(async {
+            let dbus = DBus::get_session();
+            let zbus = dbus.connection().await;
             AsyncDBusMenuProxy::builder(&zbus)
                 .destination(String::from(&*self.owner))?
                 .path(String::from(&*menu_path))?
@@ -758,15 +757,14 @@ impl TrayPopupMenu {
             use futures_util::StreamExt;
             let weak = Rc::downgrade(&self);
             let mut conn = dbm.connection().clone();
-            let (task, rh) = async move {
+            spawn_handle("Menu refresh", async move {
                 while let Some(Ok(msg)) = conn.next().await {
                     if let Some(menu) = weak.upgrade() {
                         menu.refrsh_signal(&msg).await;
                     }
                 }
-            }.remote_handle();
-            spawn_noerr(task);
-            rh
+                Ok(())
+            })
         });
 
         Ok(Some(dbm))
