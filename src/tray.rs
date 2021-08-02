@@ -19,6 +19,7 @@ use std::time::{SystemTime,Duration,UNIX_EPOCH};
 use log::{debug,warn};
 use zvariant::Value as Variant;
 use zvariant::OwnedValue;
+use zbus::fdo::AsyncDBusProxy;
 use zbus::dbus_proxy;
 use zbus::fdo;
 
@@ -376,37 +377,22 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
         "type='signal',interface='org.freedesktop.StatusNotifierWatcher',path='/StatusNotifierWatcher'"
     };
     let dbus = DBus::get_session();
+    let zbus = dbus.connection().await;
     let name = format!("org.{}.StatusNotifierHost-{}", who, std::process::id());
 
-    dbus.send(zbus::Message::method(
-        None::<&str>,
-        Some("org.freedesktop.DBus"),
-        "/org/freedesktop/DBus",
-        Some("org.freedesktop.DBus"),
-        "RequestName",
-        &(&name, 0u32)
-    )?);
+    let dbif = AsyncDBusProxy::builder(&zbus)
+        .cache_properties(false)
+        .build().await?;
 
-    dbus.spawn_call_err(zbus::Message::method(
-        None::<&str>,
-        Some("org.freedesktop.DBus"),
-        "/org/freedesktop/DBus",
-        Some("org.freedesktop.DBus"),
-        "RequestName",
-        &(snw_path, 0u32)
-    )?, move |msg| {
-        use zbus::fdo::RequestNameReply;
-        match msg.body()? {
-            RequestNameReply::PrimaryOwner => {
-                let dbus = DBus::get_session();
-                dbus.send(zbus::Message::signal(None::<&str>, None::<&str>, "/StatusNotifierWatcher", snw_path, "StatusNotifierHostRegistered", &())?);
-            }
-            _ => {}
+    match futures::future::join(
+        dbif.request_name((&*name).try_into()?, Default::default()),
+        dbif.request_name(snw_path.try_into()?, Default::default()),
+    ).await.1? {
+        zbus::fdo::RequestNameReply::PrimaryOwner => {
+            dbus.send(zbus::Message::signal(None::<&str>, None::<&str>, "/StatusNotifierWatcher", snw_path, "StatusNotifierHostRegistered", &())?);
         }
-        Ok(())
-    }, |err : zbus::Error| {
-        warn!("Could not register as StatusNotifierWatcher, tray may not work: {})", err);
-    });
+        _ => {}
+    }
 
     dbus.add_property_change_watcher(move |msg, iface, props, _inval| {
         match iface {
@@ -419,16 +405,15 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
         handle_item_update(&src, &path, props, false);
     });
 
-    dbus.send(zbus::Message::method(
+    zbus.send_message(zbus::Message::method(
         None::<&str>,
         Some("org.freedesktop.DBus"),
         "/org/freedesktop/DBus",
         Some("org.freedesktop.DBus"),
         "AddMatch",
         &snw_rule,
-    )?);
+    )?).await?;
 
-    let zbus = dbus.connection().await;
     dbus.add_signal_watcher(move |_path, iface, memb, msg| {
         if iface != snw_path {
             return;
@@ -486,16 +471,17 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
         });
     });
 
-    dbus.send(zbus::Message::method(
+    let zbus = dbus.connection().await;
+    zbus.send_message(zbus::Message::method(
         None::<&str>,
         Some(snw_path),
         "/StatusNotifierWatcher",
         Some(snw_path),
         "RegisterStatusNotifierHost",
         &name
-    )?);
+    )?).await?;
 
-    let zbus = dbus.connection().await;
+    // Note: this must be well-ordered after the above RequestName
     match zbus.call_method(
         Some(snw_path),
         "/StatusNotifierWatcher",
