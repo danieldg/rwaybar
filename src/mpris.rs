@@ -11,6 +11,8 @@ use log::{debug,warn,error};
 use zvariant::Value as Variant;
 use zvariant::OwnedValue;
 use zbus::dbus_proxy;
+use zbus::fdo::AsyncDBusProxy;
+use zbus::names::UniqueName;
 
 #[dbus_proxy(interface = "org.mpris.MediaPlayer2")]
 trait MediaPlayer2 {
@@ -143,10 +145,10 @@ impl PlayState {
     }
 }
 
-#[derive(Debug,Default)]
+#[derive(Debug)]
 struct Player {
     name : String,
-    owner : String,
+    owner : UniqueName<'static>,
     playing : Option<PlayState>,
     meta : Option<HashMap<String, OwnedValue>>,
 }
@@ -163,13 +165,12 @@ struct MediaPlayer2(Cell<Option<Inner>>);
 async fn initial_query(target : Rc<MediaPlayer2>, name : String) -> Result<(), Box<dyn Error>> {
     let dbus = DBus::get_session();
     let zbus = dbus.connection().await;
-    let owner : String = zbus.call_method(
-        Some("org.freedesktop.DBus"),
-        "/org/freedesktop/DBus",
-        Some("org.freedesktop.DBus"),
-        "GetNameOwner",
-        &name,
-    ).await?.body()?;
+    let owner = AsyncDBusProxy::builder(&zbus)
+        .cache_properties(false)
+        .build().await?
+        .get_name_owner((&*name).try_into()?)
+        .await?
+        .into_inner();
 
     let rc = target.clone();
     let no = owner.clone();
@@ -312,7 +313,7 @@ impl MediaPlayer2 {
         if hdr.path()?.map(|p| p.as_str()) != Some("/org/mpris/MediaPlayer2") {
             return Ok(());
         }
-        let src = hdr.sender()?.map_or("", |s| s.as_str());
+        let src = hdr.sender()?.unwrap();
         if !src.starts_with(':') {
             log::warn!("Ignoring MPRIS update from {}", src);
             return Ok(());
@@ -322,11 +323,14 @@ impl MediaPlayer2 {
         }
         self.0.take_in_some(|inner| {
             let mut new = None;
-            let found = inner.players.iter_mut().find(|p| *p.owner == *src);
+            let found = inner.players.iter_mut().find(|p| p.owner == *src);
             let player = found.unwrap_or_else(|| {
-                let player = new.get_or_insert(Player::default());
-                player.owner = (*src).to_owned();
-                player
+                new.get_or_insert(Player {
+                    name: Default::default(),
+                    owner: src.to_owned(),
+                    playing : None,
+                    meta : None,
+                })
             });
             for (&prop, value) in changed {
                 match prop {
@@ -499,7 +503,7 @@ pub fn write(_name : &str, target : &str, key : &str, command : Value, _rt : &Ru
                 "Next" | "Previous" | "Pause" | "PlayPause" | "Stop" | "Play" => {
                     dbus.send(zbus::Message::method(
                         None::<&str>,
-                        Some(&*player.owner),
+                        Some(player.owner.clone()),
                         "/org/mpris/MediaPlayer2",
                         Some("org.mpris.MediaPlayer2.Player"),
                         &*command,
@@ -510,7 +514,7 @@ pub fn write(_name : &str, target : &str, key : &str, command : Value, _rt : &Ru
                 "Raise" | "Quit" => {
                     dbus.send(zbus::Message::method(
                         None::<&str>,
-                        Some(&*player.owner),
+                        Some(player.owner.clone()),
                         "/org/mpris/MediaPlayer2",
                         Some("org.mpris.MediaPlayer2"),
                         &*command,
