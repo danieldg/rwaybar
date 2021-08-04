@@ -184,23 +184,6 @@ impl DBus {
         let _ = self.send.unbounded_send((msg, None));
     }
 
-    pub fn spawn_call(&self, msg : zbus::Message, cb : impl FnOnce(zbus::Result<Arc<zbus::Message>>) + 'static) {
-        let _ = self.send.unbounded_send((msg, Some(Box::new(cb))));
-    }
-
-    pub fn spawn_call_err<E : From<zbus::Error>>(&self, msg : zbus::Message,
-        cb : impl FnOnce(Arc<zbus::Message>) -> Result<(), E> + 'static,
-        err : impl FnOnce(E) + 'static
-    ) {
-        self.spawn_call(msg, |res| {
-            match res.map(cb) {
-                Ok(Ok(())) => (),
-                Ok(Err(e)) => err(e),
-                Err(e) => err(e.into()),
-            }
-        });
-    }
-
     pub fn add_signal_watcher<F>(&self, f : F)
         -> SigWatcherToken
         where F : FnMut(&zvariant::ObjectPath, &str, &str, &zbus::Message) + 'static

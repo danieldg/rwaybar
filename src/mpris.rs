@@ -9,10 +9,10 @@ use std::error::Error;
 use std::rc::Rc;
 use log::{debug,warn,error};
 use zvariant::Value as Variant;
-use zvariant::OwnedValue;
+use zvariant::{Dict,OwnedValue};
 use zbus::dbus_proxy;
 use zbus::fdo::AsyncDBusProxy;
-use zbus::names::{BusName,UniqueName};
+use zbus::names::BusName;
 
 #[dbus_proxy(interface = "org.mpris.MediaPlayer2")]
 trait MediaPlayer2 {
@@ -48,7 +48,10 @@ trait MediaPlayer2 {
 }
 
 // TODO need nonblocking caching
-#[dbus_proxy(interface = "org.mpris.MediaPlayer2.Player")]
+#[dbus_proxy(
+    interface = "org.mpris.MediaPlayer2.Player",
+    default_path = "/org/mpris/MediaPlayer2",
+)]
 trait Player {
     /// Next method
     fn next(&self) -> zbus::Result<()>;
@@ -110,7 +113,7 @@ trait Player {
     #[dbus_proxy(property)]
     fn metadata(
         &self,
-    ) -> zbus::Result<OwnedValue>; // HashMap<String, zvariant::OwnedValue>>;
+    ) -> zbus::Result<Dict<'static, 'static>>;
 
     /// PlaybackStatus property
     #[dbus_proxy(property)]
@@ -147,10 +150,10 @@ impl PlayState {
 
 #[derive(Debug)]
 struct Player {
-    name : BusName<'static>,
-    owner : UniqueName<'static>,
+    name_tail : Rc<str>,
+    proxy : AsyncPlayerProxy<'static>,
     playing : Option<PlayState>,
-    meta : Option<HashMap<String, OwnedValue>>,
+    meta : Dict<'static, 'static>,
 }
 
 #[derive(Debug,Default)]
@@ -162,77 +165,31 @@ struct Inner {
 #[derive(Debug)]
 struct MediaPlayer2(Cell<Option<Inner>>);
 
-async fn initial_query(target : Rc<MediaPlayer2>, name : BusName<'static>) -> Result<(), Box<dyn Error>> {
+async fn initial_query(target : Rc<MediaPlayer2>, bus_name : BusName<'static>) -> Result<(), Box<dyn Error>> {
+    let skip = "org.mpris.MediaPlayer2.".len();
+    let name_tail = bus_name[skip..].into();
     let dbus = DBus::get_session();
     let zbus = dbus.connection().await;
     let owner = AsyncDBusProxy::builder(&zbus)
         .cache_properties(false)
         .build().await?
-        .get_name_owner(name.clone())
+        .get_name_owner(bus_name)
         .await?
         .into_inner();
 
-    let rc = target.clone();
-    let no = owner.clone();
-    dbus.spawn_call_err(zbus::Message::method(
-        None::<&str>,
-        Some(&name),
-        "/org/mpris/MediaPlayer2",
-        Some("org.freedesktop.DBus.Properties"),
-        "Get",
-        &("org.mpris.MediaPlayer2.Player", "PlaybackStatus")
-    )?, move |msg| {
-        let playing : Variant = msg.body()?;
-        let playing = match playing.downcast_ref() {
-            Some(playing) => PlayState::parse(playing),
-            _ => return Ok(()),
-        };
-        rc.0.take_in_some(|inner| {
-            for player in &mut inner.players {
-                if player.owner != no {
-                    continue;
-                }
-                player.playing = playing;
-            }
-        });
-        Ok(())
-    }, |err : zbus::Error| warn!("Could not read MPRIS properties: {}", err));
+    let proxy = AsyncPlayerProxy::builder(&zbus)
+        .destination(owner)?
+        .build().await?;
 
-    let rc = target.clone();
-    let no = owner.clone();
-    dbus.spawn_call_err(zbus::Message::method(
-        None::<&str>,
-        Some(&name),
-        "/org/mpris/MediaPlayer2",
-        Some("org.freedesktop.DBus.Properties"),
-        "Get",
-        &("org.mpris.MediaPlayer2.Player", "Metadata")
-    )?, move |msg| {
-        let meta : OwnedValue = msg.body()?;
-        let meta = match (*meta).clone() {
-            Variant::Dict(meta) => meta.try_into().ok(),
-            _ => None,
-        };
-
-        rc.0.take_in_some(|inner| {
-            for player in &mut inner.players {
-                if player.owner != no {
-                    continue;
-                }
-                player.meta = meta;
-                break;
-            }
-            inner.interested.notify_data("mpris:init");
-        });
-        Ok(())
-    }, |err : zbus::Error| warn!("Could not read MPRIS properties: {}", err));
+    let playing = PlayState::parse(&proxy.playback_status().await?);
+    let meta = proxy.metadata().await?;
 
     target.0.take_in_some(|inner| {
         inner.players.push(Player {
-            name,
-            owner,
-            playing : None,
-            meta : None,
+            name_tail,
+            proxy,
+            playing,
+            meta,
         });
     });
 
@@ -266,7 +223,7 @@ impl MediaPlayer2 {
                     this.0.take_in_some(|inner| {
                         let interested = &mut inner.interested;
                         inner.players.retain(|player| {
-                            if *player.owner == *old || player.name == *name {
+                            if *player.proxy.destination() == *old {
                                 interested.notify_data("mpris:remove");
                                 false
                             } else {
@@ -315,7 +272,7 @@ impl MediaPlayer2 {
             return Ok(());
         }
         self.0.take_in_some(|inner| {
-            let player = match inner.players.iter_mut().find(|p| p.owner == *src) {
+            let player = match inner.players.iter_mut().find(|p| p.proxy.destination() == src) {
                 Some(player) => player,
                 None => return,
             };
@@ -327,10 +284,9 @@ impl MediaPlayer2 {
                         }
                     }
                     "Metadata" => {
-                        player.meta = match (**value).clone() {
-                            Variant::Dict(meta) => meta.try_into().ok(),
-                            _ => None,
-                        };
+                        if let Variant::Dict(meta) = &**value {
+                            player.meta = meta.clone();
+                        }
                     }
                     _ => ()
                 }
@@ -349,14 +305,13 @@ pub fn read_in<F : FnOnce(Value) -> R, R>(_name : &str, target : &str, key : &st
             let player;
             let field;
 
-            let skip = "org.mpris.MediaPlayer2.".len();
             if !target.is_empty() {
                 field = key;
-                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| p.name.get(skip..) == Some(target)));
+                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &*p.name_tail == target));
             } else if let Some(dot) = key.find('.') {
                 let name = &key[..dot];
                 field = &key[dot + 1..];
-                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| p.name.get(skip..) == Some(name)));
+                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &*p.name_tail == name));
             } else {
                 field = key;
                 // Prefer playing players, then paused, then any
@@ -383,24 +338,22 @@ pub fn read_in<F : FnOnce(Value) -> R, R>(_name : &str, target : &str, key : &st
             if let Some(player) = player {
                 match field {
                     "player.name" => {
-                        f(Value::Borrow(player.name.get(skip..).unwrap_or_default()))
+                        f(Value::Borrow(&player.name_tail))
                     }
                     "length" => {
-                        match player.meta.as_ref()
-                            .and_then(|md| md.get("mpris:length"))
-                            .and_then(|v| v.downcast_ref::<u64>())
-                        {
-                            Some(len) => f(Value::Float(*len as f64 / 1_000_000.0)),
+                        match player.meta.get::<_,u64>("mpris:length") {
+                            Ok(Some(len)) => f(Value::Float(*len as f64 / 1_000_000.0)),
                             _ => f(Value::Null),
                         }
                     }
                     _ if field.contains('.') => {
                         let real_field = field.replace('.', ":");
-                        match player.meta.as_ref()
-                            .and_then(|md| md.get(&real_field).or(md.get(field)))
-                            .and_then(|v| v.downcast_ref::<str>())
-                        {
-                            Some(v) => f(Value::Borrow(v)),
+                        let qf = player.meta.get::<str,str>(&field);
+                        let rf = player.meta.get::<str,str>(&real_field);
+
+                        match (qf, rf) {
+                            (Ok(Some(v)), _) |
+                            (_, Ok(Some(v))) => f(Value::Borrow(v)),
                             _ => f(Value::Null),
                         }
                     }
@@ -408,25 +361,22 @@ pub fn read_in<F : FnOnce(Value) -> R, R>(_name : &str, target : &str, key : &st
                     // a list of valid names
                     _ => {
                         let xeasm = format!("xesam:{}", field);
-                        let mut tmp = String::new();
-                        let value = player.meta.as_ref()
-                            .and_then(|md| md.get(&xeasm))
-                            .map(|variant| match &**variant {
-                                Variant::Str(v) => v.as_str(),
-                                Variant::Array(a) => {
-                                    for e in a.get().iter() {
-                                        if let Variant::Str(s) = e {
-                                            tmp.push_str(s);
-                                            tmp.push_str(", ");
-                                        }
+                        let value = player.meta.get::<str,Variant>(&xeasm).ok().flatten();
+                        match value {
+                            Some(Variant::Str(v)) => f(Value::Borrow(v.as_str())),
+                            Some(Variant::Array(a)) => {
+                                let mut tmp = String::new();
+                                for e in a.get().iter() {
+                                    if let Variant::Str(s) = e {
+                                        tmp.push_str(s);
+                                        tmp.push_str(", ");
                                     }
-                                    tmp.pop(); tmp.pop();
-                                    tmp.as_str()
                                 }
-                                _ => ""
-                            })
-                            .unwrap_or("");
-                        f(Value::Borrow(value))
+                                tmp.pop(); tmp.pop();
+                                f(Value::Owned(tmp))
+                            }
+                            _ => f(Value::Null)
+                        }
                     }
                 }
             } else {
@@ -443,8 +393,7 @@ pub fn read_focus_list<F : FnMut(bool, IterationItem)>(rt : &Runtime, mut f : F)
         state.0.take_in_some(|inner| {
             inner.interested.add(rt);
 
-            let skip = "org.mpris.MediaPlayer2.".len();
-            inner.players.iter().map(|p| (p.name.get(skip..).unwrap_or_default().into(), p.playing == Some(PlayState::Playing))).collect()
+            inner.players.iter().map(|p| (p.name_tail.clone(), p.playing == Some(PlayState::Playing))).collect()
         }).unwrap_or_default()
     });
 
@@ -459,11 +408,10 @@ pub fn write(_name : &str, target : &str, key : &str, command : Value, _rt : &Ru
         state.0.take_in(|oi| {
             let player;
 
-            let skip = "org.mpris.MediaPlayer2.".len();
             if !target.is_empty() {
-                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| p.name.get(skip..) == Some(target)));
+                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &*p.name_tail == target));
             } else if !key.is_empty() {
-                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| p.name.get(skip..) == Some(key)));
+                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &*p.name_tail == key));
             } else {
                 // Prefer playing players, then paused, then any
                 player = oi.as_ref()
@@ -488,7 +436,7 @@ pub fn write(_name : &str, target : &str, key : &str, command : Value, _rt : &Ru
                 "Next" | "Previous" | "Pause" | "PlayPause" | "Stop" | "Play" => {
                     dbus.send(zbus::Message::method(
                         None::<&str>,
-                        Some(player.owner.clone()),
+                        Some(player.proxy.destination().clone()),
                         "/org/mpris/MediaPlayer2",
                         Some("org.mpris.MediaPlayer2.Player"),
                         &*command,
@@ -499,7 +447,7 @@ pub fn write(_name : &str, target : &str, key : &str, command : Value, _rt : &Ru
                 "Raise" | "Quit" => {
                     dbus.send(zbus::Message::method(
                         None::<&str>,
-                        Some(player.owner.clone()),
+                        Some(player.proxy.destination().clone()),
                         "/org/mpris/MediaPlayer2",
                         Some("org.mpris.MediaPlayer2"),
                         &*command,
