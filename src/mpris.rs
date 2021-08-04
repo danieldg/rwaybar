@@ -157,13 +157,10 @@ struct Player {
 }
 
 #[derive(Debug,Default)]
-struct Inner {
-    players : Vec<Player>,
-    interested : NotifierList,
+struct MediaPlayer2 {
+    players : Cell<Vec<Player>>,
+    interested : Cell<NotifierList>,
 }
-
-#[derive(Debug)]
-struct MediaPlayer2(Cell<Option<Inner>>);
 
 async fn initial_query(target : Rc<MediaPlayer2>, bus_name : BusName<'static>) -> Result<(), Box<dyn Error>> {
     let skip = "org.mpris.MediaPlayer2.".len();
@@ -184,8 +181,8 @@ async fn initial_query(target : Rc<MediaPlayer2>, bus_name : BusName<'static>) -
     let playing = PlayState::parse(&proxy.playback_status().await?);
     let meta = proxy.metadata().await?;
 
-    target.0.take_in_some(|inner| {
-        inner.players.push(Player {
+    target.players.take_in(|players| {
+        players.push(Player {
             name_tail,
             proxy,
             playing,
@@ -202,7 +199,7 @@ thread_local! {
 
 impl MediaPlayer2 {
     pub fn new() -> Rc<Self> {
-        let rv = Rc::new(MediaPlayer2(Cell::new(Some(Inner::default()))));
+        let rv = Rc::new(MediaPlayer2::default());
 
         let mpris = rv.clone();
         util::spawn("MPRIS setup", async move {
@@ -220,11 +217,10 @@ impl MediaPlayer2 {
             let this = mpris.clone();
             dbus.add_name_watcher(move |name, old, new| {
                 if !old.is_empty() {
-                    this.0.take_in_some(|inner| {
-                        let interested = &mut inner.interested;
-                        inner.players.retain(|player| {
+                    this.players.take_in(|players| {
+                        players.retain(|player| {
                             if *player.proxy.destination() == *old {
-                                interested.notify_data("mpris:remove");
+                                this.interested.take().notify_data("mpris:remove");
                                 false
                             } else {
                                 true
@@ -241,8 +237,7 @@ impl MediaPlayer2 {
             let names = AsyncDBusProxy::builder(&zbus)
                 .cache_properties(false)
                 .build().await?
-                .list_names()
-                .await?;
+                .list_names().await?;
             for name in names {
                 if !name.starts_with("org.mpris.MediaPlayer2.") {
                     continue;
@@ -271,8 +266,8 @@ impl MediaPlayer2 {
         if iface != "org.mpris.MediaPlayer2.Player" {
             return Ok(());
         }
-        self.0.take_in_some(|inner| {
-            let player = match inner.players.iter_mut().find(|p| p.proxy.destination() == src) {
+        self.players.take_in(|players| {
+            let player = match players.iter_mut().find(|p| p.proxy.destination() == src) {
                 Some(player) => player,
                 None => return,
             };
@@ -291,7 +286,7 @@ impl MediaPlayer2 {
                     _ => ()
                 }
             }
-            inner.interested.notify_data("mpris:props");
+            self.interested.take().notify_data("mpris:props");
         });
         Ok(())
     }
@@ -300,30 +295,27 @@ impl MediaPlayer2 {
 pub fn read_in<F : FnOnce(Value) -> R, R>(_name : &str, target : &str, key : &str, rt : &Runtime, f : F) -> R {
     DATA.with(|cell| {
         let state = cell.get_or_init(MediaPlayer2::new);
-        state.0.take_in(|oi| {
-            oi.as_mut().map(|inner| inner.interested.add(rt));
+        state.interested.take_in(|i| i.add(rt));
+
+        state.players.take_in(|players| {
             let player;
             let field;
 
             if !target.is_empty() {
                 field = key;
-                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &*p.name_tail == target));
+                player = players.iter().find(|p| &*p.name_tail == target);
             } else if let Some(dot) = key.find('.') {
                 let name = &key[..dot];
                 field = &key[dot + 1..];
-                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &*p.name_tail == name));
+                player = players.iter().find(|p| &*p.name_tail == name);
             } else {
                 field = key;
                 // Prefer playing players, then paused, then any
                 //
-                player = oi.as_ref()
-                    .and_then(|inner| {
-                        inner.players.iter()
-                            .filter(|p| p.playing == Some(PlayState::Playing))
-                            .chain(inner.players.iter().filter(|p| p.playing == Some(PlayState::Paused)))
-                            .chain(inner.players.iter())
-                            .next()
-                    });
+                player = players.iter().filter(|p| p.playing == Some(PlayState::Playing))
+                    .chain(players.iter().filter(|p| p.playing == Some(PlayState::Paused)))
+                    .chain(players.iter())
+                    .next();
             }
 
             if field == "state" {
@@ -390,11 +382,10 @@ pub fn read_in<F : FnOnce(Value) -> R, R>(_name : &str, target : &str, key : &st
 pub fn read_focus_list<F : FnMut(bool, IterationItem)>(rt : &Runtime, mut f : F) {
     let players : Vec<_> = DATA.with(|cell| {
         let state = cell.get_or_init(MediaPlayer2::new);
-        state.0.take_in_some(|inner| {
-            inner.interested.add(rt);
-
-            inner.players.iter().map(|p| (p.name_tail.clone(), p.playing == Some(PlayState::Playing))).collect()
-        }).unwrap_or_default()
+        state.interested.take_in(|i| i.add(rt));
+        state.players.take_in(|players| {
+            players.iter().map(|p| (p.name_tail.clone(), p.playing == Some(PlayState::Playing))).collect()
+        })
     });
 
     for (player, playing) in players {
@@ -405,23 +396,19 @@ pub fn read_focus_list<F : FnMut(bool, IterationItem)>(rt : &Runtime, mut f : F)
 pub fn write(_name : &str, target : &str, key : &str, command : Value, _rt : &Runtime) {
     DATA.with(|cell| {
         let state = cell.get_or_init(MediaPlayer2::new);
-        state.0.take_in(|oi| {
+        state.players.take_in(|players| {
             let player;
 
             if !target.is_empty() {
-                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &*p.name_tail == target));
+                player = players.iter().find(|p| &*p.name_tail == target);
             } else if !key.is_empty() {
-                player = oi.as_ref().and_then(|inner| inner.players.iter().find(|p| &*p.name_tail == key));
+                player = players.iter().find(|p| &*p.name_tail == key);
             } else {
                 // Prefer playing players, then paused, then any
-                player = oi.as_ref()
-                    .and_then(|inner| {
-                        inner.players.iter()
-                            .filter(|p| p.playing == Some(PlayState::Playing))
-                            .chain(inner.players.iter().filter(|p| p.playing == Some(PlayState::Paused)))
-                            .chain(inner.players.iter())
-                            .next()
-                    });
+                player = players.iter().filter(|p| p.playing == Some(PlayState::Playing))
+                    .chain(players.iter().filter(|p| p.playing == Some(PlayState::Paused)))
+                    .chain(players.iter())
+                    .next();
             }
 
             let player = match player {
