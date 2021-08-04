@@ -12,7 +12,7 @@ use zvariant::Value as Variant;
 use zvariant::OwnedValue;
 use zbus::dbus_proxy;
 use zbus::fdo::AsyncDBusProxy;
-use zbus::names::UniqueName;
+use zbus::names::{BusName,UniqueName};
 
 #[dbus_proxy(interface = "org.mpris.MediaPlayer2")]
 trait MediaPlayer2 {
@@ -147,7 +147,7 @@ impl PlayState {
 
 #[derive(Debug)]
 struct Player {
-    name : String,
+    name : BusName<'static>,
     owner : UniqueName<'static>,
     playing : Option<PlayState>,
     meta : Option<HashMap<String, OwnedValue>>,
@@ -162,13 +162,13 @@ struct Inner {
 #[derive(Debug)]
 struct MediaPlayer2(Cell<Option<Inner>>);
 
-async fn initial_query(target : Rc<MediaPlayer2>, name : String) -> Result<(), Box<dyn Error>> {
+async fn initial_query(target : Rc<MediaPlayer2>, name : BusName<'static>) -> Result<(), Box<dyn Error>> {
     let dbus = DBus::get_session();
     let zbus = dbus.connection().await;
     let owner = AsyncDBusProxy::builder(&zbus)
         .cache_properties(false)
         .build().await?
-        .get_name_owner((&*name).try_into()?)
+        .get_name_owner(name.clone())
         .await?
         .into_inner();
 
@@ -176,7 +176,7 @@ async fn initial_query(target : Rc<MediaPlayer2>, name : String) -> Result<(), B
     let no = owner.clone();
     dbus.spawn_call_err(zbus::Message::method(
         None::<&str>,
-        Some(&*name),
+        Some(&name),
         "/org/mpris/MediaPlayer2",
         Some("org.freedesktop.DBus.Properties"),
         "Get",
@@ -202,7 +202,7 @@ async fn initial_query(target : Rc<MediaPlayer2>, name : String) -> Result<(), B
     let no = owner.clone();
     dbus.spawn_call_err(zbus::Message::method(
         None::<&str>,
-        Some(&*name),
+        Some(&name),
         "/org/mpris/MediaPlayer2",
         Some("org.freedesktop.DBus.Properties"),
         "Get",
@@ -262,14 +262,11 @@ impl MediaPlayer2 {
             // Watch for new players and player exits
             let this = mpris.clone();
             dbus.add_name_watcher(move |name, old, new| {
-                if !new.is_empty() && name.starts_with("org.mpris.MediaPlayer2.") {
-                    util::spawn("MPRIS state query", initial_query(this.clone(), name.to_owned()));
-                }
                 if !old.is_empty() {
                     this.0.take_in_some(|inner| {
                         let interested = &mut inner.interested;
                         inner.players.retain(|player| {
-                            if player.owner == name || player.name == name {
+                            if *player.owner == *old || player.name == *name {
                                 interested.notify_data("mpris:remove");
                                 false
                             } else {
@@ -278,30 +275,26 @@ impl MediaPlayer2 {
                         });
                     });
                 }
-            });
-
-            // Now that watching is active, populate our map with initial values for all active players
-            dbus.spawn_call_err(zbus::Message::method(
-                None::<&str>,
-                Some("org.freedesktop.DBus"),
-                "/org/freedesktop/DBus",
-                Some("org.freedesktop.DBus"),
-                "ListNames",
-                &()
-            )?, move |msg| {
-                let names : Vec<String> = msg.body()?;
-                for name in names {
-                    if !name.starts_with("org.mpris.MediaPlayer2.") {
-                        continue;
-                    }
-
-                    // query them all in parallel
-                    util::spawn("MPRIS state query", initial_query(mpris.clone(), name));
+                if !new.is_empty() && name.starts_with("org.mpris.MediaPlayer2.") {
+                    util::spawn("MPRIS state query", initial_query(this.clone(), name.to_owned()));
                 }
-                Ok(())
-            }, |err : Box<dyn Error>| {
-                log::info!("MPRIS setup error: {}", err);
             });
+
+            let zbus = dbus.connection().await;
+            let names = AsyncDBusProxy::builder(&zbus)
+                .cache_properties(false)
+                .build().await?
+                .list_names()
+                .await?;
+            for name in names {
+                if !name.starts_with("org.mpris.MediaPlayer2.") {
+                    continue;
+                }
+                let name = name.into_inner();
+
+                // query them all in parallel
+                util::spawn("MPRIS state query", initial_query(mpris.clone(), name));
+            }
 
             Ok(())
         });
@@ -322,16 +315,10 @@ impl MediaPlayer2 {
             return Ok(());
         }
         self.0.take_in_some(|inner| {
-            let mut new = None;
-            let found = inner.players.iter_mut().find(|p| p.owner == *src);
-            let player = found.unwrap_or_else(|| {
-                new.get_or_insert(Player {
-                    name: Default::default(),
-                    owner: src.to_owned(),
-                    playing : None,
-                    meta : None,
-                })
-            });
+            let player = match inner.players.iter_mut().find(|p| p.owner == *src) {
+                Some(player) => player,
+                None => return,
+            };
             for (&prop, value) in changed {
                 match prop {
                     "PlaybackStatus" => {
@@ -347,9 +334,6 @@ impl MediaPlayer2 {
                     }
                     _ => ()
                 }
-            }
-            if let Some(new) = new {
-                inner.players.push(new);
             }
             inner.interested.notify_data("mpris:props");
         });
@@ -497,6 +481,7 @@ pub fn write(_name : &str, target : &str, key : &str, command : Value, _rt : &Ru
                 None => { warn!("No player found when sending {}", key); return }
             };
 
+            // TODO call/nowait
             let dbus = DBus::get_session();
             let command = command.into_text();
             match &*command {

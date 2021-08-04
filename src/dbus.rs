@@ -18,6 +18,7 @@ use std::task;
 use zbus::azync::{Connection,ConnectionBuilder};
 use zvariant::Value as Variant;
 use zvariant::OwnedValue;
+use zbus::names::BusName;
 
 pub struct DBus {
     api : util::Cell<HashMap<Cow<'static,str>, Box<dyn FnMut(Arc<zbus::Message>)>>>,
@@ -28,7 +29,7 @@ pub struct DBus {
 
     sig_watchers : util::Cell<Vec<Box<dyn SignalWatcherCall>>>,
     prop_watchers : util::Cell<Vec<Box<dyn FnMut(&zbus::MessageHeader, &str, &HashMap<&str, OwnedValue>, &[&str])>>>,
-    name_watchers : util::Cell<Vec<Box<dyn FnMut(&str, &str, &str)>>>,
+    name_watchers : util::Cell<Vec<Box<dyn FnMut(&BusName, &str, &str)>>>,
 }
 
 impl fmt::Debug for DBus {
@@ -129,7 +130,7 @@ impl DBus {
                 let (name, old, new) = msg.body()?;
                 let mut watchers = this.name_watchers.replace(Vec::new());
                 for watcher in &mut watchers {
-                    (*watcher)(name, old, new);
+                    (*watcher)(&name, old, new);
                 }
                 this.name_watchers.take_in(|w| {
                     if w.is_empty() {
@@ -248,7 +249,7 @@ impl DBus {
     }
 
     pub fn add_name_watcher<F>(&self, f : F)
-        where F : FnMut(&str, &str, &str) + 'static
+        where F : FnMut(&BusName, &str, &str) + 'static
     {
         if self.name_watchers.take_in(|w| {
             w.push(Box::new(f));
