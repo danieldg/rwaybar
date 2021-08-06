@@ -896,7 +896,6 @@ impl PopupDesc {
         }
     }
 
-    #[cfg_attr(not(feature="dbus"), allow(unused))]
     pub fn button(&mut self, x : f64, y : f64, button : u32, runtime : &mut Runtime) {
         match self {
             PopupDesc::RenderItem { item, iter } => {

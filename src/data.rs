@@ -1275,6 +1275,7 @@ impl Module {
                     Some(IterationItem::Pulse { target }) => pulse::do_write(name, target, key, value, rt),
                     Some(IterationItem::SwayWorkspace(data)) => data.write(key, value, rt),
                     Some(IterationItem::SwayTreeItem(node)) => node.write(key, value, rt),
+                    #[cfg(feature="dbus")]
                     Some(IterationItem::Tray { owner, path }) => tray::write(name, owner, path, key, value, rt),
                     None => {}
                 }
