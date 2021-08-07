@@ -480,7 +480,7 @@ pub enum IterationItem {
     SwayWorkspace(Rc<sway::WorkspaceData>),
     SwayTreeItem(Rc<sway::Node>),
     #[cfg(feature="dbus")]
-    Tray { owner : Rc<str>, path : Rc<str>, },
+    Tray(Rc<tray::TrayItem>),
 }
 
 impl PartialEq for IterationItem {
@@ -494,9 +494,7 @@ impl PartialEq for IterationItem {
             (SwayWorkspace(a), SwayWorkspace(b)) => Rc::ptr_eq(a,b),
             (SwayTreeItem(a), SwayTreeItem(b)) => Rc::ptr_eq(a,b),
             #[cfg(feature="dbus")]
-            (Tray { owner : ao, path : ap }, Tray { owner : bo, path : bp }) => {
-                Rc::ptr_eq(ao, bo) && Rc::ptr_eq(ap, bp)
-            }
+            (Tray(a), Tray(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -1139,7 +1137,7 @@ impl Module {
                     Some(IterationItem::SwayWorkspace(data)) => data.read_in(key, rt, f),
                     Some(IterationItem::SwayTreeItem(node)) => node.read_in(key, rt, f),
                     #[cfg(feature="dbus")]
-                    Some(IterationItem::Tray { owner, path }) => tray::read_in(name, owner, path, key, rt, f),
+                    Some(IterationItem::Tray(item)) => tray::read_in(name, item, key, rt, f),
                     None => f(Value::Null),
                 }
             }),
@@ -1276,7 +1274,7 @@ impl Module {
                     Some(IterationItem::SwayWorkspace(data)) => data.write(key, value, rt),
                     Some(IterationItem::SwayTreeItem(node)) => node.write(key, value, rt),
                     #[cfg(feature="dbus")]
-                    Some(IterationItem::Tray { owner, path }) => tray::write(name, owner, path, key, value, rt),
+                    Some(IterationItem::Tray(item)) => tray::write(name, item, key, value, rt),
                     None => {}
                 }
             }),

@@ -59,14 +59,14 @@ impl EventSink {
     }
 
     #[cfg(feature="dbus")]
-    pub fn from_tray(owner : Rc<str>, path : Rc<str>) -> Self {
+    pub fn from_tray(item: Rc<tray::TrayItem>) -> Self {
         let mut sink = EventSink::default();
         sink.handlers.push(EventListener {
             x_min : -1e20,
             x_max : 1e20,
             buttons : 7 | (15 << 5),
             item : None,
-            target : Action::from_tray(owner, path),
+            target : Action::from_tray(item),
         });
         sink
     }
@@ -189,7 +189,7 @@ pub enum Action {
     Write { target : String, format : String },
     List(Vec<Action>),
     #[cfg(feature="dbus")]
-    Tray { owner : Rc<str>, path : Rc<str> },
+    Tray(Rc<tray::TrayItem>),
     None,
 }
 
@@ -212,8 +212,8 @@ impl Action {
     }
 
     #[cfg(feature="dbus")]
-    pub fn from_tray(owner : Rc<str>, path : Rc<str>) -> Self {
-        Action::Tray { owner, path }
+    pub fn from_tray(item: Rc<tray::TrayItem>) -> Self {
+        Action::Tray(item)
     }
 
     pub fn invoke(&self, runtime : &Runtime, how : u32) {
@@ -260,8 +260,8 @@ impl Action {
                 }
             }
             #[cfg(feature="dbus")]
-            Action::Tray { owner, path } => {
-                tray::do_click(owner, path, how);
+            Action::Tray(item) => {
+                tray::do_click(item, how);
             }
             Action::None => { info!("Invoked a no-op"); }
         }
