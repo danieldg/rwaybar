@@ -8,7 +8,7 @@ use crate::state::{Runtime,NotifierList};
 use crate::util::{Cell,spawn,spawn_handle};
 use futures::future::RemoteHandle;
 use once_cell::unsync::OnceCell;
-use async_oncecell::OnceCell as AsyncOnceCell;
+use async_once_cell::OnceCell as AsyncOnceCell;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::error::Error;
@@ -634,7 +634,7 @@ impl TrayItem {
                             *menu = Some(Rc::new(TrayPopupMenu {
                                 owner : self.owner.clone(),
                                 menu_path : Cell::new(Some(v)),
-                                menu: Default::default(),
+                                menu: AsyncOnceCell::new(),
                                 watcher: Default::default(),
                                 refresh : Cell::new(None),
                                 fresh : Default::default(),
@@ -741,7 +741,7 @@ impl TrayPopupMenu {
     }
 
     async fn get_proxy<'a>(self : &'a Rc<Self>) -> Result<Option<&'a AsyncDBusMenuProxy<'static>>, Box<dyn Error>> {
-        if let Some(dbm) = self.menu.get() {
+        if let Some(dbm) = self.proxy() {
             return Ok(Some(dbm));
         }
 

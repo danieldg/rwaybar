@@ -24,8 +24,8 @@ dlopen = ['smithay-client-toolkit/dlopen']
 
 [dependencies]
 # Basic runtime
-async-oncecell = { git = "https://github.com/danieldg/async-oncecell.git" }
 bytes = "*"
+async-once-cell = "0.2"
 env_logger = "0.9"
 futures = { version = "*" }
 futures-util = { version = "*", features = ['channel'] }

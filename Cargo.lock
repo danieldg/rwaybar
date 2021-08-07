@@ -100,12 +100,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-oncecell"
+name = "async-once-cell"
 version = "0.2.0"
-source = "git+https://github.com/danieldg/async-oncecell.git#249cf31fc553369ca286ee9343ab2a6c43e30bf0"
-dependencies = [
- "futures",
-]
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8d4e06e69d8556d8c1c82178f301ff043b080c1aa91152bba9873c112ff3219"
 
 [[package]]
 name = "async-recursion"
@@ -985,7 +983,7 @@ dependencies = [
 name = "rwaybar"
 version = "0.1.0"
 dependencies = [
- "async-oncecell",
+ "async-once-cell",
  "bytes",
  "chrono",
  "chrono-tz",
