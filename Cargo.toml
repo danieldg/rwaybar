@@ -25,7 +25,7 @@ dlopen = ['smithay-client-toolkit/dlopen']
 [dependencies]
 # Basic runtime
 bytes = "*"
-async-once-cell = "0.2"
+async-once-cell = "0.3"
 env_logger = "0.9"
 futures = { version = "*" }
 futures-util = { version = "*", features = ['channel'] }
@@ -50,9 +50,9 @@ smithay-client-toolkit = { version = "*", default-features = false }
 tiny-skia = "*"
 ttf-parser = "*"
 usvg = { version = "*", default-features = false }
-wayland-client = "0.28"
-wayland-cursor = "0.28"
-wayland-protocols = "0.28"
+wayland-client = "0.29"
+wayland-cursor = "0.29"
+wayland-protocols = "0.29"
 
 # Module specific
 chrono = "*"

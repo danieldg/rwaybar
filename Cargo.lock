@@ -101,9 +101,9 @@ dependencies = [
 
 [[package]]
 name = "async-once-cell"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8d4e06e69d8556d8c1c82178f301ff043b080c1aa91152bba9873c112ff3219"
+checksum = "8e52116ee51c72c07a9db74c6f95213c95c462408bb5a689772d623a62b96471"
 
 [[package]]
 name = "async-recursion"
@@ -540,9 +540,9 @@ checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 
 [[package]]
 name = "libc"
-version = "0.2.98"
+version = "0.2.99"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "320cfe77175da3a483efed4bc0adc1968ca050b098ce4f2f1c13a56626128790"
+checksum = "a7f823d141fe0a24df1e23b4af4e3c7ba9e5966ec514ea068c93024aa7deb765"
 
 [[package]]
 name = "libloading"
@@ -615,15 +615,6 @@ checksum = "b16bd47d9e329435e309c58469fe0791c2d0d1ba96ec0954152a5ae2b04387dc"
 
 [[package]]
 name = "memmap2"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "723e3ebdcdc5c023db1df315364573789f8857c11b631a2fdfad7c00f5c046b4"
-dependencies = [
- "libc",
-]
-
-[[package]]
-name = "memmap2"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20ff203f7bdc401350b1dbaa0355135777d25f41c0bbc601851bbd6cf61e8ff5"
@@ -683,21 +674,22 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.20.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa9b4819da1bc61c0ea48b63b7bc8604064dd43013e7cc325df098d49cd7c18a"
+checksum = "5c3728fec49d363a50a8828a190b379a446cc5cf085c06259bbbeb34447e4ec7"
 dependencies = [
  "bitflags",
  "cc",
  "cfg-if",
  "libc",
+ "memoffset",
 ]
 
 [[package]]
 name = "nix"
-version = "0.21.0"
+version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c3728fec49d363a50a8828a190b379a446cc5cf085c06259bbbeb34447e4ec7"
+checksum = "cf1e25ee6b412c2a1e3fcb6a4499a5c1bfe7f43e014bdce9a6b6666e5aa2d187"
 dependencies = [
  "bitflags",
  "cc",
@@ -995,7 +987,7 @@ dependencies = [
  "libc",
  "libpulse-binding",
  "log",
- "memmap2 0.3.0",
+ "memmap2",
  "once_cell",
  "png",
  "raqote",
@@ -1096,9 +1088,9 @@ checksum = "0b8de496cf83d4ed58b6be86c3a275b8602f6ffe98d3024a869e124147a9a3ac"
 
 [[package]]
 name = "slab"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f173ac3d1a7e3b28003f40de0b5ce7fe2710f9b9dc3fc38664cebee46b3b6527"
+checksum = "c307a32c1c5c437f38c7fd45d753050587732ba8628319fbdf12a7e289ccc590"
 
 [[package]]
 name = "slotmap"
@@ -1117,16 +1109,16 @@ checksum = "fe0f37c9e8f3c5a4a66ad655a93c74daac4ad00c441533bf5c6e7990bb42604e"
 
 [[package]]
 name = "smithay-client-toolkit"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec783683499a2cfc85b6df3d04f83b1907b5cbd98a1aed44667dbdf1eac4e64c"
+checksum = "bec729249ccde50303aff9ea62fc6abc3703076ce754f9d8fcf2e3fb995a7c3e"
 dependencies = [
  "bitflags",
  "dlib",
  "lazy_static",
  "log",
- "memmap2 0.2.3",
- "nix 0.20.0",
+ "memmap2",
+ "nix 0.22.0",
  "wayland-client",
  "wayland-cursor",
  "wayland-protocols",
@@ -1328,14 +1320,14 @@ checksum = "fd6fbd9a79829dd1ad0cc20627bf1ed606756a7f77edff7b66b7064f9cb327c6"
 
 [[package]]
 name = "wayland-client"
-version = "0.28.6"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3ab332350e502f159382201394a78e3cc12d0f04db863429260164ea40e0355"
+checksum = "6deeba72b1fd9e9fc6641603bd5f72fa465857e3577b9a823fc316ffd45e69b4"
 dependencies = [
  "bitflags",
  "downcast-rs",
  "libc",
- "nix 0.20.0",
+ "nix 0.22.0",
  "scoped-tls",
  "wayland-commons",
  "wayland-scanner",
@@ -1344,11 +1336,11 @@ dependencies = [
 
 [[package]]
 name = "wayland-commons"
-version = "0.28.6"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a21817947c7011bbd0a27e11b17b337bfd022e8544b071a2641232047966fbda"
+checksum = "93d6377fc0efc620da05cb78c5dc846420940e7b2c471aa2faf59c58e063c2b7"
 dependencies = [
- "nix 0.20.0",
+ "nix 0.22.0",
  "once_cell",
  "smallvec",
  "wayland-sys",
@@ -1356,20 +1348,20 @@ dependencies = [
 
 [[package]]
 name = "wayland-cursor"
-version = "0.28.6"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be610084edd1586d45e7bdd275fe345c7c1873598caa464c4fb835dee70fa65a"
+checksum = "bf9197a26e00b5e282b57ea9b620e4305ea5682f55f0b1ad862e388abf2d2bb5"
 dependencies = [
- "nix 0.20.0",
+ "nix 0.22.0",
  "wayland-client",
  "xcursor",
 ]
 
 [[package]]
 name = "wayland-protocols"
-version = "0.28.6"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "286620ea4d803bacf61fa087a4242ee316693099ee5a140796aaba02b29f861f"
+checksum = "503643f261c0f18124a4666b8c1e66258cf68b51f675d6e64469fbc72ddf0cd6"
 dependencies = [
  "bitflags",
  "wayland-client",
@@ -1379,9 +1371,9 @@ dependencies = [
 
 [[package]]
 name = "wayland-scanner"
-version = "0.28.6"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce923eb2deb61de332d1f356ec7b6bf37094dc5573952e1c8936db03b54c03f1"
+checksum = "7d3d043a8926b2836749018bfb393e2328cac86bd414b9c3d3f8c523d0dee2dd"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1390,9 +1382,9 @@ dependencies = [
 
 [[package]]
 name = "wayland-sys"
-version = "0.28.6"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d841fca9aed7febf9bed2e9796c49bf58d4152ceda8ac949ebe00868d8f0feb8"
+checksum = "fef2a7d20f93be1379a2dfd9457c291e840b942fa38fe0b95ad6b0425a22d43a"
 dependencies = [
  "dlib",
  "lazy_static",
@@ -1475,7 +1467,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 [[package]]
 name = "zbus"
 version = "2.0.0-beta.6"
-source = "git+https://gitlab.freedesktop.org/dbus/zbus#efb7b721cce62f2d5ec5ccdb439389c025cc5d1d"
+source = "git+https://gitlab.freedesktop.org/dbus/zbus#eb6e6a4ce5fe7adeae0c4f87f1ab2dcbf5408172"
 dependencies = [
  "async-broadcast",
  "async-channel",
@@ -1494,7 +1486,6 @@ dependencies = [
  "nix 0.21.0",
  "once_cell",
  "rand",
- "scoped-tls",
  "serde",
  "serde_repr",
  "sha1",
@@ -1508,7 +1499,7 @@ dependencies = [
 [[package]]
 name = "zbus_macros"
 version = "2.0.0-beta.6"
-source = "git+https://gitlab.freedesktop.org/dbus/zbus#efb7b721cce62f2d5ec5ccdb439389c025cc5d1d"
+source = "git+https://gitlab.freedesktop.org/dbus/zbus#eb6e6a4ce5fe7adeae0c4f87f1ab2dcbf5408172"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1520,7 +1511,7 @@ dependencies = [
 [[package]]
 name = "zbus_names"
 version = "1.0.0"
-source = "git+https://gitlab.freedesktop.org/dbus/zbus#efb7b721cce62f2d5ec5ccdb439389c025cc5d1d"
+source = "git+https://gitlab.freedesktop.org/dbus/zbus#eb6e6a4ce5fe7adeae0c4f87f1ab2dcbf5408172"
 dependencies = [
  "serde",
  "static_assertions",
@@ -1530,7 +1521,7 @@ dependencies = [
 [[package]]
 name = "zvariant"
 version = "2.8.0"
-source = "git+https://gitlab.freedesktop.org/dbus/zbus#efb7b721cce62f2d5ec5ccdb439389c025cc5d1d"
+source = "git+https://gitlab.freedesktop.org/dbus/zbus#eb6e6a4ce5fe7adeae0c4f87f1ab2dcbf5408172"
 dependencies = [
  "byteorder",
  "enumflags2",
@@ -1542,7 +1533,7 @@ dependencies = [
 [[package]]
 name = "zvariant_derive"
 version = "2.8.0"
-source = "git+https://gitlab.freedesktop.org/dbus/zbus#efb7b721cce62f2d5ec5ccdb439389c025cc5d1d"
+source = "git+https://gitlab.freedesktop.org/dbus/zbus#eb6e6a4ce5fe7adeae0c4f87f1ab2dcbf5408172"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
