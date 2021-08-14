@@ -11,10 +11,14 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
+use std::io;
+use std::os::unix::prelude::RawFd;
+use std::pin::Pin;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task;
+use tokio::net::UnixStream;
 use zbus::azync::{Connection,ConnectionBuilder};
 use zbus::zvariant;
 use zvariant::Value as Variant;
@@ -149,12 +153,21 @@ impl DBus {
 
         let this = tb.clone();
         util::spawn("DBus Sender", async move {
-            let zbus;
-            if is_session {
-                zbus = ConnectionBuilder::session()?.build().await?;
+            use zbus::Address;
+            let addr = if is_session {
+                Address::session()?
             } else {
-                zbus = ConnectionBuilder::system()?.build().await?;
-            }
+                Address::system()?
+            };
+
+            let zbus = match addr {
+                Address::Unix(s) => {
+                    let stream = AsSocket(UnixStream::connect(s).await?);
+                    ConnectionBuilder::socket(stream)
+                        .internal_executor(false)
+                        .build().await?
+                }
+            };
             match this.bus.replace(Ok(zbus.clone())) {
                 Ok(_) => unreachable!(),
                 Err(wakers) => {
@@ -336,6 +349,32 @@ impl DBus {
             }
         }
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct AsSocket(UnixStream);
+
+impl zbus::azync::Socket for AsSocket {
+    fn poll_recvmsg(&mut self, cx: &mut task::Context<'_>, buf: &mut [u8]) -> task::Poll<io::Result<(usize, Vec<zbus::OwnedFd>)>> {
+        use tokio::io::AsyncRead;
+        //use futures::ready;
+        //ready!(self.0.poll_read_ready(cx)?);
+        let mut buf = tokio::io::ReadBuf::new(buf);
+        let rv = Pin::new(&mut self.0).poll_read(cx, &mut buf);
+        rv.map_ok(|()| (buf.filled().len(), vec![]))
+    }
+    fn poll_sendmsg(&mut self, cx: &mut task::Context<'_>, buffer: &[u8], fds: &[RawFd]) -> task::Poll<io::Result<usize>> {
+        use tokio::io::AsyncWrite;
+        if !fds.is_empty() {
+            // I don't use fds.  Makes this impl much easier.
+            Err(io::ErrorKind::InvalidData)?;
+        }
+        Pin::new(&mut self.0).poll_write(cx, buffer)
+    }
+    fn close(&self) -> io::Result<()>{ Ok(()) }
+    fn as_raw_fd(&self) -> RawFd {
+        std::os::unix::io::AsRawFd::as_raw_fd(&self.0)
     }
 }
 
