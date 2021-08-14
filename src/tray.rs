@@ -17,11 +17,12 @@ use std::time::Instant;
 use std::mem::ManuallyDrop;
 use std::time::{SystemTime,Duration,UNIX_EPOCH};
 use log::{debug,warn};
-use zvariant::Value as Variant;
-use zvariant::OwnedValue;
 use zbus::fdo::AsyncDBusProxy;
 use zbus::dbus_proxy;
 use zbus::fdo;
+use zbus::zvariant;
+use zvariant::Value as Variant;
+use zvariant::OwnedValue;
 
 #[dbus_proxy(interface="com.canonical.dbusmenu")]
 trait DBusMenu {

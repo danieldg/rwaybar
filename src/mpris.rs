@@ -8,6 +8,7 @@ use std::convert::TryInto;
 use std::error::Error;
 use std::rc::Rc;
 use log::{debug,warn,error};
+use zbus::zvariant;
 use zvariant::Value as Variant;
 use zvariant::{Dict,OwnedValue};
 use zbus::dbus_proxy;

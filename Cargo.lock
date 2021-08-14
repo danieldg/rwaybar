@@ -1007,7 +1007,6 @@ dependencies = [
  "xdg",
  "xml-rs",
  "zbus",
- "zvariant",
 ]
 
 [[package]]

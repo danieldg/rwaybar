@@ -16,6 +16,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::task;
 use zbus::azync::{Connection,ConnectionBuilder};
+use zbus::zvariant;
 use zvariant::Value as Variant;
 use zvariant::OwnedValue;
 use zbus::names::BusName;
