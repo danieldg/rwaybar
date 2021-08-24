@@ -3,6 +3,7 @@ name = "rwaybar"
 version = "0.1.0"
 authors = ["Daniel De Graaf <code@danieldg.net>"]
 edition = "2018"
+default-run = 'rwaybar'
 
 [profile.dev]
 # 400ms frames are more annoying than a bit more work on compile
@@ -21,6 +22,7 @@ pulse = ['libpulse-binding']
 # dependency, but also changes the wayland-client code to link to the C
 # library.  No actual changes in functionality are present.
 dlopen = ['smithay-client-toolkit/dlopen']
+tools = []
 
 [dependencies]
 # Basic runtime
@@ -42,7 +44,7 @@ xdg = "*"
 xml-rs = "*"
 
 # GUI
-png = "*"
+png = "0.17"
 #raqote = { version = "*", default-features = false }
 raqote = { git = "https://github.com/jrmuizel/raqote.git", default-features = false }
 resvg = { version = "*", default-features = false }
@@ -61,3 +63,7 @@ evalexpr = "*"
 libpulse-binding = { version = "*", features = ['pa_v14'], optional = true }
 regex = "1.5"
 zbus = { version = "2.0.0-beta", git = "https://gitlab.freedesktop.org/dbus/zbus", default-features = false }
+
+[[bin]]
+name = 'font-dump'
+required-features = ['tools']

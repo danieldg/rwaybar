@@ -81,14 +81,15 @@ fn main() {
             let mut png = png::Decoder::new(std::io::Cursor::new(raster_img.data));
             png.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
 
-            let (info, mut png) = png.read_info().unwrap();
+            let mut png = png.read_info().unwrap();
             let mut image = vec![0; png.output_buffer_size()];
             let (color, _depth_is_8) = png.output_color_type();
             png.next_frame(&mut image).unwrap();
 
+            let info = png.info();
             let mut tmp_canvas = DrawTarget::new(info.width as i32, info.height as i32);
             match color {
-                png::ColorType::RGBA => {
+                png::ColorType::Rgba => {
                     tmp_canvas.get_data_u8_mut().copy_from_slice(&image);
                     for pixel in tmp_canvas.get_data_mut() {
                         let [r,g,b,a] = pixel.to_le_bytes();
@@ -122,7 +123,7 @@ fn main() {
 
     let w = BufWriter::new(File::create("out.png").unwrap());
     let mut encoder = png::Encoder::new(w, canvas.width() as u32, canvas.height() as u32);
-    encoder.set_color(png::ColorType::RGBA);
+    encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().unwrap();
     for pixel in canvas.get_data_mut() {

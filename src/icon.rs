@@ -46,17 +46,18 @@ impl OwnedImage {
     pub fn from_png(data : &[u8]) -> Result<Self, png::DecodingError> {
         let mut png = png::Decoder::new(std::io::Cursor::new(data));
         png.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-        let (info, mut png) = png.read_info()?;
+        let mut png = png.read_info()?;
         let mut image = vec![0; png.output_buffer_size()];
         let (color, _depth_is_8) = png.output_color_type();
         png.next_frame(&mut image)?;
 
+        let info = png.info();
         let mut tmp_canvas = DrawTarget::new(info.width as i32, info.height as i32);
         let step = match color {
             png::ColorType::Grayscale => 1,
             png::ColorType::GrayscaleAlpha => 2,
-            png::ColorType::RGB => 3,
-            png::ColorType::RGBA => 4,
+            png::ColorType::Rgb => 3,
+            png::ColorType::Rgba => 4,
             _ => unreachable!(),
         };
         if step == 4 {
@@ -85,7 +86,7 @@ impl OwnedImage {
     }
 
     pub fn from_svg(data : &[u8], height : u32) -> Option<Self> {
-        let tree = usvg::Tree::from_data(data, &usvg::Options::default()).ok()?;
+        let tree = usvg::Tree::from_data(data, &usvg::Options::default().to_ref()).ok()?;
         let svg_width = tree.svg_node().size.width();
         let svg_height = tree.svg_node().size.height();
         let width = (height as f64 * svg_width / svg_height).ceil() as u32;

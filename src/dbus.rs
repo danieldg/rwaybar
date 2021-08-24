@@ -356,7 +356,7 @@ impl DBus {
 struct AsSocket(UnixStream);
 
 impl zbus::azync::Socket for AsSocket {
-    fn poll_recvmsg(&mut self, cx: &mut task::Context<'_>, buf: &mut [u8]) -> task::Poll<io::Result<(usize, Vec<zbus::OwnedFd>)>> {
+    fn poll_recvmsg(&mut self, cx: &mut task::Context<'_>, buf: &mut [u8]) -> task::Poll<io::Result<(usize, Vec<zvariant::OwnedFd>)>> {
         use tokio::io::AsyncRead;
         //use futures::ready;
         //ready!(self.0.poll_read_ready(cx)?);
