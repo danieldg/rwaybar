@@ -863,9 +863,11 @@ impl TrayPopup {
         ypos = 2.0 + ypos.ceil();
 
         if let Some(tooltip) = self.tooltip.as_ref() {
-            let tsize = render_font(ctx.canvas, ctx.font, ctx.font_size, ctx.font_color, &ctx.runtime, (10.0, ypos), &tooltip, true);
-            xsize = xsize.max(tsize.0 + 10.0);
-            ypos += tsize.1.ceil();
+            if !tooltip.is_empty() {
+                let tsize = render_font(ctx.canvas, ctx.font, ctx.font_size, ctx.font_color, &ctx.runtime, (10.0, ypos), &tooltip, true);
+                xsize = xsize.max(tsize.0 + 10.0);
+                ypos += tsize.1.ceil();
+            }
         }
 
         if self.menu.fresh.get().map_or(true, |i| i.elapsed() > Duration::from_secs(60)) &&
