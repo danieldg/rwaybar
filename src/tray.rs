@@ -1013,23 +1013,22 @@ pub fn do_click(item : &Rc<TrayItem>, how : u32) {
     let sni_path = if item.is_kde { "org.kde.StatusNotifierItem" } else { "org.freedesktop.StatusNotifierItem" };
 
     debug!("Invoking {} on {}", method, item.id.take_in(|i| i.clone()));
-    if how < 3 {
-        dbus.send(zbus::Message::method(
-            None::<&str>,
-            Some(&*item.owner),
-            &*item.path,
-            Some(sni_path),
-            method,
-            &(0i32,0i32)
-        ).unwrap());
-    } else {
-        dbus.send(zbus::Message::method(
-            None::<&str>,
-            Some(&*item.owner),
-            &*item.path,
-            Some(sni_path),
-            "Scroll",
-            &(15i32,method)
-        ).unwrap());
-    }
+    let _ = (|| -> zbus::Result<()> {
+        if how < 3 {
+            dbus.send(zbus::MessageBuilder::method_call(&*item.path, method)?
+                .destination(&*item.owner)?
+                .interface(sni_path)?
+                .with_flags(zbus::MessageFlags::NoReplyExpected)?
+                .build(&(0i32,0i32))?
+            );
+        } else {
+            dbus.send(zbus::MessageBuilder::method_call(&*item.path, "Scroll")?
+                .destination(&*item.owner)?
+                .interface(sni_path)?
+                .with_flags(zbus::MessageFlags::NoReplyExpected)?
+                .build(&(15i32,method))?
+            );
+        }
+        Ok(())
+    })();
 }
