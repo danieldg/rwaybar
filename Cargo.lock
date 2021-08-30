@@ -165,9 +165,9 @@ checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
 
 [[package]]
 name = "bytes"
-version = "1.0.1"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b700ce4376041dcd0a327fd0097c41095743c4c8af8887265942faf1100bd040"
+checksum = "c4872d67bab6358e59559027aa3b9157c53d9358c51423c17554809a8858e0f8"
 
 [[package]]
 name = "cache-padded"
@@ -545,9 +545,9 @@ checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 
 [[package]]
 name = "libc"
-version = "0.2.100"
+version = "0.2.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1fa8cddc8fbbee11227ef194b5317ed014b8acbf15139bd716a18ad3fe99ec5"
+checksum = "3cb00336871be5ed2c8ed44b60ae9959dc5b9f08539422ed43f09e34ecaeba21"
 
 [[package]]
 name = "libloading"
@@ -561,9 +561,9 @@ dependencies = [
 
 [[package]]
 name = "libpulse-binding"
-version = "2.24.0"
+version = "2.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04b4154b9bc606019cb15125f96e08e1e9c4f53d55315f1ef69ae229e30d1765"
+checksum = "86835d7763ded6bc16b6c0061ec60214da7550dfcd4ef93745f6f0096129676a"
 dependencies = [
  "bitflags",
  "libc",
@@ -575,9 +575,9 @@ dependencies = [
 
 [[package]]
 name = "libpulse-sys"
-version = "1.19.1"
+version = "1.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ebed2cc92c38cac12307892ce6fb17e2e950bfda1ed17b3e1d47fd5184c8f2b"
+checksum = "f12950b69c1b66233a900414befde36c8d4ea49deec1e1f34e4cd2f586e00c7d"
 dependencies = [
  "libc",
  "num-derive",
@@ -797,9 +797,9 @@ checksum = "3831453b3449ceb48b6d9c7ad7c96d5ea673e9b470a1dc578c2ce6521230884c"
 
 [[package]]
 name = "png"
-version = "0.17.0"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c2ea6221e9aa7dccc581e610d92af4621d3589f7faa36ffd420bc52904e4aa9"
+checksum = "641fb192b191c2cb8f35985f47eb1e78cf1d464542f9fe5d1dbc5ee8f989288d"
 dependencies = [
  "bitflags",
  "crc32fast",
@@ -1029,18 +1029,18 @@ checksum = "ea6a9290e3c9cf0f18145ef7ffa62d68ee0bf5fcd651017e586dc7fd5da448c2"
 
 [[package]]
 name = "serde"
-version = "1.0.129"
+version = "1.0.130"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1f72836d2aa753853178eda473a3b9d8e4eefdaf20523b919677e6de489f8f1"
+checksum = "f12d06de37cf59146fbdecab66aa99f9fe4f78722e3607577a5375d66bd0c913"
 dependencies = [
  "serde_derive",
 ]
 
 [[package]]
 name = "serde_derive"
-version = "1.0.129"
+version = "1.0.130"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e57ae87ad533d9a56427558b516d0adac283614e347abf85b0dc0cbbf0a249f3"
+checksum = "d7bc1a1ab1961464eae040d96713baa5a724a8152c1222492465b54322ec508b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1197,18 +1197,18 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "1.0.26"
+version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93119e4feac1cbe6c798c34d3a53ea0026b0b1de6a120deef895137c0529bfe2"
+checksum = "283d5230e63df9608ac7d9691adc1dfb6e701225436eb64d0b9a7f0a5a04f6ec"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "1.0.26"
+version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "060d69a0afe7796bf42e9e2ff91f5ee691fb15c53d38b4b62a9a53eb23164745"
+checksum = "fa3884228611f5cd3608e2d409bf7dce832e4eb3135e3f11addbd7e41bd68e71"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1227,9 +1227,9 @@ dependencies = [
 
 [[package]]
 name = "tiny-skia"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "654e2d9f21bc1e0f9a64ff7587e8b5fd024e9586ac1092b6ee9288b123ae2c72"
+checksum = "1657db71220a7b20cc51aa6a8a0e14961cff9decb3d99b5415fbd34ca0a21cdc"
 dependencies = [
  "arrayref",
  "arrayvec",
@@ -1470,7 +1470,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 [[package]]
 name = "zbus"
 version = "2.0.0-beta.6"
-source = "git+https://gitlab.freedesktop.org/dbus/zbus#2ebd024c5499d28d12f511187b4f466495dca858"
+source = "git+https://gitlab.freedesktop.org/dbus/zbus#ff08cbbbcd3eead16464012b92e3862d4dcb6f16"
 dependencies = [
  "async-broadcast",
  "async-channel",
@@ -1503,7 +1503,7 @@ dependencies = [
 [[package]]
 name = "zbus_macros"
 version = "2.0.0-beta.6"
-source = "git+https://gitlab.freedesktop.org/dbus/zbus#2ebd024c5499d28d12f511187b4f466495dca858"
+source = "git+https://gitlab.freedesktop.org/dbus/zbus#ff08cbbbcd3eead16464012b92e3862d4dcb6f16"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1515,7 +1515,7 @@ dependencies = [
 [[package]]
 name = "zbus_names"
 version = "1.0.0"
-source = "git+https://gitlab.freedesktop.org/dbus/zbus#2ebd024c5499d28d12f511187b4f466495dca858"
+source = "git+https://gitlab.freedesktop.org/dbus/zbus#ff08cbbbcd3eead16464012b92e3862d4dcb6f16"
 dependencies = [
  "serde",
  "static_assertions",
@@ -1525,7 +1525,7 @@ dependencies = [
 [[package]]
 name = "zvariant"
 version = "2.8.0"
-source = "git+https://gitlab.freedesktop.org/dbus/zbus#2ebd024c5499d28d12f511187b4f466495dca858"
+source = "git+https://gitlab.freedesktop.org/dbus/zbus#ff08cbbbcd3eead16464012b92e3862d4dcb6f16"
 dependencies = [
  "byteorder",
  "enumflags2",
@@ -1538,7 +1538,7 @@ dependencies = [
 [[package]]
 name = "zvariant_derive"
 version = "2.8.0"
-source = "git+https://gitlab.freedesktop.org/dbus/zbus#2ebd024c5499d28d12f511187b4f466495dca858"
+source = "git+https://gitlab.freedesktop.org/dbus/zbus#ff08cbbbcd3eead16464012b92e3862d4dcb6f16"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",

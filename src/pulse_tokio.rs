@@ -109,8 +109,11 @@ impl MainloopInternalType for MainInner {
 
 impl MainloopInnerType for MainInner {
     type I = Self;
-    fn get_ptr(&self) -> *mut Self {
+    unsafe fn get_ptr(&self) -> *mut Self {
         panic!("This function is not well-defined and is never called")
+    }
+    unsafe fn get_api_ptr(&self) -> *const MainloopApi {
+        &self.api
     }
 
     fn get_api(&self) -> &MainloopApi {
