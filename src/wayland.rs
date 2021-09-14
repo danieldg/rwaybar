@@ -32,7 +32,6 @@ use wayland_protocols::xdg_shell::client::xdg_surface::XdgSurface;
 use wayland_protocols::xdg_shell::client::xdg_wm_base::XdgWmBase;
 
 use crate::bar::Bar;
-use crate::render::Renderer;
 use crate::state::State;
 use crate::util;
 
@@ -67,7 +66,6 @@ environment!(Globals,
 pub struct WaylandClient {
     pub env : Environment<Globals>,
     pub wl_display : Attached<WlDisplay>,
-    pub renderer : Renderer,
     #[allow(unused)] // need to hold this handle for the callback to remain alive
     seat_watcher : SeatListener,
     flush : Option<task::Waker>,
@@ -99,7 +97,6 @@ impl WaylandClient {
         })?;
 
         let client = WaylandClient {
-            renderer : Renderer::new(&env)?,
             env,
             wl_display,
             seat_watcher,
@@ -137,7 +134,7 @@ impl WaylandClient {
                 let state : &mut State = data.get().unwrap();
                 match event {
                     Event::Enter { serial, surface, surface_x, surface_y, .. } => {
-                        state.wayland.renderer.cursor.set(&mouse, serial);
+                        state.renderer.cursor.set(&mouse, serial);
                         over = Some(surface.as_ref().id());
                         x = surface_x;
                         y = surface_y;
@@ -245,11 +242,11 @@ impl WaylandClient {
                 if let Some(id) = over {
                     for bar in &mut state.bars {
                         if bar.surf.as_ref().id() == id {
-                            bar.hover(x,y, &state.wayland, &mut state.runtime);
+                            bar.hover(x,y, &mut state.runtime);
                         }
                         if let Some(popup) = &bar.popup {
                             if popup.wl.surf.as_ref().id() == id {
-                                bar.hover_popup(x, y, &state.wayland, &mut state.runtime);
+                                bar.hover_popup(x, y, &mut state.runtime);
                             }
                         }
                     }
@@ -399,9 +396,9 @@ pub async fn run_queue(mut wl_queue : wayland_client::EventQueue, state : Rc<Ref
 
         futures_util::future::poll_fn(|ctx| {
             let mut state = state.borrow_mut();
-            match &state.wayland.flush {
+            match &state.runtime.wayland.flush {
                 Some(w) if w.will_wake(ctx.waker()) => (),
-                _ => state.wayland.flush = Some(ctx.waker().clone()),
+                _ => state.runtime.wayland.flush = Some(ctx.waker().clone()),
             }
 
             rg = match fd.poll_read_ready(ctx) {
@@ -414,7 +411,7 @@ pub async fn run_queue(mut wl_queue : wayland_client::EventQueue, state : Rc<Ref
                 task::Poll::Pending => None,
             };
 
-            if state.wayland.need_flush && wg.is_some() {
+            if state.runtime.wayland.need_flush && wg.is_some() {
                 task::Poll::Ready(Ok(()))
             } else if rg.is_some() {
                 task::Poll::Ready(Ok(()))
@@ -426,7 +423,7 @@ pub async fn run_queue(mut wl_queue : wayland_client::EventQueue, state : Rc<Ref
         if let Some(g) = &mut wg {
             match wl_queue.display().flush() {
                 Ok(()) => {
-                    state.borrow_mut().wayland.need_flush = false;
+                    state.borrow_mut().runtime.wayland.need_flush = false;
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     g.clear_ready();

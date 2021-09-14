@@ -1,6 +1,6 @@
 use crate::font::FontMapped;
 use crate::state::Runtime;
-use crate::wayland::{Globals,WaylandClient};
+use crate::wayland::Globals;
 use log::error;
 use raqote::DrawTarget;
 use std::borrow::Cow;
@@ -36,6 +36,22 @@ impl Renderer {
             shm,
         })
     }
+
+    pub fn render(&mut self, size : (i32, i32), target : &WlSurface) -> &mut [u32] {
+        let stride = size.0 * 4;
+        let (canvas, wl_buf) = self.shm
+            .buffer(size.0, size.1, stride, smithay_client_toolkit::shm::Format::Argb8888)
+            .expect("OOM");
+
+        target.attach(Some(&wl_buf), 0, 0);
+        target.damage_buffer(0, 0, size.0, size.1);
+
+        unsafe {
+            let len = size.0 as usize * size.1 as usize;
+            assert_eq!(canvas.len(), len * 4);
+            std::slice::from_raw_parts_mut(canvas.as_mut_ptr().cast(), len)
+        }
+    }
 }
 
 pub struct Cursor {
@@ -69,32 +85,6 @@ impl Cursor {
     pub fn set(&self, mouse : &WlPointer, serial : u32) {
         let spot = self.spot;
         mouse.set_cursor(serial, Some(&self.cursor_surf), spot.0, spot.1);
-    }
-}
-
-pub struct RenderTarget<'a> {
-    pub wayland : &'a mut WaylandClient,
-}
-
-impl<'a> RenderTarget<'a> {
-    pub fn new(wayland : &'a mut WaylandClient) -> Self {
-        RenderTarget { wayland }
-    }
-
-    pub fn render(&mut self, size : (i32, i32), target : &WlSurface) -> &mut [u32] {
-        let stride = size.0 * 4;
-        let (canvas, wl_buf) = self.wayland.renderer.shm
-            .buffer(size.0, size.1, stride, smithay_client_toolkit::shm::Format::Argb8888)
-            .expect("OOM");
-
-        target.attach(Some(&wl_buf), 0, 0);
-        target.damage_buffer(0, 0, size.0, size.1);
-
-        unsafe {
-            let len = size.0 as usize * size.1 as usize;
-            assert_eq!(canvas.len(), len * 4);
-            std::slice::from_raw_parts_mut(canvas.as_mut_ptr().cast(), len)
-        }
     }
 }
 

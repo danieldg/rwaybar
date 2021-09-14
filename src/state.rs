@@ -15,7 +15,7 @@ use crate::bar::Bar;
 use crate::data::{Module,IterationItem,Value};
 use crate::font::FontMapped;
 use crate::item::*;
-use crate::render::RenderTarget;
+use crate::render::Renderer;
 use crate::util::{Cell,spawn,spawn_noerr};
 use crate::wayland::WaylandClient;
 
@@ -84,6 +84,7 @@ pub struct Runtime {
     pub xdg : xdg::BaseDirectories,
     pub fonts : Vec<FontMapped>,
     pub items : HashMap<String, Rc<Item>>,
+    pub wayland : WaylandClient,
     item_var : Rc<Item>,
     notify : Notifier,
     read_depth : Cell<u8>,
@@ -169,9 +170,9 @@ impl Runtime {
 
 /// The singleton global state object
 pub struct State {
-    pub wayland : WaylandClient,
     pub bars : Vec<Bar>,
     bar_config : Vec<toml::Value>,
+    pub renderer : Renderer,
     pub runtime : Runtime,
     this : rc::Weak<RefCell<State>>,
     #[allow(unused)] // need to hold this handle for the callback to remain alive
@@ -198,9 +199,9 @@ impl State {
         });
 
         let mut state = Self {
-            wayland,
             bars : Vec::new(),
             bar_config : Vec::new(),
+            renderer: Renderer::new(&wayland.env)?,
             runtime : Runtime {
                 xdg : xdg::BaseDirectories::new()?,
                 fonts : Vec::new(),
@@ -208,6 +209,7 @@ impl State {
                 item_var : Rc::new(Module::new_current_item().into()),
                 notify : Notifier { inner : notify_inner.clone() },
                 read_depth : Cell::new(0),
+                wayland,
             },
             this : rc::Weak::new(),
             output_status_listener,
@@ -215,14 +217,14 @@ impl State {
 
         state.load_config(false)?;
 
-        let sync_cb = state.wayland.wl_display.sync();
+        let sync_cb = state.runtime.wayland.wl_display.sync();
         sync_cb.quick_assign(move |_sync, _event, mut data| {
             let state : &mut State = data.get().unwrap();
             if !state.bars.is_empty() {
                 return;
             }
             error!("No bars matched this outptut configuration.  Available outputs:");
-            for output in state.wayland.env.get_all_outputs() {
+            for output in state.runtime.wayland.env.get_all_outputs() {
                 with_output_info(&output, |oi| {
                     error!(" name='{}' description='{}' make='{}' model='{}'",
                         oi.name, oi.description, oi.make, oi.model);
@@ -330,7 +332,7 @@ impl State {
         self.runtime.notify.inner.state.set(NotifyState::NewData);
 
         self.bars.clear();
-        for output in self.wayland.env.get_all_outputs() {
+        for output in self.runtime.wayland.env.get_all_outputs() {
             with_output_info(&output, |oi| {
                 self.output_ready(&output, oi);
             });
@@ -338,7 +340,7 @@ impl State {
         if reload {
             if self.bars.is_empty() {
                 error!("No bars matched this outptut configuration.  Available outputs:");
-                for output in self.wayland.env.get_all_outputs() {
+                for output in self.runtime.wayland.env.get_all_outputs() {
                     with_output_info(&output, |oi| {
                         error!(" name='{}' description='{}' make='{}' model='{}'",
                             oi.name, oi.description, oi.make, oi.model);
@@ -377,12 +379,10 @@ impl State {
         self.set_data();
 
         let begin = Instant::now();
-        let mut target = RenderTarget::new(&mut self.wayland);
-
         for bar in &mut self.bars {
-            bar.render_with(&mut self.runtime, &mut target);
+            bar.render_with(&mut self.runtime, &mut self.renderer);
         }
-        self.wayland.flush();
+        self.runtime.wayland.flush();
         let render_time = begin.elapsed().as_nanos();
         log::debug!("Frame took {}.{:06} ms", render_time / 1_000_000, render_time % 1_000_000);
     }
@@ -440,12 +440,12 @@ impl State {
                 table.insert("name".into(), data.name.clone().into());
             }
 
-            let bar = Bar::new(&self.wayland, &output, &data, cfg, i);
+            let bar = Bar::new(&self.runtime.wayland, &output, &data, cfg, i);
             self.bars.retain(|bar| {
                 bar.cfg_index != i || &*bar.name != data.name
             });
             self.bars.push(bar);
-            self.wayland.flush();
+            self.runtime.wayland.flush();
         }
     }
 

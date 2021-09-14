@@ -16,7 +16,7 @@ use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
 
 use crate::event::EventSink;
 use crate::item::*;
-use crate::render::{Align,Render,RenderTarget};
+use crate::render::{Align,Render,Renderer};
 use crate::state::{NotifierList,Runtime,State};
 use crate::util::spawn_noerr;
 use crate::wayland::{Popup,WaylandClient};
@@ -158,12 +158,12 @@ impl Bar {
         }
     }
 
-    pub fn render_with(&mut self, runtime : &mut Runtime, target : &mut RenderTarget) {
+    pub fn render_with(&mut self, runtime : &mut Runtime, renderer: &mut Renderer) {
         if self.dirty && self.throttle.is_none() && self.pixel_width != 0 {
             let rt_item = runtime.items.entry("bar".into()).or_insert_with(|| Rc::new(Item::none()));
             std::mem::swap(&mut self.item, rt_item);
 
-            let canvas = target.render((self.pixel_width, self.size * self.scale), &self.surf);
+            let canvas = renderer.render((self.pixel_width, self.size * self.scale), &self.surf);
             let mut canvas = DrawTarget::from_backing(self.pixel_width, self.size * self.scale, canvas);
             canvas.clear(raqote::SolidSource { r: 0, g: 0, b: 0, a: 0 });
             let scale = raqote::Transform::scale(self.scale as f32, self.scale as f32);
@@ -199,7 +199,7 @@ impl Bar {
                 });
 
                 if old_regions != new_regions {
-                    let comp : Attached<WlCompositor> = target.wayland.env.require_global();
+                    let comp : Attached<WlCompositor> = runtime.wayland.env.require_global();
                     let region = comp.create_region();
                     let yoff = if self.anchor_top {
                         0
@@ -248,7 +248,7 @@ impl Bar {
             let scale = popup.wl.scale;
             let pixel_size = (popup.wl.size.0 * scale, popup.wl.size.1 * scale);
 
-            let canvas = target.render(pixel_size, &popup.wl.surf);
+            let canvas = renderer.render(pixel_size, &popup.wl.surf);
             let mut canvas = DrawTarget::from_backing(popup.wl.size.0 * scale, popup.wl.size.1 * scale, canvas);
             canvas.clear(raqote::SolidSource { r: 0, g: 0, b: 0, a: 0 });
             canvas.set_transform(&raqote::Transform::scale(scale as f32, scale as f32));
@@ -256,12 +256,12 @@ impl Bar {
             let new_size = popup.desc.render_popup(runtime, &mut canvas);
             popup.wl.surf.commit();
             if new_size.0 > popup.wl.size.0 || new_size.1 > popup.wl.size.1 {
-                target.wayland.resize_popup(&self.ls_surf, &mut popup.wl, new_size, scale);
+                runtime.wayland.resize_popup(&self.ls_surf, &mut popup.wl, new_size, scale);
             }
         }
     }
 
-    pub fn hover(&mut self, x : f64, y : f64, wayland : &WaylandClient, runtime : &Runtime) {
+    pub fn hover(&mut self, x : f64, y : f64, runtime : &Runtime) {
         if let Some((min_x, max_x, desc)) = self.sink.get_hover(x as f32, y as f32) {
             if let Some(popup) = &self.popup {
                 if x < popup.wl.anchor.0 as f64 || x > (popup.wl.anchor.0 + popup.wl.anchor.2) as f64 {
@@ -284,7 +284,7 @@ impl Bar {
 
             let desc = desc.clone();
             let popup = BarPopup {
-                wl : wayland.new_popup(self, anchor, size),
+                wl : runtime.wayland.new_popup(self, anchor, size),
                 desc,
                 vanish : None,
             };
@@ -304,7 +304,7 @@ impl Bar {
         }
     }
 
-    pub fn hover_popup(&mut self, x : f64, y : f64, _wayland : &WaylandClient, _runtime : &Runtime) {
+    pub fn hover_popup(&mut self, x : f64, y : f64, _runtime : &Runtime) {
         if let Some(popup) = &mut self.popup {
             popup.vanish = None;
             let _ = (x, y);
