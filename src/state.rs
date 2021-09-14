@@ -111,7 +111,7 @@ impl Runtime {
         if !fmt.contains("{") {
             return Ok(Value::Borrow(fmt));
         }
-        if fmt.starts_with("{") && fmt.ends_with("}") && !fmt[1..fmt.len() - 1].contains("{") {
+        if fmt.starts_with("{") && fmt.ends_with("}") && !fmt[1..fmt.len() - 1].contains(&['{', ':'] as &[char]) {
             let q = &fmt[1..fmt.len() - 1];
             let (name, key) = match q.find('.') {
                 Some(p) => (&q[..p], &q[p + 1..]),
