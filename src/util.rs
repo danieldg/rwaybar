@@ -1,6 +1,6 @@
 use log::error;
-use futures::FutureExt;
-use futures::future::RemoteHandle;
+use futures_util::FutureExt;
+use futures_util::future::RemoteHandle;
 use std::error::Error;
 use std::fmt;
 use std::future::Future;

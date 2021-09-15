@@ -8,8 +8,8 @@ use bytes::{Bytes,BytesMut};
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_protocols::wlr::unstable::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
 use wayland_protocols::wlr::unstable::data_control::v1::client::zwlr_data_control_offer_v1::ZwlrDataControlOfferV1;
-use futures::channel::oneshot;
-use futures::future::{Either,select};
+use futures_channel::oneshot;
+use futures_util::future::{Either,select};
 
 enum OfferValue {
     Available,
@@ -197,7 +197,7 @@ impl ClipboardData {
                     let mut cancel = send.cancellation();
                     loop {
                         let read = rx.read_buf(&mut buf);
-                        futures::pin_mut!(read);
+                        futures_util::pin_mut!(read);
                         match select(cancel, read).await {
                             Either::Left(_) => return Ok(()),
                             Either::Right((Ok(0), _)) => break,

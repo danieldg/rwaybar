@@ -29,7 +29,7 @@ tools = []
 bytes = "*"
 async-once-cell = "0.3"
 env_logger = "0.9"
-futures = { version = "*" }
+futures-channel = { version = "*" }
 futures-util = { version = "*", features = ['channel'] }
 json = "*"
 libc = "*"

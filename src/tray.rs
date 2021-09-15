@@ -6,7 +6,7 @@ use crate::item::{Item,PopupDesc};
 use crate::render::Render;
 use crate::state::{Runtime,NotifierList};
 use crate::util::{Cell,spawn,spawn_handle};
-use futures::future::RemoteHandle;
+use futures_util::future::RemoteHandle;
 use once_cell::unsync::OnceCell;
 use async_once_cell::OnceCell as AsyncOnceCell;
 use std::collections::HashMap;
@@ -383,7 +383,7 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
         .cache_properties(false)
         .build().await?;
 
-    match futures::future::join(
+    match futures_util::future::join(
         dbif.request_name((&*name).try_into()?, Default::default()),
         dbif.request_name(snw_path.try_into()?, Default::default()),
     ).await.1? {

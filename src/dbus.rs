@@ -3,7 +3,7 @@ use crate::state::Runtime;
 use crate::state::NotifierList;
 use crate::util;
 use crate::util::{Cell,spawn_noerr};
-use futures::channel::mpsc::{self,UnboundedSender};
+use futures_channel::mpsc::{self,UnboundedSender};
 use futures_util::StreamExt;
 use log::{info,warn,error};
 use once_cell::unsync::OnceCell;
@@ -66,7 +66,7 @@ impl DBus {
     }
 
     pub async fn connection(&self) -> Connection {
-        futures::future::poll_fn(|ctx| {
+        futures_util::future::poll_fn(|ctx| {
             match self.bus.replace(Err(Vec::new())) {
                 Err(mut wakers) => {
                     let me = ctx.waker();
