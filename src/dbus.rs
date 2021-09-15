@@ -19,11 +19,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::task;
 use tokio::net::UnixStream;
-use zbus::azync::{Connection,ConnectionBuilder};
-use zbus::zvariant;
-use zvariant::Value as Variant;
-use zvariant::OwnedValue;
+use zbus::azync::{Connection,ConnectionBuilder,MessageStream};
 use zbus::names::BusName;
+use zbus::zvariant;
+use zvariant::OwnedValue;
+use zvariant::Value as Variant;
 
 pub struct DBus {
     api : util::Cell<HashMap<Cow<'static,str>, Box<dyn FnMut(Arc<zbus::Message>)>>>,
@@ -176,7 +176,7 @@ impl DBus {
                     }
                 }
             }
-            util::spawn("Incoming DBus Events", this.clone().dispatcher(zbus.clone()));
+            util::spawn("Incoming DBus Events", this.clone().dispatcher((&zbus).into()));
 
             let rv = zbus.executor().run(async {
                 while let Some((msg, cb)) = recv.next().await {
@@ -269,7 +269,7 @@ impl DBus {
         }
     }
 
-    async fn dispatcher(self : Rc<Self>, mut zbus : Connection) -> Result<(), Box<dyn std::error::Error>>  {
+    async fn dispatcher(self : Rc<Self>, mut zbus : MessageStream) -> Result<(), Box<dyn std::error::Error>>  {
         while let Some(msg) = zbus.next().await {
             self.dispatch(msg?)?;
         }
