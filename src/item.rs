@@ -346,6 +346,7 @@ impl Item {
                 condition : None,
                 tooltip : None,
                 spacing : "".into(),
+                vertical: false,
             }.into();
         }
 
@@ -463,7 +464,7 @@ impl Item {
             inner_x_offset = 0.0;
         }
 
-        let shrink_r_width = outer_clip.2 - inner_clip.2;
+        let shrink_r_width = shrink.map_or(0.0, |s| s.2);
         if ctx.render_flex {
             // flex the right side of the clip regions to the actual dimensions
             inner_clip.2 = inner_clip.0 + child_render_width;
@@ -564,7 +565,7 @@ impl Item {
                     None => {}
                 });
             }
-            Module::Group { condition, items, tooltip, spacing } => {
+            Module::Group { condition, items, tooltip, spacing, vertical } => {
                 if let Some(cond) = condition {
                     if !cond.is_empty() {
                         match ctx.runtime.format(cond) {
@@ -576,23 +577,37 @@ impl Item {
                         }
                     }
                 }
-                let mut ypos = ctx.render_ypos.map(|p| (p, p));
+                let origin = (ctx.render_pos, ctx.render_ypos);
+                let mut bounds = origin;
+                if *vertical && ctx.render_ypos.is_none() {
+                    ctx.render_ypos = Some(0.0);
+                }
                 let spacing = ctx.runtime.format(spacing).ok().and_then(|s| s.parse_f32()).unwrap_or(0.0);
-                ctx.render_pos += spacing;
                 for item in items {
                     item.render_clamped(ctx, rv);
-                    if spacing >= 1.0 {
-                        ctx.render_pos = ctx.render_pos.ceil() + spacing;
-                    }
-                    if let Some((min,max)) = &mut ypos {
-                        let now = ctx.render_ypos.unwrap();
-                        ctx.render_ypos = Some(*min);
-                        if now > *max {
-                            *max = now;
+
+                    if *vertical {
+                        if ctx.render_pos > bounds.0 {
+                            bounds.0 = ctx.render_pos;
+                        }
+                        ctx.render_pos = origin.0;
+                        bounds.1 = ctx.render_ypos;
+                        if spacing > 0.0 {
+                            ctx.render_ypos = Some((ctx.render_ypos.unwrap() + spacing).ceil());
+                        }
+                    } else {
+                        bounds.0 = ctx.render_pos;
+                        if ctx.render_ypos > bounds.1 {
+                            bounds.1 = ctx.render_ypos;
+                        }
+                        ctx.render_ypos = origin.1;
+                        if spacing > 0.0 {
+                            ctx.render_pos = (ctx.render_pos + spacing).ceil();
                         }
                     }
                 }
-                ctx.render_ypos.as_mut().map(|p| *p = ypos.unwrap().1);
+                ctx.render_pos = bounds.0;
+                ctx.render_ypos = bounds.1;
                 if let Some(item) = tooltip {
                     rv.add_tooltip(PopupDesc::RenderItem {
                         item : item.clone(),

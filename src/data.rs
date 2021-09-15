@@ -419,6 +419,7 @@ pub enum Module {
         items : Vec<Rc<Item>>,
         tooltip : Option<Rc<Item>>,
         spacing : Box<str>,
+        vertical: bool,
         // TODO crop ordering: allow specific items to be cropped first
         // TODO use min-width to force earlier cropping
     },
@@ -653,6 +654,14 @@ impl Module {
                 let spacing = toml_to_string(value.get("spacing")).unwrap_or_default().into();
                 let tooltip = value.get("tooltip").map(Item::from_toml_format).map(Rc::new);
                 let condition = toml_to_string(value.get("condition")).map(Into::into);
+                let vertical = match value.get("orientation").and_then(|v| v.as_str()) {
+                    Some("vertical") | Some("v") => true,
+                    None | Some("horizontal") | Some("h") => false,
+                    Some(x) => {
+                        error!("Invalid orientation: '{}'", x);
+                        false
+                    }
+                };
                 let items = [value.get("item"), value.get("items")]
                     .iter()
                     .filter_map(Option::as_deref)
@@ -667,6 +676,7 @@ impl Module {
                     items,
                     tooltip,
                     spacing,
+                    vertical,
                 }
             }
             Some("icon") => {
