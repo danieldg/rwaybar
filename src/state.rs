@@ -19,7 +19,7 @@ use crate::render::Renderer;
 use crate::util::{Cell,spawn,spawn_noerr};
 use crate::wayland::WaylandClient;
 
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 struct Notifier {
     inner : Rc<NotifierInner>,
 }
@@ -53,7 +53,7 @@ impl Notifier {
     }
 }
 
-#[derive(Debug,Default)]
+#[derive(Debug,Default,Clone)]
 pub struct NotifierList(Option<Notifier>);
 
 impl NotifierList {
@@ -70,6 +70,12 @@ impl NotifierList {
     /// The next call to notify_data will redraw the bar that was rendering when this was called.
     pub fn add(&mut self, rt : &Runtime) {
         self.0 = Some(Notifier { inner : rt.notify.inner.clone() });
+    }
+
+    pub fn merge(&mut self, other: &Self) {
+        if self.0.is_none() {
+            self.clone_from(other);
+        }
     }
 
     /// Notify the bars in the list, and then remove them until they  Future calls to notify_data

@@ -25,6 +25,7 @@ use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::protocol::wl_shm::WlShm;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1;
+use wayland_protocols::wlr::unstable::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 use wayland_protocols::xdg_shell::client::xdg_popup::XdgPopup;
@@ -44,7 +45,8 @@ pub struct Globals {
     sctk_outputs: smithay_client_toolkit::output::OutputHandler,
     sctk_xdg_out: smithay_client_toolkit::output::XdgOutputHandler,
 
-    layer_shell : SimpleGlobal<ZwlrLayerShellV1>,
+    layer_shell: SimpleGlobal<ZwlrLayerShellV1>,
+    clipboard: SimpleGlobal<ZwlrDataControlManagerV1>,
 }
 
 environment!(Globals,
@@ -53,6 +55,7 @@ environment!(Globals,
         WlShm => sctk_shm,
 
         ZwlrLayerShellV1 => layer_shell,
+        ZwlrDataControlManagerV1 => clipboard,
         XdgWmBase => sctk_shell,
         ZxdgOutputManagerV1 => sctk_xdg_out,
     ],
@@ -94,6 +97,7 @@ impl WaylandClient {
             sctk_outputs,
             sctk_xdg_out,
             layer_shell : SimpleGlobal::new(),
+            clipboard : SimpleGlobal::new(),
         })?;
 
         let client = WaylandClient {

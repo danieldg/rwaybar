@@ -154,6 +154,15 @@ Key | Expanded | Default | Details
 `today-format` | No | ` <span color='green'><b>%e</b></span>` | Format for the current day.
 `other-format` | No | ` <span color='gray'>%e</span>` | Format for days of the prior and next months.
 
+## clipboard
+Key | Expanded | Default | Details
+----|----------|---------|--------
+`seat` | No | unset | Wayland seat name to watch; if unset, watches all seats
+`selection` | No | false | Use the "primary selection" instead of the clipboard
+`mime_types` | No | * | A list of preferred MIME types for clipboard contents
+
+If `mime_types` is unset, it defaults to `["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT"]`
+
 ## clock
 
 Key | Expanded | Default | Details

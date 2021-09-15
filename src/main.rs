@@ -21,6 +21,7 @@ mod sway;
 mod tray;
 mod util;
 mod wayland;
+mod wlr;
 
 use state::State;
 use wayland::WaylandClient;

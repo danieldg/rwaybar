@@ -12,6 +12,7 @@ use crate::sway;
 #[cfg(feature="dbus")]
 use crate::tray;
 use crate::util::{Cell,Fd,toml_to_string,toml_to_f64,spawn_noerr,spawn_handle};
+use crate::wlr::ClipboardData;
 use evalexpr::Node as EvalExpr;
 use futures_util::future::RemoteHandle;
 use json::JsonValue;
@@ -377,6 +378,9 @@ pub enum Module {
         zone : Box<str>,
         monday : bool,
     },
+    Clipboard {
+        state: Rc<ClipboardData>,
+    },
     Clock {
         format : Box<str>,
         zone : Box<str>,
@@ -517,6 +521,31 @@ impl Module {
                 let zone = value.get("timezone").and_then(|v| v.as_str()).unwrap_or("").into();
                 let monday = value.get("start").and_then(|v| v.as_str()).map_or(false, |v| v.eq_ignore_ascii_case("monday"));
                 Module::Calendar { day_fmt, today_fmt, other_fmt, zone, monday }
+            }
+            Some("clipboard") => {
+                let seat = value.get("seat").and_then(|v| v.as_str()).map(Into::into);
+                let selection = match value.get("selection").map(|v| v.as_bool()) {
+                    None => false,
+                    Some(Some(b)) => b,
+                    Some(None) => {
+                        error!("Invalid clipboard type");
+                        return Module::None;
+                    }
+                };
+                let mime_list = value.get("types")
+                    .and_then(|v| v.as_array())
+                    .map(|v| v.as_slice())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(Into::into)
+                    .collect();
+                Module::Clipboard {
+                    state: Rc::new(ClipboardData {
+                        seat, mime_list, selection,
+                        interested : Default::default(),
+                    }),
+                }
             }
             Some("clock") => {
                 let format = value.get("format").and_then(|v| v.as_str()).unwrap_or("%H:%M").into();
@@ -924,6 +953,7 @@ impl Module {
                 rv.pop();
                 f(Value::Owned(rv))
             },
+            Module::Clipboard { state } => state.read_in(name, key, rt, f),
             Module::Clock { format, zone, timer } => {
                 let real_format = rt.format_or(&format, &name).into_text();
                 let real_zone = rt.format_or(&zone, &name).into_text();
