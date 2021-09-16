@@ -2,8 +2,9 @@ use crate::font::FontMapped;
 use crate::state::Runtime;
 use crate::wayland::Globals;
 use log::error;
-use raqote::DrawTarget;
+use tiny_skia::PixmapMut;
 use std::borrow::Cow;
+use std::convert::TryInto;
 use std::io;
 use smithay_client_toolkit::environment::Environment;
 use smithay_client_toolkit::shm::AutoMemPool;
@@ -14,10 +15,12 @@ use wayland_client::protocol::wl_surface::WlSurface;
 pub struct Renderer {
     shm : AutoMemPool,
     pub cursor : Cursor,
+    has_be_rgba: bool,
 }
 
 impl Renderer {
     pub fn new(env : &Environment<Globals>) -> io::Result<Self> {
+        use smithay_client_toolkit::shm::ShmHandling;
         let shm = env.create_auto_pool()?;
 
         let mut cursor_scale = 1;
@@ -29,28 +32,40 @@ impl Renderer {
                 }
             });
         }
+
+        let has_be_rgba = env.with_inner(|i| i.sctk_shm.shm_formats())
+            .contains(&smithay_client_toolkit::shm::Format::Abgr8888);
         let cursor = Cursor::new(&env, cursor_scale);
 
         Ok(Renderer {
             cursor,
             shm,
+            has_be_rgba,
         })
     }
 
-    pub fn render(&mut self, size : (i32, i32), target : &WlSurface) -> &mut [u32] {
+    pub fn render_be_rgba(&mut self, size : (i32, i32), target : &WlSurface) -> (&mut [u8], impl FnOnce(&mut [u8])) {
         let stride = size.0 * 4;
-        let (canvas, wl_buf) = self.shm
-            .buffer(size.0, size.1, stride, smithay_client_toolkit::shm::Format::Argb8888)
-            .expect("OOM");
+        let has_be_rgba = self.has_be_rgba;
+        let fmt = if has_be_rgba {
+            smithay_client_toolkit::shm::Format::Abgr8888
+        } else {
+            // wayland always supports this format, so we convert to it as a fallback
+            smithay_client_toolkit::shm::Format::Argb8888
+        };
+        let (canvas, wl_buf) = self.shm.buffer(size.0, size.1, stride, fmt).expect("OOM");
 
         target.attach(Some(&wl_buf), 0, 0);
         target.damage_buffer(0, 0, size.0, size.1);
 
-        unsafe {
-            let len = size.0 as usize * size.1 as usize;
-            assert_eq!(canvas.len(), len * 4);
-            std::slice::from_raw_parts_mut(canvas.as_mut_ptr().cast(), len)
-        }
+        (canvas, move |buf| {
+            if !has_be_rgba {
+                for pixel in buf.chunks_mut(4) {
+                    let [r,g,b,a] : [u8;4] = (&*pixel).try_into().expect("partial pixel");
+                    pixel.copy_from_slice(&[b,g,r,a]);
+                }
+            }
+        })
     }
 }
 
@@ -90,8 +105,9 @@ impl Cursor {
 
 /// State available to an [Item][crate::item::Item] render function
 pub struct Render<'a, 'c> {
-    pub canvas : &'a mut DrawTarget<&'c mut [u32]>,
+    pub canvas : &'a mut PixmapMut<'c>,
 
+    pub render_xform : tiny_skia::Transform,
     pub render_extents : (f32, f32, f32, f32),
     pub render_pos : f32,
     pub render_ypos : Option<f32>,

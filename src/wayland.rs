@@ -39,7 +39,7 @@ use crate::util;
 /// Wayland globals (access via [Environment::require_global])
 pub struct Globals {
     sctk_compositor: SimpleGlobal<WlCompositor>,
-    sctk_shm: smithay_client_toolkit::shm::ShmHandler,
+    pub sctk_shm: smithay_client_toolkit::shm::ShmHandler,
     sctk_seats: smithay_client_toolkit::seat::SeatHandler,
     sctk_shell: smithay_client_toolkit::shell::ShellHandler,
     sctk_outputs: smithay_client_toolkit::output::OutputHandler,

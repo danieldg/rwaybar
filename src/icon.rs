@@ -1,35 +1,21 @@
-use raqote::DrawTarget;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self,File};
 use std::io;
 use std::path::{PathBuf,Component};
 use crate::render::Render;
+use tiny_skia::Transform;
 
 thread_local! {
     static CACHE : RefCell<HashMap<(String, u32), Option<OwnedImage>>> = Default::default();
 }
 
 #[derive(Debug)]
-pub struct OwnedImage {
-    pub width : i32,
-    pub height : i32,
-    pub buf : Vec<u32>,
-}
+pub struct OwnedImage(pub tiny_skia::Pixmap);
 
 impl OwnedImage {
-    pub fn as_ref(&self) -> raqote::Image {
-        raqote::Image {
-            width: self.width,
-            height: self.height,
-            data: &self.buf,
-        }
-    }
-
-    pub fn from_canvas(canvas : DrawTarget) -> Self {
-        let width = canvas.width();
-        let height = canvas.height();
-        Self { width, height, buf: canvas.into_vec() }
+    pub fn as_ref(&self) -> tiny_skia::PixmapRef {
+        self.0.as_ref()
     }
 
     pub fn from_file<R : io::Read>(mut file : R, tsize : u32) -> Option<Self> {
@@ -52,7 +38,7 @@ impl OwnedImage {
         png.next_frame(&mut image)?;
 
         let info = png.info();
-        let mut tmp_canvas = DrawTarget::new(info.width as i32, info.height as i32);
+        let mut pixmap = tiny_skia::Pixmap::new(info.width as u32, info.height as u32).unwrap();
         let step = match color {
             png::ColorType::Grayscale => 1,
             png::ColorType::GrayscaleAlpha => 2,
@@ -60,29 +46,17 @@ impl OwnedImage {
             png::ColorType::Rgba => 4,
             _ => unreachable!(),
         };
-        if step == 4 {
-            tmp_canvas.get_data_u8_mut().copy_from_slice(&image);
-            for pixel in tmp_canvas.get_data_mut() {
-                let [r,g,b,a] = pixel.to_le_bytes();
-                let m = |v| ((v as u32) * (a as u32) / 255) as u8;
-                *pixel = u32::from_be_bytes([a,m(r), m(g), m(b)]);
-            }
-        } else {
-            for (src, pixel) in image.chunks(step).zip(tmp_canvas.get_data_mut()) {
-                let argb = match src.len() {
-                    1 => [255, src[0], src[0], src[0]],
-                    2 => {
-                        let a = src[1];
-                        let g = ((src[0] as u32) * (a as u32) / 255) as u8;
-                        [a, g,g,g]
-                    }
-                    3 => [255, src[0], src[1], src[2]],
-                    _ => break,
-                };
-                *pixel = u32::from_be_bytes(argb);
-            }
+        for (src, pixel) in image.chunks(step).zip(pixmap.pixels_mut()) {
+            let c = match src.len() {
+                1 => tiny_skia::ColorU8::from_rgba(src[0], src[0], src[0], 255),
+                2 => tiny_skia::ColorU8::from_rgba(src[0], src[0], src[0], src[1]),
+                3 => tiny_skia::ColorU8::from_rgba(src[0], src[1], src[2], 255),
+                4 => tiny_skia::ColorU8::from_rgba(src[0], src[1], src[2], src[3]),
+                _ => break,
+            };
+            *pixel = c.premultiply();
         }
-        Ok(Self::from_canvas(tmp_canvas))
+        Ok(Self(pixmap))
     }
 
     pub fn from_svg(data : &[u8], height : u32) -> Option<Self> {
@@ -92,14 +66,7 @@ impl OwnedImage {
         let width = (height as f64 * svg_width / svg_height).ceil() as u32;
         let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
         resvg::render(&tree, usvg::FitTo::Height(height), pixmap.as_mut())?;
-        let buf = pixmap.pixels().iter().map(|pixel| {
-            u32::from_be_bytes([pixel.alpha(), pixel.red(), pixel.green(), pixel.blue()])
-        }).collect();
-        Some(Self {
-            width: width as i32,
-            height: height as i32,
-            buf
-        })
+        Some(Self(pixmap))
     }
 }
 
@@ -204,10 +171,12 @@ fn iter_icons<F,R>(base : &PathBuf, target_size : f32, mut f : F) -> io::Result<
 }
 
 pub fn render(ctx : &mut Render, name : &str) -> Result<(), ()> {
-    let (clip_x0, clip_y0, clip_x1, clip_y1) = ctx.render_extents;
-    let xform = ctx.canvas.get_transform();
-    let raqote::Vector { x: xsize, y: ysize, .. } =
-        xform.transform_vector(raqote::Vector::new(clip_x1 - clip_x0, clip_y1 - clip_y0)); 
+    let (_clip_x0, clip_y0, clip_x1, clip_y1) = ctx.render_extents;
+    let xform = ctx.render_xform;
+    let mut extent_points = [tiny_skia::Point { x: ctx.render_pos, y: clip_y0}, tiny_skia::Point { x: clip_x1, y: clip_y1 }];
+    xform.map_points(&mut extent_points);
+    let xsize = extent_points[1].x - extent_points[0].x;
+    let ysize = extent_points[1].y - extent_points[0].y;
     let pixel_size = f32::min(xsize, ysize);
     if pixel_size < 1.0 {
         return Err(());
@@ -230,17 +199,18 @@ pub fn render(ctx : &mut Render, name : &str) -> Result<(), ()> {
             })
         {
             Some(img) => {
-                let xscale = (clip_x1 - clip_x0) / img.width as f32;
-                let yscale = (clip_y1 - clip_y0) / img.height as f32;
+                let xscale = xsize / img.0.width() as f32;
+                let yscale = ysize / img.0.height() as f32;
                 let scale = f32::min(xscale, yscale);
-                ctx.canvas.draw_image_with_size_at(
-                    img.width as f32 * scale,
-                    img.height as f32 * scale,
-                    ctx.render_pos,
-                    clip_y0,
-                    &img.as_ref(),
-                    &Default::default());
-                ctx.render_pos += img.width as f32 * scale;
+                let xform = Transform::from_scale(scale, scale)
+                    .post_translate(extent_points[0].x, extent_points[0].y);
+                ctx.canvas.draw_pixmap(
+                    0, 0,
+                    img.as_ref(),
+                    &Default::default(),
+                    xform,
+                    None);
+                ctx.render_pos += img.0.width() as f32 * scale;
                 Ok(())
             }
             None => Err(()),

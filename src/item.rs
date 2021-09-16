@@ -8,9 +8,9 @@ use crate::state::Runtime;
 #[cfg(feature="dbus")]
 use crate::tray;
 use log::{debug,warn,error};
-use raqote::DrawTarget;
 use std::borrow::Cow;
 use std::rc::Rc;
+use tiny_skia::Transform;
 
 /// A visible item in a bar
 #[derive(Debug)]
@@ -365,6 +365,11 @@ impl Item {
     }
 
     pub fn render(self : &Rc<Self>, parent_ctx : &mut Render) -> EventSink {
+        // skip rendering if we are outside the clip bounds
+        if parent_ctx.render_pos > parent_ctx.render_extents.2 {
+            return EventSink::default();
+        }
+
         let mut rv = self.events.clone();
 
         if self.format.is_trivial() {
@@ -444,13 +449,13 @@ impl Item {
                         // Align by rotating the pixels of the inner clip region to the right.  The
                         // right part of the clip region should just be blank pixels at this point,
                         // which is what we want to put on the left.
-                        let rlen = wlen - ilen;
-                        let stride = ctx.canvas.width() as usize;
+                        let rlen = (wlen - ilen) * 4;
+                        let stride = ctx.canvas.width() as usize * 4;
                         let h = ctx.canvas.height() as usize;
                         for y in 0..h {
-                            let x0 = y * stride + x0;
-                            let x2 = y * stride + x0 + wlen;
-                            if let Some(buf) = ctx.canvas.get_data_mut().get_mut(x0..x2) {
+                            let x0 = y * stride + x0 * 4;
+                            let x2 = y * stride + (x0 + wlen) * 4;
+                            if let Some(buf) = ctx.canvas.data_mut().get_mut(x0..x2) {
                                 buf.rotate_right(rlen);
                             }
                         }
@@ -464,7 +469,7 @@ impl Item {
             inner_x_offset = 0.0;
         }
 
-        let shrink_r_width = shrink.map_or(0.0, |s| s.2);
+        let shrink_r_width = shrink.map_or(0.0, |s| s.1);
         if ctx.render_flex {
             // flex the right side of the clip regions to the actual dimensions
             inner_clip.2 = inner_clip.0 + child_render_width;
@@ -482,6 +487,7 @@ impl Item {
         rv.offset_clamp(inner_x_offset, inner_clip.0, inner_clip.2);
 
         if format.bg_rgba.is_some() || format.border.is_some() {
+            use tiny_skia::Rect;
             let mut bg_clip = inner_clip;
             if let Some((t, r, b, l)) = format.padding {
                 bg_clip.0 -= l;
@@ -491,29 +497,51 @@ impl Item {
             }
 
             if let Some(rgba) = format.bg_rgba {
-                ctx.canvas.fill_rect(bg_clip.0, bg_clip.1, bg_clip.2 - bg_clip.0, bg_clip.3 - bg_clip.1,
-                    &raqote::Color::new((rgba.3 / 256) as u8, (rgba.0 / 256) as u8, (rgba.1 / 256) as u8, (rgba.2 / 256) as u8).into(),
-                    &raqote::DrawOptions {
-                        blend_mode : raqote::BlendMode::DstOver,
-                        ..Default::default()
-                    });
+                let rect = Rect::from_ltrb(bg_clip.0, bg_clip.1, bg_clip.2, bg_clip.3).unwrap();
+                let paint = tiny_skia::Paint {
+                    shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba(
+                        rgba.0 as f32 / 65535.0,
+                        rgba.1 as f32 / 65535.0,
+                        rgba.2 as f32 / 65535.0,
+                        rgba.3 as f32 / 65535.0,
+                    ).unwrap()),
+                    anti_alias: true,
+                    // background is painted "underneath"
+                    blend_mode : tiny_skia::BlendMode::DestinationOver,
+                    ..tiny_skia::Paint::default()
+                };
+
+                ctx.canvas.fill_rect(rect, &paint, Transform::identity(), None);
             }
 
             if let Some(border) = format.border {
                 let rgba = format.border_rgba.unwrap_or(ctx.font_color);
-                let src = raqote::Color::new((rgba.3 / 256) as u8, (rgba.0 / 256) as u8, (rgba.1 / 256) as u8, (rgba.2 / 256) as u8).into();
+                let paint = tiny_skia::Paint {
+                    shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba(
+                        rgba.0 as f32 / 65535.0,
+                        rgba.1 as f32 / 65535.0,
+                        rgba.2 as f32 / 65535.0,
+                        rgba.3 as f32 / 65535.0,
+                    ).unwrap()),
+                    anti_alias: true,
+                    ..tiny_skia::Paint::default()
+                };
 
                 if border.0 > 0.0 {
-                    ctx.canvas.fill_rect(bg_clip.0, bg_clip.1, bg_clip.2 - bg_clip.0, border.0, &src, &Default::default());
+                    let rect = Rect::from_xywh(bg_clip.0, bg_clip.1, bg_clip.2 - bg_clip.0, border.0).unwrap();
+                    ctx.canvas.fill_rect(rect, &paint, Transform::identity(), None);
                 }
                 if border.1 > 0.0 {
-                    ctx.canvas.fill_rect(bg_clip.2, bg_clip.1, border.1, bg_clip.3 - bg_clip.1, &src, &Default::default());
+                    let rect = Rect::from_xywh(bg_clip.2, bg_clip.1, border.1, bg_clip.3 - bg_clip.1).unwrap();
+                    ctx.canvas.fill_rect(rect, &paint, Transform::identity(), None);
                 }
                 if border.2 > 0.0 {
-                    ctx.canvas.fill_rect(bg_clip.0, bg_clip.3, bg_clip.2 - bg_clip.0, border.2, &src, &Default::default());
+                    let rect = Rect::from_xywh(bg_clip.0, bg_clip.3, bg_clip.2 - bg_clip.0, border.2).unwrap();
+                    ctx.canvas.fill_rect(rect, &paint, Transform::identity(), None);
                 }
                 if border.3 > 0.0 {
-                    ctx.canvas.fill_rect(bg_clip.0, bg_clip.1, border.3, bg_clip.3 - bg_clip.1, &src, &Default::default());
+                    let rect = Rect::from_xywh(bg_clip.0, bg_clip.1, border.3, bg_clip.3 - bg_clip.1).unwrap();
+                    ctx.canvas.fill_rect(rect, &paint, Transform::identity(), None);
                 }
             }
         }
@@ -638,14 +666,14 @@ impl Item {
             }
             Module::Bar { left, center, right, .. } => {
                 let (clip_x0, clip_y0, clip_x1, clip_y1) = ctx.render_extents;
-                let xform = *ctx.canvas.get_transform();
+                let xform = ctx.render_xform;
                 let width = clip_x1 - clip_x0;
                 let height = clip_y1.ceil();
                 let render_extents = (0.0, clip_y0, width, clip_y1);
-                let canvas_size = xform.transform_point(raqote::Point::new(width, height)).to_i32();
-                let mut canvas = DrawTarget::new(canvas_size.x, canvas_size.y).into_vec();
-                let mut canvas = DrawTarget::from_backing(canvas_size.x, canvas_size.y, &mut canvas[..]);
-                canvas.set_transform(&xform);
+                let mut canvas_size = tiny_skia::Point { x: width, y: height };
+                xform.map_points(std::slice::from_mut(&mut canvas_size));
+                let mut canvas = tiny_skia::Pixmap::new(canvas_size.x as u32, canvas_size.y as u32).unwrap();
+                let mut canvas = canvas.as_mut();
 
                 let mut left_ev = left.render(ctx);
                 let left_size = ctx.render_pos;
@@ -655,6 +683,7 @@ impl Item {
                 let mut group = Render {
                     canvas : &mut canvas,
                     render_extents,
+                    render_xform: ctx.render_xform,
                     render_pos : 0.0,
                     render_ypos : None,
                     render_flex : ctx.render_flex,
@@ -674,14 +703,17 @@ impl Item {
                 let right_width = group.render_pos.ceil();
 
                 let right_offset = clip_x1 - right_width;
-                ctx.canvas.copy_surface(&group.canvas,
-                    raqote::IntRect::new(raqote::IntPoint::origin(), xform.transform_point(raqote::Point::new(right_width, height)).to_i32()),
-                    xform.transform_point(raqote::Point::new(right_offset, 0.0)).to_i32());
+                ctx.canvas.draw_pixmap(
+                    0, 0,
+                    group.canvas.as_ref(),
+                    &tiny_skia::PixmapPaint::default(),
+                    Transform::from_translate(right_offset, 0.0),
+                    None);
 
                 right_ev.offset_clamp(right_offset, right_offset, clip_x1);
                 rv.merge(right_ev);
 
-                group.canvas.clear(raqote::SolidSource { a: 0, r: 0, g: 0, b: 0 });
+                group.canvas.fill(tiny_skia::Color::TRANSPARENT);
                 group.render_pos = 0.0;
 
                 let mut cent_ev = center.render(&mut group);
@@ -703,9 +735,12 @@ impl Item {
                     // Actually center the center module
                     cent_offset = max_side;
                 }
-                ctx.canvas.copy_surface(&group.canvas,
-                    raqote::IntRect::new(raqote::IntPoint::origin(), xform.transform_point(raqote::Point::new(cent_size, height)).to_i32()),
-                    xform.transform_point(raqote::Point::new(cent_offset, 0.0)).to_i32());
+                ctx.canvas.draw_pixmap(
+                    0, 0,
+                    group.canvas.as_ref(),
+                    &tiny_skia::PixmapPaint::default(),
+                    Transform::from_translate(cent_offset, 0.0),
+                    None);
                 cent_ev.offset_clamp(cent_offset, cent_offset, cent_offset + cent_size);
                 rv.merge(cent_ev);
 
@@ -764,38 +799,46 @@ impl Item {
                 });
 
                 let (width, height) = if let Some(rgba) = ctx.text_stroke {
-                    let (to_draw, (width, height)) = layout_font(ctx.font, ctx.font_size, &ctx.runtime, ctx.font_color, &text, markup);
-
-                    let src = raqote::Color::new(
-                        (rgba.3 / 256) as u8,
-                        (rgba.0 / 256) as u8,
-                        (rgba.1 / 256) as u8,
-                        (rgba.2 / 256) as u8,
-                    ).into();
-                    let style = raqote::StrokeStyle {
+                    let (mut to_draw, (width, height)) = layout_font(ctx.font, ctx.font_size, &ctx.runtime, ctx.font_color, &text, markup);
+                    let stroke_paint = tiny_skia::Paint {
+                        shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba(
+                            rgba.0 as f32 / 65535.0,
+                            rgba.1 as f32 / 65535.0,
+                            rgba.2 as f32 / 65535.0,
+                            rgba.3 as f32 / 65535.0,
+                        ).unwrap()),
+                        anti_alias: true,
+                        ..tiny_skia::Paint::default()
+                    };
+                    let stroke = tiny_skia::Stroke {
                         width : ctx.text_stroke_size.unwrap_or(1.0),
-                        cap: raqote::LineCap::Round,
-                        join: raqote::LineJoin::Round,
-                        ..Default::default()
-                    };
-                    let opts = raqote::DrawOptions {
                         ..Default::default()
                     };
 
-                    draw_font_with(ctx.canvas, (xstart, ystart), &to_draw, |canvas, path, color| {
-                        canvas.stroke(&path, &src, &style, &opts);
-                        let src = raqote::Color::new(
-                            (color.3 / 256) as u8,
-                            (color.0 / 256) as u8,
-                            (color.1 / 256) as u8,
-                            (color.2 / 256) as u8,
-                        ).into();
-                        canvas.fill(&path, &src, &opts);
+                    let clip_w = ctx.render_extents.2 - ctx.render_pos;
+                    if width > clip_w {
+                        to_draw.retain(|glyph| glyph.position.0 < clip_w);
+                    }
+
+                    let xform = ctx.render_xform.post_translate(xstart, ystart);
+                    draw_font_with(ctx.canvas, xform, &to_draw, |canvas, path, color| {
+                        canvas.stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), None);
+                        let paint = tiny_skia::Paint {
+                            shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba(
+                                color.0 as f32 / 65535.0,
+                                color.1 as f32 / 65535.0,
+                                color.2 as f32 / 65535.0,
+                                color.3 as f32 / 65535.0,
+                            ).unwrap()),
+                            anti_alias: true,
+                            ..tiny_skia::Paint::default()
+                        };
+                        canvas.fill_path(&path, &paint, tiny_skia::FillRule::EvenOdd, Transform::identity(), None);
                     });
 
                     (width, height)
                 } else {
-                    render_font(ctx.canvas, ctx.font, ctx.font_size, ctx.font_color, &ctx.runtime, (xstart, ystart), &text, markup)
+                    render_font(ctx, (xstart, ystart), &text, markup)
                 };
 
                 ctx.render_pos = xstart + width;
@@ -857,8 +900,8 @@ impl PartialEq for PopupDesc {
 }
 
 impl PopupDesc {
-    pub fn render_popup(&mut self, runtime : &Runtime, target : &mut DrawTarget<&mut [u32]>) -> (i32, i32) {
-        target.clear(raqote::SolidSource { a: 255, r: 0, g: 0, b: 0 });
+    pub fn render_popup(&mut self, runtime : &Runtime, target : &mut tiny_skia::PixmapMut, scale: i32) -> (i32, i32) {
+        target.fill(tiny_skia::Color::BLACK);
         let font = &runtime.fonts[0];
         let render_extents = (0.0, 0.0, target.width() as f32, target.height() as f32);
 
@@ -869,6 +912,7 @@ impl PopupDesc {
             font_color : (0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF),
             align : Align::bar_default(),
             render_extents,
+            render_xform: Transform::from_scale(scale as f32, scale as f32),
             render_pos : 2.0,
             render_ypos : Some(2.0),
             render_flex : true,
@@ -902,7 +946,7 @@ impl PopupDesc {
 
                 let markup = source.format.markup;
 
-                let (width, height) = render_font(ctx.canvas, ctx.font, ctx.font_size, ctx.font_color, &ctx.runtime, (2.0, 2.0), &value, markup);
+                let (width, height) = render_font(ctx, (2.0, 2.0), &value, markup);
                 ctx.render_pos = width + 4.0;
                 ctx.render_ypos.as_mut().map(|p| *p = height + 4.0);
             }

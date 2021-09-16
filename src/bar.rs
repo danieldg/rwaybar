@@ -2,7 +2,6 @@ use log::error;
 use std::convert::TryInto;
 use std::time::Instant;
 use std::rc::Rc;
-use raqote::DrawTarget;
 use smithay_client_toolkit::output::OutputInfo;
 use wayland_client::Attached;
 use wayland_client::protocol::wl_output::WlOutput;
@@ -163,11 +162,9 @@ impl Bar {
             let rt_item = runtime.items.entry("bar".into()).or_insert_with(|| Rc::new(Item::none()));
             std::mem::swap(&mut self.item, rt_item);
 
-            let canvas = renderer.render((self.pixel_width, self.size * self.scale), &self.surf);
-            let mut canvas = DrawTarget::from_backing(self.pixel_width, self.size * self.scale, canvas);
-            canvas.clear(raqote::SolidSource { r: 0, g: 0, b: 0, a: 0 });
-            let scale = raqote::Transform::scale(self.scale as f32, self.scale as f32);
-            canvas.set_transform(&scale);
+            let (canvas, finalize) = renderer.render_be_rgba((self.pixel_width, self.size * self.scale), &self.surf);
+            let mut canvas = tiny_skia::PixmapMut::from_bytes(canvas, self.pixel_width as u32, (self.size * self.scale) as u32).unwrap();
+            canvas.fill(tiny_skia::Color::TRANSPARENT);
             let font = &runtime.fonts[0];
 
             let mut ctx = Render {
@@ -176,6 +173,7 @@ impl Bar {
                 render_pos : 0.0,
                 render_ypos : None,
                 render_flex : false,
+                render_xform: tiny_skia::Transform::from_scale(self.scale as f32, self.scale as f32),
 
                 font,
                 font_size : 16.0,
@@ -187,6 +185,7 @@ impl Bar {
                 runtime,
             };
             let new_sink = ctx.runtime.items["bar"].render(&mut ctx);
+            finalize(canvas.data_mut());
 
             if self.sparse {
                 let mut old_regions = Vec::new();
@@ -248,12 +247,12 @@ impl Bar {
             let scale = popup.wl.scale;
             let pixel_size = (popup.wl.size.0 * scale, popup.wl.size.1 * scale);
 
-            let canvas = renderer.render(pixel_size, &popup.wl.surf);
-            let mut canvas = DrawTarget::from_backing(popup.wl.size.0 * scale, popup.wl.size.1 * scale, canvas);
-            canvas.clear(raqote::SolidSource { r: 0, g: 0, b: 0, a: 0 });
-            canvas.set_transform(&raqote::Transform::scale(scale as f32, scale as f32));
+            let (canvas, finalize) = renderer.render_be_rgba(pixel_size, &popup.wl.surf);
+            let mut canvas = tiny_skia::PixmapMut::from_bytes(canvas, pixel_size.0 as u32, pixel_size.1 as u32).unwrap();
+            canvas.fill(tiny_skia::Color::TRANSPARENT);
 
-            let new_size = popup.desc.render_popup(runtime, &mut canvas);
+            let new_size = popup.desc.render_popup(runtime, &mut canvas, scale);
+            finalize(canvas.data_mut());
             popup.wl.surf.commit();
             if new_size.0 > popup.wl.size.0 || new_size.1 > popup.wl.size.1 {
                 runtime.wayland.resize_popup(&self.ls_surf, &mut popup.wl, new_size, scale);
@@ -273,11 +272,8 @@ impl Bar {
                 }
             }
             let anchor = (min_x as i32, 0, (max_x - min_x) as i32, self.size as i32);
-            let mut canvas = vec![0];
-            let mut canvas = raqote::DrawTarget::from_backing(1, 1, &mut canvas[..]);
-            let scale = raqote::Transform::scale(self.scale as f32, self.scale as f32);
-            canvas.set_transform(&scale);
-            let size = desc.render_popup(runtime, &mut canvas);
+            let mut canvas = tiny_skia::Pixmap::new(1, 1).unwrap();
+            let size = desc.render_popup(runtime, &mut canvas.as_mut(), self.scale);
             if size.0 <= 0 || size.1 <= 0 {
                 return;
             }

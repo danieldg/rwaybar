@@ -313,15 +313,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "euclid"
-version = "0.22.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da96828553a086d7b18dcebfc579bd9628b016f86590d7453c115e490fa74b80"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
 name = "evalexpr"
 version = "6.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -558,17 +549,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51b9bbe6c47d51fc3e1a9b945965946b4c44142ab8792c50835a980d362c2710"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "lyon_geom"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ce4e12203c428a58200b8cf1c0a3aad1cda907008ea11310bb3729593e5f933"
-dependencies = [
- "arrayvec",
- "euclid",
- "num-traits",
 ]
 
 [[package]]
@@ -872,17 +852,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "raqote"
-version = "0.8.1-alpha.0"
-source = "git+https://github.com/jrmuizel/raqote.git#dea376474966fe91f0fa3c5115171e0df86bac22"
-dependencies = [
- "euclid",
- "lyon_geom",
- "sw-composite",
- "typed-arena",
-]
-
-[[package]]
 name = "rctree"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -957,7 +926,6 @@ dependencies = [
  "memmap2",
  "once_cell",
  "png",
- "raqote",
  "regex",
  "resvg",
  "serde",
@@ -1123,12 +1091,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sw-composite"
-version = "0.7.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e39674047b1748e8bf4865142772a6637bd32d8b4b27e3c2248dd122f637808b"
-
-[[package]]
 name = "syn"
 version = "1.0.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1223,12 +1185,6 @@ name = "ttf-parser"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ae2f58a822f08abdaf668897e96a5656fe72f5a9ce66422423e8849384872e6"
-
-[[package]]
-name = "typed-arena"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0685c84d5d54d1c26f7d3eb96cd41550adb97baed141a761cf335d3d33bcd0ae"
 
 [[package]]
 name = "unicode-xid"
