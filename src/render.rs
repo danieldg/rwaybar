@@ -115,8 +115,8 @@ pub struct Render<'a, 'c> {
 
     pub font : &'a FontMapped,
     pub font_size : f32,
-    pub font_color : (u16, u16, u16, u16),
-    pub text_stroke : Option<(u16, u16, u16, u16)>,
+    pub font_color : tiny_skia::Color,
+    pub text_stroke : Option<tiny_skia::Color>,
     pub text_stroke_size : Option<f32>,
 
     pub align : Align,

@@ -6,7 +6,7 @@ use log::info;
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
-use tiny_skia::{PixmapMut,Transform};
+use tiny_skia::{Color,PixmapMut,Transform};
 use ttf_parser::{Face,GlyphId};
 
 #[derive(Debug)]
@@ -48,14 +48,14 @@ pub struct CGlyph<'a> {
     pub scale : f32,
     pub position : (f32, f32),
     pub font : &'a FontMapped,
-    pub color : (u16, u16, u16, u16),
+    pub color : Color,
 }
 
 pub fn layout_font<'a>(
     font: &'a FontMapped,
     size_pt: f32,
     runtime : &'a Runtime,
-    rgba : (u16, u16, u16, u16),
+    rgba : Color,
     text : &str,
     markup: bool)
     -> (Vec<CGlyph<'a>>, (f32, f32))
@@ -157,7 +157,7 @@ pub fn layout_font<'a>(
     (to_draw, (width, height))
 }
 
-pub fn draw_font_with(target : &mut PixmapMut, xform: Transform, to_draw : &[CGlyph], mut draw : impl FnMut(&mut PixmapMut, &tiny_skia::Path, (u16, u16, u16, u16))) {
+pub fn draw_font_with(target : &mut PixmapMut, xform: Transform, to_draw : &[CGlyph], mut draw : impl FnMut(&mut PixmapMut, &tiny_skia::Path, Color)) {
     for &CGlyph { id, scale, position, font, color } in to_draw {
         struct Draw(tiny_skia::PathBuilder);
         let mut path = Draw(tiny_skia::PathBuilder::new());
@@ -230,12 +230,7 @@ pub fn render_font(ctx: &mut Render, start: (f32, f32), text: &str, markup: bool
     let xform = ctx.render_xform.post_translate(start.0, start.1);
     draw_font_with(ctx.canvas, xform, &to_draw, |canvas,path,color| {
         let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba(
-                color.0 as f32 / 65535.0,
-                color.1 as f32 / 65535.0,
-                color.2 as f32 / 65535.0,
-                color.3 as f32 / 65535.0,
-            ).unwrap()),
+            shader: tiny_skia::Shader::SolidColor(color),
             anti_alias: true,
             ..tiny_skia::Paint::default()
         };

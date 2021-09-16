@@ -10,7 +10,7 @@ use crate::tray;
 use log::{debug,warn,error};
 use std::borrow::Cow;
 use std::rc::Rc;
-use tiny_skia::Transform;
+use tiny_skia::{Color,Transform};
 
 /// A visible item in a bar
 #[derive(Debug)]
@@ -132,9 +132,9 @@ impl ItemFormat {
 /// Formatting that must be applied after rendering an item
 #[derive(Debug,Clone,Default,PartialEq)]
 pub struct Formatting {
-    bg_rgba : Option<(u16, u16, u16, u16)>,
+    bg_rgba : Option<Color>,
     border : Option<(f32, f32, f32, f32)>,
-    border_rgba : Option<(u16, u16, u16, u16)>,
+    border_rgba : Option<Color>,
     min_width : Option<Width>,
     max_width : Option<Width>,
     margin : Option<(f32, f32, f32, f32)>,
@@ -205,7 +205,7 @@ impl Formatting {
         Some(rv)
     }
 
-    pub fn parse_rgba(color : Option<impl AsRef<str>>, alpha : Option<f32>) -> Option<(u16, u16, u16, u16)> {
+    pub fn parse_rgba(color : Option<impl AsRef<str>>, alpha : Option<f32>) -> Option<Color> {
         if color.is_none() && alpha.is_none() {
             return None;
         }
@@ -269,7 +269,12 @@ impl Formatting {
                 }
             }
         }
-        Some((r as u16, g as u16, b as u16, a as u16))
+        Color::from_rgba(
+            r as f32 / 65535.0,
+            g as f32 / 65535.0,
+            b as f32 / 65535.0,
+            a as f32 / 65535.0,
+        )
     }
 
     fn get_shrink(&self) -> Option<(f32, f32, f32, f32)> {
@@ -499,12 +504,7 @@ impl Item {
             if let Some(rgba) = format.bg_rgba {
                 let rect = Rect::from_ltrb(bg_clip.0, bg_clip.1, bg_clip.2, bg_clip.3).unwrap();
                 let paint = tiny_skia::Paint {
-                    shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba(
-                        rgba.0 as f32 / 65535.0,
-                        rgba.1 as f32 / 65535.0,
-                        rgba.2 as f32 / 65535.0,
-                        rgba.3 as f32 / 65535.0,
-                    ).unwrap()),
+                    shader: tiny_skia::Shader::SolidColor(rgba),
                     anti_alias: true,
                     // background is painted "underneath"
                     blend_mode : tiny_skia::BlendMode::DestinationOver,
@@ -517,12 +517,7 @@ impl Item {
             if let Some(border) = format.border {
                 let rgba = format.border_rgba.unwrap_or(ctx.font_color);
                 let paint = tiny_skia::Paint {
-                    shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba(
-                        rgba.0 as f32 / 65535.0,
-                        rgba.1 as f32 / 65535.0,
-                        rgba.2 as f32 / 65535.0,
-                        rgba.3 as f32 / 65535.0,
-                    ).unwrap()),
+                    shader: tiny_skia::Shader::SolidColor(rgba),
                     anti_alias: true,
                     ..tiny_skia::Paint::default()
                 };
@@ -801,12 +796,7 @@ impl Item {
                 let (width, height) = if let Some(rgba) = ctx.text_stroke {
                     let (mut to_draw, (width, height)) = layout_font(ctx.font, ctx.font_size, &ctx.runtime, ctx.font_color, &text, markup);
                     let stroke_paint = tiny_skia::Paint {
-                        shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba(
-                            rgba.0 as f32 / 65535.0,
-                            rgba.1 as f32 / 65535.0,
-                            rgba.2 as f32 / 65535.0,
-                            rgba.3 as f32 / 65535.0,
-                        ).unwrap()),
+                        shader: tiny_skia::Shader::SolidColor(rgba),
                         anti_alias: true,
                         ..tiny_skia::Paint::default()
                     };
@@ -824,12 +814,7 @@ impl Item {
                     draw_font_with(ctx.canvas, xform, &to_draw, |canvas, path, color| {
                         canvas.stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), None);
                         let paint = tiny_skia::Paint {
-                            shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba(
-                                color.0 as f32 / 65535.0,
-                                color.1 as f32 / 65535.0,
-                                color.2 as f32 / 65535.0,
-                                color.3 as f32 / 65535.0,
-                            ).unwrap()),
+                            shader: tiny_skia::Shader::SolidColor(color),
                             anti_alias: true,
                             ..tiny_skia::Paint::default()
                         };
@@ -909,7 +894,7 @@ impl PopupDesc {
             canvas : target,
             font,
             font_size : 16.0,
-            font_color : (0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF),
+            font_color : Color::WHITE,
             align : Align::bar_default(),
             render_extents,
             render_xform: Transform::from_scale(scale as f32, scale as f32),

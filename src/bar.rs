@@ -177,7 +177,7 @@ impl Bar {
 
                 font,
                 font_size : 16.0,
-                font_color : (0, 0, 0, 0xFFFF),
+                font_color : tiny_skia::Color::BLACK,
                 align : Align::bar_default(),
                 err_name: "bar",
                 text_stroke : None,
