@@ -371,7 +371,7 @@ impl Item {
 
     pub fn render(self : &Rc<Self>, parent_ctx : &mut Render) -> EventSink {
         // skip rendering if we are outside the clip bounds
-        if parent_ctx.render_pos > parent_ctx.render_extents.2 {
+        if !parent_ctx.render_flex && parent_ctx.render_pos > parent_ctx.render_extents.2 {
             return EventSink::default();
         }
 
