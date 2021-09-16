@@ -25,21 +25,20 @@ impl OwnedImage {
     }
 
     pub fn from_data(buf : &[u8], tsize : u32) -> Option<Self> {
-        Self::from_png(buf).ok()
+        Self::from_png(buf)
             .or_else(|| Self::from_svg(buf, tsize))
     }
 
-    pub fn from_png(data : &[u8]) -> Result<Self, png::DecodingError> {
+    pub fn from_png(data : &[u8]) -> Option<Self> {
         let mut png = png::Decoder::new(std::io::Cursor::new(data));
         png.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-        let mut png = png.read_info()?;
+        let mut png = png.read_info().ok()?;
         let mut image = vec![0; png.output_buffer_size()];
-        let (color, _depth_is_8) = png.output_color_type();
-        png.next_frame(&mut image)?;
+        png.next_frame(&mut image).ok()?;
 
         let info = png.info();
-        let mut pixmap = tiny_skia::Pixmap::new(info.width as u32, info.height as u32).unwrap();
-        let step = match color {
+        let mut pixmap = tiny_skia::Pixmap::new(info.width as u32, info.height as u32)?;
+        let step = match info.color_type {
             png::ColorType::Grayscale => 1,
             png::ColorType::GrayscaleAlpha => 2,
             png::ColorType::Rgb => 3,
@@ -56,7 +55,7 @@ impl OwnedImage {
             };
             *pixel = c.premultiply();
         }
-        Ok(Self(pixmap))
+        Some(Self(pixmap))
     }
 
     pub fn from_svg(data : &[u8], height : u32) -> Option<Self> {
