@@ -916,7 +916,7 @@ impl TrayPopup {
                 }
             }
         });
-        ctx.render_pos = (xsize.ceil() + 2.0, ypos);
+        ctx.render_pos = tiny_skia::Point { x: xsize.ceil() + 2.0, y: ypos };
     }
 
     pub fn button(&mut self, x : f64, y : f64, button : u32, _runtime : &mut Runtime) {
@@ -960,9 +960,9 @@ pub fn show(ctx : &mut Render, rv : &mut EventSink, [passive, active, urgent]: [
         });
 
         let iter_item = IterationItem::Tray(tray_item.clone());
-        let x0 = ctx.render_pos.0;
+        let x0 = ctx.render_pos.x;
         render.render_clamped_item(ctx, rv, &iter_item);
-        let x1 = ctx.render_pos.0;
+        let x1 = ctx.render_pos.x;
         if x0 != x1 {
             if let Some(menu) = tray_item.menu.take_in(|m| m.clone()) {
                 let title = tray_item.title.take_in(|t| t.clone());

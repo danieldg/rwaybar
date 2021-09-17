@@ -10,7 +10,7 @@ use crate::tray;
 use log::{debug,warn,error};
 use std::borrow::Cow;
 use std::rc::Rc;
-use tiny_skia::{Color,Transform};
+use tiny_skia::{Color,Point,Transform};
 
 /// A visible item in a bar
 #[derive(Debug)]
@@ -371,7 +371,7 @@ impl Item {
 
     pub fn render(self : &Rc<Self>, parent_ctx : &mut Render) -> EventSink {
         // skip rendering if we are outside the clip bounds
-        if !parent_ctx.render_flex && parent_ctx.render_pos.0 > parent_ctx.render_extents.2 {
+        if !parent_ctx.render_flex && parent_ctx.render_pos.x > parent_ctx.render_extents.2 {
             return EventSink::default();
         }
 
@@ -394,8 +394,8 @@ impl Item {
         let start_pos = ctx.render_pos;
 
         let mut inner_clip = outer_clip;
-        inner_clip.0 = start_pos.0;
-        inner_clip.1 = start_pos.1;
+        inner_clip.0 = start_pos.x;
+        inner_clip.1 = start_pos.y;
 
         let shrink = format.get_shrink();
         if (shrink, format.max_width) != (None, None) {
@@ -424,8 +424,8 @@ impl Item {
             }
         }
 
-        ctx.render_pos.0 = inner_clip.0;
-        ctx.render_pos.1 = inner_clip.1;
+        ctx.render_pos.x = inner_clip.0;
+        ctx.render_pos.y = inner_clip.1;
 
         ctx.render_extents = inner_clip;
         self.render_inner(&mut ctx, &mut rv);
@@ -433,7 +433,7 @@ impl Item {
 
         let inner_end = ctx.render_pos;
 
-        let child_render_width = inner_end.0 - inner_clip.0;
+        let child_render_width = inner_end.x - inner_clip.0;
         let mut min_width = match format.min_width {
             None => 0.0,
             Some(Width::Pixels(n)) => n,
@@ -452,7 +452,7 @@ impl Item {
                 Some(f) => {
                     inner_x_offset = expand * f;
                     let x0 = inner_clip.0.floor() as usize;
-                    let x1 = inner_end.0.ceil() as usize;
+                    let x1 = inner_end.x.ceil() as usize;
                     let ilen = x1 - x0;
                     let wlen = min_width.ceil() as usize;
                     if wlen > ilen {
@@ -551,15 +551,15 @@ impl Item {
             }
         }
 
-        parent_ctx.render_pos = (outer_clip.2, outer_clip.3);
+        parent_ctx.render_pos = Point { x: outer_clip.2, y: outer_clip.3 };
 
         rv
     }
 
     pub fn render_clamped(self : &Rc<Self>, ctx : &mut Render, ev : &mut EventSink) {
-        let x0 = ctx.render_pos.0;
+        let x0 = ctx.render_pos.x;
         let mut rv = self.render(ctx);
-        let x1 = ctx.render_pos.0;
+        let x1 = ctx.render_pos.x;
         rv.offset_clamp(0.0, x0, x1);
         ev.merge(rv);
     }
@@ -569,9 +569,9 @@ impl Item {
         let prev = item_var.replace(Some(item.clone()));
         let origin = ctx.render_pos;
         let mut rv = self.render(ctx);
-        let x1 = ctx.render_pos.0;
-        ctx.render_pos.1 = origin.1;
-        rv.offset_clamp(0.0, origin.0, x1);
+        let x1 = ctx.render_pos.x;
+        ctx.render_pos.y = origin.y;
+        rv.offset_clamp(0.0, origin.x, x1);
         rv.set_item(item);
         ev.merge(rv);
         item_var.set(prev);
@@ -616,22 +616,22 @@ impl Item {
                     item.render_clamped(ctx, rv);
 
                     if *vertical {
-                        if ctx.render_pos.0 > bounds.0 {
-                            bounds.0 = ctx.render_pos.0;
+                        if ctx.render_pos.x > bounds.x {
+                            bounds.x = ctx.render_pos.x;
                         }
-                        ctx.render_pos.0 = origin.0;
-                        bounds.1 = ctx.render_pos.1;
+                        ctx.render_pos.x = origin.x;
+                        bounds.y = ctx.render_pos.y;
                         if spacing > 0.0 {
-                            ctx.render_pos.1 = (ctx.render_pos.1 + spacing).ceil();
+                            ctx.render_pos.y = (ctx.render_pos.y + spacing).ceil();
                         }
                     } else {
-                        bounds.0 = ctx.render_pos.0;
-                        if ctx.render_pos.1 > bounds.1 {
-                            bounds.1 = ctx.render_pos.1;
+                        bounds.x = ctx.render_pos.x;
+                        if ctx.render_pos.y > bounds.y {
+                            bounds.y = ctx.render_pos.y;
                         }
-                        ctx.render_pos.1 = origin.1;
+                        ctx.render_pos.y = origin.y;
                         if spacing > 0.0 {
-                            ctx.render_pos.0 = (ctx.render_pos.0 + spacing).ceil();
+                            ctx.render_pos.x = (ctx.render_pos.x + spacing).ceil();
                         }
                     }
                 }
@@ -650,21 +650,21 @@ impl Item {
                 let prev = item_var.replace(None);
                 source.read_focus_list(ctx.runtime, |focus, item| {
                     item_var.set(Some(item.clone()));
-                    let x0 = ctx.render_pos.0;
+                    let x0 = ctx.render_pos.x;
                     let mut ev = if focus {
                         focused.render(ctx)
                     } else {
                         others.render(ctx)
                     };
-                    let x1 = ctx.render_pos.0;
+                    let x1 = ctx.render_pos.x;
                     ev.offset_clamp(0.0, x0, x1);
                     ev.set_item(&item);
                     rv.merge(ev);
-                    ctx.render_pos.0 += spacing;
-                    ctx.render_pos.1 = origin.1;
+                    ctx.render_pos.x += spacing;
+                    ctx.render_pos.y = origin.y;
                 });
-                let xpos = ctx.render_pos.0 - spacing;
-                ctx.render_pos.0 = ctx.render_pos.0.min(xpos);
+                let xpos = ctx.render_pos.x - spacing;
+                ctx.render_pos.x = ctx.render_pos.x.min(xpos);
                 item_var.set(prev);
             }
             Module::Bar { left, center, right, .. } => {
@@ -679,7 +679,7 @@ impl Item {
                 let mut canvas = canvas.as_mut();
 
                 let mut left_ev = left.render(ctx);
-                let left_size = ctx.render_pos.0;
+                let left_size = ctx.render_pos.x.ceil();
                 left_ev.offset_clamp(0.0, 0.0, left_size);
                 rv.merge(left_ev);
 
@@ -687,7 +687,7 @@ impl Item {
                     canvas : &mut canvas,
                     render_extents,
                     render_xform: ctx.render_xform,
-                    render_pos : (0.0, 0.0),
+                    render_pos: Point::zero(),
                     render_flex : ctx.render_flex,
 
                     font : ctx.font,
@@ -702,7 +702,7 @@ impl Item {
                 };
 
                 let mut right_ev = right.render(&mut group);
-                let right_width = group.render_pos.0.ceil();
+                let right_width = group.render_pos.x.ceil();
 
                 let right_offset = clip_x1 - right_width;
                 ctx.canvas.draw_pixmap(
@@ -716,10 +716,10 @@ impl Item {
                 rv.merge(right_ev);
 
                 group.canvas.fill(tiny_skia::Color::TRANSPARENT);
-                group.render_pos = (0.0, 0.0);
+                group.render_pos = Point::zero();
 
                 let mut cent_ev = center.render(&mut group);
-                let cent_size = group.render_pos.0;
+                let cent_size = group.render_pos.x.ceil();
 
                 let max_side = (width - cent_size) / 2.0;
                 let total_room = width - (left_size + right_width + cent_size);
@@ -746,7 +746,7 @@ impl Item {
                 cent_ev.offset_clamp(cent_offset, cent_offset, cent_offset + cent_size);
                 rv.merge(cent_ev);
 
-                ctx.render_pos.0 = clip_x1;
+                ctx.render_pos.x = clip_x1;
             }
             Module::Icon { name, fallback, tooltip } => {
                 let markup = self.format.markup;
@@ -783,7 +783,7 @@ impl Item {
 
                 let (mut to_draw, (width, height)) = layout_font(ctx.font, ctx.font_size, &ctx.runtime, ctx.font_color, &text, markup);
 
-                let (xstart, mut ystart) = ctx.render_pos;
+                let Point { x: xstart, y: mut ystart } = ctx.render_pos;
                 if !ctx.render_flex {
                     match ctx.align.vert {
                         Some(f) => {
@@ -809,7 +809,7 @@ impl Item {
                         ..Default::default()
                     };
 
-                    let clip_w = ctx.render_extents.2 - ctx.render_pos.0;
+                    let clip_w = ctx.render_extents.2 - ctx.render_pos.x;
                     if width > clip_w {
                         to_draw.retain(|glyph| glyph.position.0 < clip_w);
                     }
@@ -834,8 +834,8 @@ impl Item {
                     });
                 }
 
-                ctx.render_pos.0 = xstart + width;
-                ctx.render_pos.1 = ystart + height;
+                ctx.render_pos.x = xstart + width;
+                ctx.render_pos.y = ystart + height;
 
                 match &self.data {
                     Module::Formatted { tooltip : Some(item), .. } => {
@@ -904,7 +904,7 @@ impl PopupDesc {
             align : Align::bar_default(),
             render_extents,
             render_xform: Transform::from_scale(scale as f32, scale as f32),
-            render_pos : (2.0, 2.0),
+            render_pos : tiny_skia::Point { x: 2.0, y: 2.0 },
             render_flex : true,
             err_name: "popup",
             text_stroke : None,
@@ -913,7 +913,7 @@ impl PopupDesc {
         };
 
         self.render(&mut ctx);
-        (ctx.render_pos.0 as i32, ctx.render_pos.1 as i32)
+        (ctx.render_pos.x as i32, ctx.render_pos.y as i32)
     }
 
     fn render(&mut self, ctx : &mut Render) {
@@ -937,8 +937,8 @@ impl PopupDesc {
                 let markup = source.format.markup;
 
                 let (width, height) = render_font(ctx, (2.0, 2.0), &value, markup);
-                ctx.render_pos.0 = width + 4.0;
-                ctx.render_pos.1 = height + 4.0;
+                ctx.render_pos.x = width + 4.0;
+                ctx.render_pos.y = height + 4.0;
             }
             #[cfg(feature="dbus")]
             PopupDesc::Tray(tray) => tray.render(ctx),

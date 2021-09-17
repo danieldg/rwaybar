@@ -223,7 +223,7 @@ pub fn draw_font_with(target : &mut PixmapMut, xform: Transform, to_draw : &[CGl
 
 pub fn render_font(ctx: &mut Render, start: (f32, f32), text: &str, markup: bool) -> (f32, f32) {
     let (mut to_draw, size) = layout_font(ctx.font, ctx.font_size, ctx.runtime, ctx.font_color, text, markup);
-    let clip_w = ctx.render_extents.2 - ctx.render_pos.0;
+    let clip_w = ctx.render_extents.2 - ctx.render_pos.x;
     if size.1 > clip_w {
         to_draw.retain(|glyph| glyph.position.0 < clip_w);
     }

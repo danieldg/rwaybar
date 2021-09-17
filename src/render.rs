@@ -109,7 +109,7 @@ pub struct Render<'a, 'c> {
 
     pub render_xform : tiny_skia::Transform,
     pub render_extents : (f32, f32, f32, f32),
-    pub render_pos : (f32, f32),
+    pub render_pos : tiny_skia::Point,
     pub render_flex : bool,
 
     pub font : &'a FontMapped,
