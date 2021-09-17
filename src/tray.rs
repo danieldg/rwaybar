@@ -859,6 +859,11 @@ impl TrayPopup {
         let rendered_ids = &mut self.rendered_ids;
         rendered_ids.clear();
 
+        let line_paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::WHITE),
+            ..Default::default()
+        };
+
         let (mut xsize, mut ypos) = render_font(ctx, (2.0, 2.0), self.title.as_deref().unwrap_or_default(), false);
         xsize += 2.0;
         ypos = 2.0 + ypos.ceil();
@@ -885,14 +890,9 @@ impl TrayPopup {
 
         self.menu.items.take_in(|items| {
             if !items.is_empty() {
-                ctx.canvas.fill_rect(
-                    tiny_skia::Rect::from_xywh(0.0, ypos + 4.0, width, 2.0).unwrap(),
-                    &tiny_skia::Paint {
-                        shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::WHITE),
-                        ..Default::default()
-                    },
-                    ctx.render_xform,
-                    None);
+                if let Some(rect) = tiny_skia::Rect::from_xywh(0.0, ypos + 4.0, width, 2.0) {
+                    ctx.canvas.fill_rect(rect, &line_paint, ctx.render_xform, None);
+                }
 
                 ypos += 9.0;
             }
@@ -902,14 +902,9 @@ impl TrayPopup {
                 }
                 let indent = 2.0 + item.depth as f32 * 20.0;
                 if item.is_sep {
-                    ctx.canvas.fill_rect(
-                        tiny_skia::Rect::from_xywh(indent + 3.0, ypos + 3.0, width - indent - 5.0, 1.0).unwrap(),
-                        &tiny_skia::Paint {
-                            shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::WHITE),
-                            ..Default::default()
-                        },
-                        ctx.render_xform,
-                        None);
+                    if let Some(rect) = tiny_skia::Rect::from_xywh(indent + 3.0, ypos + 3.0, width - indent - 5.0, 1.0) {
+                        ctx.canvas.fill_rect(rect, &line_paint, ctx.render_xform, None);
+                    }
 
                     ypos += 7.0;
                 } else {
