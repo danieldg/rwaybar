@@ -201,16 +201,18 @@ pub fn render(ctx : &mut Render, name : &str) -> Result<(), ()> {
                 let xscale = xsize / img.0.width() as f32;
                 let yscale = ysize / img.0.height() as f32;
                 let scale = f32::min(xscale, yscale);
-                let xform = Transform::from_scale(scale, scale)
+                // resize using real pixels
+                let img_xform = Transform::from_scale(scale, scale)
                     .post_translate(extent_points[0].x, extent_points[0].y);
                 ctx.canvas.draw_pixmap(
                     0, 0,
                     img.as_ref(),
                     &Default::default(),
-                    xform,
+                    img_xform,
                     None);
-                ctx.render_pos.x += img.0.width() as f32 * scale;
-                ctx.render_pos.y += img.0.height() as f32 * scale;
+                // convert the sizes back to sclaed pixels (inverse xform)
+                ctx.render_pos.x += img.0.width() as f32 * scale / xform.sx;
+                ctx.render_pos.y += img.0.height() as f32 * scale / xform.sy;
                 Ok(())
             }
             None => Err(()),

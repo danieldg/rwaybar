@@ -227,7 +227,7 @@ pub fn render_font(ctx: &mut Render, start: (f32, f32), text: &str, markup: bool
     if size.1 > clip_w {
         to_draw.retain(|glyph| glyph.position.0 < clip_w);
     }
-    let xform = ctx.render_xform.post_translate(start.0, start.1);
+    let xform = ctx.render_xform.pre_translate(start.0, start.1);
     draw_font_with(ctx.canvas, xform, &to_draw, |canvas,path,color| {
         let paint = tiny_skia::Paint {
             shader: tiny_skia::Shader::SolidColor(color),

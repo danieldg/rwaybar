@@ -504,7 +504,7 @@ impl Item {
                         blend_mode : tiny_skia::BlendMode::DestinationOver,
                         ..tiny_skia::Paint::default()
                     };
-                    ctx.canvas.fill_rect(rect, &paint, Transform::identity(), None);
+                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
                 }
             }
 
@@ -517,16 +517,16 @@ impl Item {
                 };
 
                 if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x - bg_clip.0.x, border.0) {
-                    ctx.canvas.fill_rect(rect, &paint, Transform::identity(), None);
+                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
                 }
                 if let Some(rect) = Rect::from_xywh(bg_clip.1.x, bg_clip.0.y, border.1, bg_clip.1.y - bg_clip.0.y) {
-                    ctx.canvas.fill_rect(rect, &paint, Transform::identity(), None);
+                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
                 }
                 if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.1.y, bg_clip.1.x - bg_clip.0.x, border.2) {
-                    ctx.canvas.fill_rect(rect, &paint, Transform::identity(), None);
+                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
                 }
                 if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, border.3, bg_clip.1.y - bg_clip.0.y) {
-                    ctx.canvas.fill_rect(rect, &paint, Transform::identity(), None);
+                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
                 }
             }
         }
@@ -690,7 +690,7 @@ impl Item {
                     0, 0,
                     group.canvas.as_ref(),
                     &tiny_skia::PixmapPaint::default(),
-                    Transform::from_translate(right_offset, 0.0),
+                    Transform::from_translate(right_offset * ctx.render_xform.sx, 0.0),
                     None);
 
                 right_ev.offset_clamp(right_offset, right_offset, clip.1.x);
@@ -722,7 +722,7 @@ impl Item {
                     0, 0,
                     group.canvas.as_ref(),
                     &tiny_skia::PixmapPaint::default(),
-                    Transform::from_translate(cent_offset, 0.0),
+                    Transform::from_translate(cent_offset * ctx.render_xform.sx, 0.0),
                     None);
                 cent_ev.offset_clamp(cent_offset, cent_offset, cent_offset + cent_size);
                 rv.merge(cent_ev);
@@ -778,7 +778,7 @@ impl Item {
                     }
                 }
 
-                let xform = ctx.render_xform.post_translate(xstart, ystart);
+                let xform = ctx.render_xform.pre_translate(xstart, ystart);
                 if let Some(rgba) = ctx.text_stroke {
                     let stroke_paint = tiny_skia::Paint {
                         shader: tiny_skia::Shader::SolidColor(rgba),
