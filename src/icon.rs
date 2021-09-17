@@ -171,9 +171,8 @@ fn iter_icons<F,R>(base : &PathBuf, target_size : f32, mut f : F) -> io::Result<
 }
 
 pub fn render(ctx : &mut Render, name : &str) -> Result<(), ()> {
-    let (_clip_x0, _clip_y0, clip_x1, clip_y1) = ctx.render_extents;
     let xform = ctx.render_xform;
-    let mut extent_points = [ctx.render_pos, tiny_skia::Point { x: clip_x1, y: clip_y1 }];
+    let mut extent_points = [ctx.render_pos, ctx.render_extents.1];
     xform.map_points(&mut extent_points);
     let xsize = extent_points[1].x - extent_points[0].x;
     let ysize = extent_points[1].y - extent_points[0].y;

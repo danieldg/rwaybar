@@ -108,7 +108,7 @@ pub struct Render<'a, 'c> {
     pub canvas : &'a mut PixmapMut<'c>,
 
     pub render_xform : tiny_skia::Transform,
-    pub render_extents : (f32, f32, f32, f32),
+    pub render_extents : (tiny_skia::Point, tiny_skia::Point),
     pub render_pos : tiny_skia::Point,
     pub render_flex : bool,
 
