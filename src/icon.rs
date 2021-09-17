@@ -33,12 +33,13 @@ impl OwnedImage {
         let mut png = png::Decoder::new(std::io::Cursor::new(data));
         png.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
         let mut png = png.read_info().ok()?;
+        let color = png.output_color_type().0;
         let mut image = vec![0; png.output_buffer_size()];
         png.next_frame(&mut image).ok()?;
 
         let info = png.info();
         let mut pixmap = tiny_skia::Pixmap::new(info.width as u32, info.height as u32)?;
-        let step = match info.color_type {
+        let step = match color {
             png::ColorType::Grayscale => 1,
             png::ColorType::GrayscaleAlpha => 2,
             png::ColorType::Rgb => 3,
@@ -170,9 +171,9 @@ fn iter_icons<F,R>(base : &PathBuf, target_size : f32, mut f : F) -> io::Result<
 }
 
 pub fn render(ctx : &mut Render, name : &str) -> Result<(), ()> {
-    let (_clip_x0, clip_y0, clip_x1, clip_y1) = ctx.render_extents;
+    let (_clip_x0, _clip_y0, clip_x1, clip_y1) = ctx.render_extents;
     let xform = ctx.render_xform;
-    let mut extent_points = [tiny_skia::Point { x: ctx.render_pos, y: clip_y0}, tiny_skia::Point { x: clip_x1, y: clip_y1 }];
+    let mut extent_points = [tiny_skia::Point { x: ctx.render_pos.0, y: ctx.render_pos.1 }, tiny_skia::Point { x: clip_x1, y: clip_y1 }];
     xform.map_points(&mut extent_points);
     let xsize = extent_points[1].x - extent_points[0].x;
     let ysize = extent_points[1].y - extent_points[0].y;
@@ -209,7 +210,8 @@ pub fn render(ctx : &mut Render, name : &str) -> Result<(), ()> {
                     &Default::default(),
                     xform,
                     None);
-                ctx.render_pos += img.0.width() as f32 * scale;
+                ctx.render_pos.0 += img.0.width() as f32 * scale;
+                ctx.render_pos.1 += img.0.height() as f32 * scale;
                 Ok(())
             }
             None => Err(()),
