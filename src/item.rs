@@ -496,16 +496,16 @@ impl Item {
             }
 
             if let Some(rgba) = format.bg_rgba {
-                let rect = Rect::from_ltrb(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x, bg_clip.1.y).unwrap();
-                let paint = tiny_skia::Paint {
-                    shader: tiny_skia::Shader::SolidColor(rgba),
-                    anti_alias: true,
-                    // background is painted "underneath"
-                    blend_mode : tiny_skia::BlendMode::DestinationOver,
-                    ..tiny_skia::Paint::default()
-                };
-
-                ctx.canvas.fill_rect(rect, &paint, Transform::identity(), None);
+                if let Some(rect) = Rect::from_ltrb(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x, bg_clip.1.y) {
+                    let paint = tiny_skia::Paint {
+                        shader: tiny_skia::Shader::SolidColor(rgba),
+                        anti_alias: true,
+                        // background is painted "underneath"
+                        blend_mode : tiny_skia::BlendMode::DestinationOver,
+                        ..tiny_skia::Paint::default()
+                    };
+                    ctx.canvas.fill_rect(rect, &paint, Transform::identity(), None);
+                }
             }
 
             if let Some(border) = format.border {
@@ -516,20 +516,16 @@ impl Item {
                     ..tiny_skia::Paint::default()
                 };
 
-                if border.0 > 0.0 {
-                    let rect = Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x - bg_clip.0.x, border.0).unwrap();
+                if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x - bg_clip.0.x, border.0) {
                     ctx.canvas.fill_rect(rect, &paint, Transform::identity(), None);
                 }
-                if border.1 > 0.0 {
-                    let rect = Rect::from_xywh(bg_clip.1.x, bg_clip.0.y, border.1, bg_clip.1.y - bg_clip.0.y).unwrap();
+                if let Some(rect) = Rect::from_xywh(bg_clip.1.x, bg_clip.0.y, border.1, bg_clip.1.y - bg_clip.0.y) {
                     ctx.canvas.fill_rect(rect, &paint, Transform::identity(), None);
                 }
-                if border.2 > 0.0 {
-                    let rect = Rect::from_xywh(bg_clip.0.x, bg_clip.1.y, bg_clip.1.x - bg_clip.0.x, border.2).unwrap();
+                if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.1.y, bg_clip.1.x - bg_clip.0.x, border.2) {
                     ctx.canvas.fill_rect(rect, &paint, Transform::identity(), None);
                 }
-                if border.3 > 0.0 {
-                    let rect = Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, border.3, bg_clip.1.y - bg_clip.0.y).unwrap();
+                if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, border.3, bg_clip.1.y - bg_clip.0.y) {
                     ctx.canvas.fill_rect(rect, &paint, Transform::identity(), None);
                 }
             }
@@ -659,7 +655,8 @@ impl Item {
                 let mut canvas_size = tiny_skia::Point { x: width, y: height };
                 let render_extents = (Point::zero(), canvas_size);
                 xform.map_points(std::slice::from_mut(&mut canvas_size));
-                let mut canvas = tiny_skia::Pixmap::new(canvas_size.x as u32, canvas_size.y as u32).unwrap();
+                let mut canvas = tiny_skia::Pixmap::new(canvas_size.x as u32, canvas_size.y as u32)
+                    .unwrap_or_else(|| tiny_skia::Pixmap::new(1,1).unwrap());
                 let mut canvas = canvas.as_mut();
 
                 let mut left_ev = left.render(ctx);

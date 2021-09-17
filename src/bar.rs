@@ -163,7 +163,10 @@ impl Bar {
             std::mem::swap(&mut self.item, rt_item);
 
             let (canvas, finalize) = renderer.render_be_rgba((self.pixel_width, self.size * self.scale), &self.surf);
-            let mut canvas = tiny_skia::PixmapMut::from_bytes(canvas, self.pixel_width as u32, (self.size * self.scale) as u32).unwrap();
+            let mut canvas = match tiny_skia::PixmapMut::from_bytes(canvas, self.pixel_width as u32, (self.size * self.scale) as u32) {
+                Some(canvas) => canvas,
+                None => return,
+            };
             canvas.fill(tiny_skia::Color::TRANSPARENT);
             let font = &runtime.fonts[0];
 
@@ -247,14 +250,14 @@ impl Bar {
             let pixel_size = (popup.wl.size.0 * scale, popup.wl.size.1 * scale);
 
             let (canvas, finalize) = renderer.render_be_rgba(pixel_size, &popup.wl.surf);
-            let mut canvas = tiny_skia::PixmapMut::from_bytes(canvas, pixel_size.0 as u32, pixel_size.1 as u32).unwrap();
-            canvas.fill(tiny_skia::Color::TRANSPARENT);
-
-            let new_size = popup.desc.render_popup(runtime, &mut canvas, scale);
-            finalize(canvas.data_mut());
-            popup.wl.surf.commit();
-            if new_size.0 > popup.wl.size.0 || new_size.1 > popup.wl.size.1 {
-                runtime.wayland.resize_popup(&self.ls_surf, &mut popup.wl, new_size, scale);
+            if let Some(mut canvas) = tiny_skia::PixmapMut::from_bytes(canvas, pixel_size.0 as u32, pixel_size.1 as u32) {
+                canvas.fill(tiny_skia::Color::TRANSPARENT);
+                let new_size = popup.desc.render_popup(runtime, &mut canvas, scale);
+                finalize(canvas.data_mut());
+                popup.wl.surf.commit();
+                if new_size.0 > popup.wl.size.0 || new_size.1 > popup.wl.size.1 {
+                    runtime.wayland.resize_popup(&self.ls_surf, &mut popup.wl, new_size, scale);
+                }
             }
         }
     }
