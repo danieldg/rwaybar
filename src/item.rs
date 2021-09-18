@@ -508,7 +508,7 @@ impl Item {
                 }
             }
 
-            if let Some(border) = format.border {
+            if let Some((t, r, b, l)) = format.border {
                 let rgba = format.border_rgba.unwrap_or(ctx.font_color);
                 let paint = tiny_skia::Paint {
                     shader: tiny_skia::Shader::SolidColor(rgba),
@@ -516,16 +516,26 @@ impl Item {
                     ..tiny_skia::Paint::default()
                 };
 
-                if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x - bg_clip.0.x, border.0) {
+                bg_clip.0.y -= t;
+                if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x - bg_clip.0.x, t) {
+                    // top edge, no corners
                     ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
                 }
-                if let Some(rect) = Rect::from_xywh(bg_clip.1.x, bg_clip.0.y, border.1, bg_clip.1.y - bg_clip.0.y) {
+
+                bg_clip.0.x -= l;
+                if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, l, bg_clip.1.y - bg_clip.0.y) {
+                    // left edge + top-left corner
                     ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
                 }
-                if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.1.y, bg_clip.1.x - bg_clip.0.x, border.2) {
+
+                if let Some(rect) = Rect::from_xywh(bg_clip.1.x, bg_clip.0.y, r, bg_clip.1.y - bg_clip.0.y) {
+                    // right edge + top-right corner
                     ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
                 }
-                if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, border.3, bg_clip.1.y - bg_clip.0.y) {
+
+                bg_clip.1.x += r;
+                if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.1.y, bg_clip.1.x - bg_clip.0.x, b) {
+                    // bottom edge + both corners
                     ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
                 }
             }
