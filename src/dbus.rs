@@ -7,7 +7,6 @@ use futures_channel::mpsc::{self,UnboundedSender};
 use futures_util::StreamExt;
 use log::{info,warn,error};
 use once_cell::unsync::OnceCell;
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
@@ -26,7 +25,6 @@ use zvariant::OwnedValue;
 use zvariant::Value as Variant;
 
 pub struct DBus {
-    api : util::Cell<HashMap<Cow<'static,str>, Box<dyn FnMut(Arc<zbus::Message>)>>>,
     send : UnboundedSender<(zbus::Message, Option<Box<dyn FnOnce(zbus::Result<Arc<zbus::Message>>)>>)>,
     pending_calls : util::Cell<HashMap<u32, Box<dyn FnOnce(zbus::Result<Arc<zbus::Message>>)>>>,
 
@@ -88,7 +86,6 @@ impl DBus {
     fn new(is_session : bool) -> Rc<Self> {
         let (send, mut recv) = mpsc::unbounded();
         let tb = Rc::new(DBus {
-            api : Default::default(),
             send,
             bus : Cell::new(Err(Vec::new())),
             pending_calls : Default::default(),
@@ -263,12 +260,6 @@ impl DBus {
         }
     }
 
-    pub fn add_api(&self, name : impl Into<Cow<'static, str>>, imp : Box<dyn FnMut(Arc<zbus::Message>)>) {
-        if self.api.take_in(|api| api.insert(name.into(), imp)).is_some() {
-            panic!("Object already exists");
-        }
-    }
-
     async fn dispatcher(self : Rc<Self>, mut zbus : MessageStream) -> Result<(), Box<dyn std::error::Error>>  {
         while let Some(msg) = zbus.next().await {
             self.dispatch(msg?)?;
@@ -282,36 +273,6 @@ impl DBus {
         let head = msg.header()?;
         let mtype = head.message_type()?;
         match mtype {
-            MessageType::MethodCall => {
-                let mut objects = self.api.replace(HashMap::new());
-                let path = head.path()?.map(|p| p.as_str());
-                if let Some(object) = path.and_then(|p| objects.get_mut(p)) {
-                    (object)(msg);
-                } else if path == Some("/") &&
-                    head.interface()?.map_or(false, |v| *v == "org.freedesktop.DBus.Introspectable") &&
-                    head.member()?.map_or(false, |v| *v == "Introspect")
-                {
-                    let mut rv = String::new();
-                    rv.push_str(r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd"><node>"#);
-                    for node in objects.keys() {
-                        use std::fmt::Write;
-                        write!(rv, r#"<node name="{}"/>"#, &node[1..]).unwrap();
-                    }
-                    rv.push_str(r#"</node>"#);
-                    let reply = zbus::Message::method_reply(None::<&str>, &msg, &rv)?;
-                    self.send(reply);
-                } else {
-                    let reply = zbus::Message::method_error(None::<&str>, &msg, "org.freedesktop.DBus.Error.UnknownMethod", &"Path not found")?;
-                    self.send(reply);
-                }
-                self.api.take_in(|api| {
-                    if api.is_empty() {
-                        *api = objects;
-                    } else {
-                        api.extend(objects);
-                    }
-                });
-            }
             MessageType::Signal => {
                 let mut watchers = self.sig_watchers.replace(Vec::new());
                 match (head.path()?, head.interface()?, head.member()?) {
@@ -344,9 +305,7 @@ impl DBus {
                     }
                 }
             }
-            MessageType::Invalid => {
-                log::debug!("Got invalid dbus message");
-            }
+            _ => {}
         }
         Ok(())
     }

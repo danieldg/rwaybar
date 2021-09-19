@@ -175,84 +175,82 @@ struct Tray {
 
 impl Tray {
     fn init() -> Tray {
-        let dbus = DBus::get_session();
+        spawn("StatusNotifierWatcher", async move {
+            let dbus = DBus::get_session();
+            let zbus = dbus.connection().await;
 
-        dbus.add_api("/StatusNotifierWatcher", Box::new(move |msg| {
-            DATA.with(|cell| {
-                let tray = cell.get();
-                let tray = tray.as_ref().unwrap();
-                match tray.handle_snw(&msg) {
-                    Ok(()) => (),
-                    Err(e) => warn!("Error in StatusNotifierWatcher: {}", e),
+            zbus.object_server_mut().await.at("/StatusNotifierWatcher", snw_kde::StatusNotifierWatcher)?;
+            zbus.object_server_mut().await.at("/StatusNotifierWatcher", snw_fdo::StatusNotifierWatcher)?;
+
+            dbus.add_name_watcher(move |name, old, _new| {
+                if old.is_empty() {
+                    // we don't care about adds
+                    return;
                 }
-            });
-        }));
 
-        dbus.add_name_watcher(move |name, old, _new| {
-            if old.is_empty() {
-                // we don't care about adds
-                return;
-            }
-
-            DATA.with(|cell| {
-                let tray = cell.get();
-                let tray = tray.as_ref().unwrap();
-                tray.reg_db.take_in(|reg_db| {
-                    let dbus = DBus::get_session();
-                    reg_db.retain(|(path, is_kde)| {
-                        if let Some(pos) = path.find('/') {
-                            let owner = &path[..pos];
-                            if old == owner || name == owner {
-                                let iface = if *is_kde { "org.kde.StatusNotifierWatcher" } else { "org.freedesktop.StatusNotifierWatcher" };
-                                dbus.send(zbus::Message::signal(
-                                    None::<&str>,
-                                    None::<&str>,
-                                    "/StatusNotifierWatcher",
-                                    iface,
-                                    "StatusNotifierItemUnregistered",
-                                    &path,
-                                ).unwrap());
-                                return false;
+                DATA.with(|cell| {
+                    let tray = cell.get();
+                    let tray = tray.as_ref().unwrap();
+                    tray.reg_db.take_in(|reg_db| {
+                        let dbus = DBus::get_session();
+                        reg_db.retain(|(path, is_kde)| {
+                            if let Some(pos) = path.find('/') {
+                                let owner = &path[..pos];
+                                if old == owner || name == owner {
+                                    let iface = if *is_kde { "org.kde.StatusNotifierWatcher" } else { "org.freedesktop.StatusNotifierWatcher" };
+                                    dbus.send(zbus::Message::signal(
+                                        None::<&str>,
+                                        None::<&str>,
+                                        "/StatusNotifierWatcher",
+                                        iface,
+                                        "StatusNotifierItemUnregistered",
+                                        &path,
+                                    ).unwrap());
+                                    return false;
+                                }
                             }
-                        }
-                        true
+                            true
+                        });
                     });
                 });
             });
-        });
 
-        spawn("Tray enumeration (KDE)", init_snw(true));
-        spawn("Tray enumeration (freedesktop)", init_snw(false));
+            spawn("Tray enumeration (KDE)", init_snw(true));
+            spawn("Tray enumeration (freedesktop)", init_snw(false));
+            Ok(())
+        });
 
         Tray::default()
     }
+}
 
-    fn handle_snw(&self, msg : &zbus::Message) -> zbus::Result<()> {
-        let hdr = msg.header()?;
-        let dbus = DBus::get_session();
-        let mut rsp = zbus::Message::method_error(None::<&str>, &msg, "org.freedesktop.DBus.Error.UnknownMethod", &"Method not found")?;
-        let rv = self.reg_db.take_in(|reg_db| {
-            match hdr.interface().ok().flatten().map(|i| i.as_str()) {
-                Some(iface @ "org.kde.StatusNotifierWatcher") |
-                Some(iface @ "org.freedesktop.StatusNotifierWatcher") => {
-                    match hdr.member()?.map(|m| m.as_str()) {
-                        Some("RegisterStatusNotifierItem") => {
-                            let is_kde = iface == "org.kde.StatusNotifierWatcher";
-                            let path : &str = msg.body()?;
+macro_rules! build_snw {
+    ($ident:ident, $name:tt, $is_kde:ident) => {
+        mod $ident {
+            use super::*;
+            #[derive(Debug)]
+            pub struct StatusNotifierWatcher;
+
+            #[zbus::dbus_interface(name = $name)]
+            impl StatusNotifierWatcher {
+                fn register_status_notifier_item(&self, path: &str, #[zbus(header)] hdr: zbus::MessageHeader) -> zbus::fdo::Result<()> {
+                    DATA.with(|cell| {
+                        let tray = cell.get().unwrap();
+                        tray.reg_db.take_in(|reg_db| {
+                            let dbus = DBus::get_session();
                             if path.starts_with('/') {
                                 let service = format!("{}{}", hdr.sender()?.unwrap(), path);
                                 dbus.send(zbus::Message::signal(
                                     None::<&str>,
                                     None::<&str>,
                                     "/StatusNotifierWatcher",
-                                    iface,
+                                    $name,
                                     "StatusNotifierItemRegistered",
                                     &service,
                                 )?);
-                                reg_db.push((service, is_kde));
+                                reg_db.push((service, $is_kde));
                                 reg_db.sort();
                                 reg_db.dedup();
-                                rsp = zbus::Message::method_reply(None::<&str>, &msg, &())?;
                             } else if path.starts_with(':') {
                                 // kde uses this style
                                 let service = format!("{}/StatusNotifierItem", path);
@@ -260,112 +258,49 @@ impl Tray {
                                     None::<&str>,
                                     None::<&str>,
                                     "/StatusNotifierWatcher",
-                                    iface,
+                                    $name,
                                     "StatusNotifierItemRegistered",
                                     &service,
                                 )?);
-                                reg_db.push((service, is_kde));
+                                reg_db.push((service, $is_kde));
                                 reg_db.sort();
                                 reg_db.dedup();
-                                rsp = zbus::Message::method_reply(None::<&str>, &msg, &())?;
                             } else {
                                 warn!("Unknown RegisterStatusNotifierItem from {:?}: {}", hdr.sender(), path);
                             }
-                        }
-                        Some("RegisterStatusNotifierHost") => {
-                            dbus.send(zbus::Message::signal(
-                                None::<&str>,
-                                None::<&str>,
-                                "/StatusNotifierWatcher",
-                                iface,
-                                "StatusNotifierHostRegistered",
-                                &()
-                            )?);
-                            rsp = zbus::Message::method_reply(None::<&str>, &msg, &())?;
-                        }
-                        _ => {}
-                    }
+                            Ok(())
+                        })
+                    })
                 }
-                Some("org.freedesktop.DBus.Properties") => {
-                    match hdr.member()?.map(|m| m.as_str()) {
-                        Some("Get") => {
-                            let (iface, mut prop) : (&str, &str) = msg.body()?;
-                            let is_kde = match iface {
-                                "org.kde.StatusNotifierWatcher" => true,
-                                "org.freedesktop.StatusNotifierWatcher" => false,
-                                _ => { prop = ""; false }
-                            };
-                            match prop {
-                                "RegisteredStatusNotifierItems" => {
-                                    let db : Vec<_> = reg_db.iter().filter(|v| v.1 == is_kde).map(|v| &v.0).collect();
-                                    rsp = zbus::Message::method_reply(None::<&str>, &msg, &Variant::new(db))?;
-                                }
-                                "IsStatusNotifierHostRegistered" => {
-                                    rsp = zbus::Message::method_reply(None::<&str>, &msg, &Variant::Bool(true))?;
-                                }
-                                "ProtocolVersion" => {
-                                    rsp = zbus::Message::method_reply(None::<&str>, &msg, &Variant::I32(0))?;
-                                }
-                                _ => {}
-                            }
-                        }
-                        Some("GetAll") => {
-                            let iface : &str = msg.body()?;
-                            match match iface {
-                                "org.kde.StatusNotifierWatcher" => Some(true),
-                                "org.freedesktop.StatusNotifierWatcher" => Some(false),
-                                _ => None,
-                            } {
-                                Some(is_kde) => {
-                                    let db : Vec<_> = reg_db.iter().filter(|v| v.1 == is_kde).map(|v| &v.0).collect();
-                                    let rv : Vec<(String, Variant)> = vec![
-                                        ("RegisteredStatusNotifierItems".into(), Variant::new(db)),
-                                        ("IsStatusNotifierHostRegistered".into(), Variant::Bool(true)),
-                                        ("ProtocolVersion".into(), Variant::I32(0)),
-                                    ];
-                                    let rv : HashMap<_,_> = rv.into_iter().collect();
-                                    rsp = zbus::Message::method_reply(None::<&str>, &msg, &rv)?;
-                                }
-                                _ => {}
-                            }
-                        }
-                        _ => {}
-                    }
+
+                #[dbus_interface(signal)]
+                async fn status_notifier_host_registered(ctxt: &zbus::SignalContext<'_>) -> zbus::Result<()>;
+
+                async fn register_status_notifier_host(&self, _host: &str, #[zbus(signal_context)] ctxt: zbus::SignalContext<'_>) -> zbus::fdo::Result<()> {
+                    Self::status_notifier_host_registered(&ctxt).await.map_err(Into::into)
                 }
-                Some("org.freedesktop.DBus.Introspectable") => {
-                    match hdr.member()?.map(|m| m.as_str()) {
-                        Some("Introspect") => {
-                            rsp = zbus::Message::method_reply(None::<&str>, &msg, &concat!(
-                                r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">"#,
-                                r#"<node><interface name="org.freedesktop.StatusNotifierWatcher">"#,
-                                    r#"<method name="RegisterStatusNotifierItem"><arg name="name" direction="in" type="s"/></method>"#,
-                                    r#"<method name="RegisterStatusNotifierHost"/>"#,
-                                    r#"<property type="as" name="RegisteredStatusNotifierItems" access="read"/>"#,
-                                    r#"<property type="b" name="IsStatusNotifierHostRegistered" access="read"/>"#,
-                                    r#"<property type="i" name="ProtocolVersion" access="read"/>"#,
-                                r#"</interface><interface name="org.kde.StatusNotifierWatcher">"#,
-                                    r#"<method name="RegisterStatusNotifierItem"><arg name="name" direction="in" type="s"/></method>"#,
-                                    r#"<method name="RegisterStatusNotifierHost"/>"#,
-                                    r#"<property type="as" name="RegisteredStatusNotifierItems" access="read"/>"#,
-                                    r#"<property type="b" name="IsStatusNotifierHostRegistered" access="read"/>"#,
-                                    r#"<property type="i" name="ProtocolVersion" access="read"/>"#,
-                                r#"</interface><interface name="org.freedesktop.DBus.Properties">"#,
-                                    r#"<method name="Get"><arg name="interface_name" type="s" direction="in"/><arg name="property_name" type="s" direction="in"/><arg name="value" type="v" direction="out"/></method>"#,
-                                    r#"<method name="GetAll"><arg name="interface_name" type="s" direction="in"/><arg name="values" type="a{sv}" direction="out"/></method>"#,
-                                r#"</interface></node>"#,
-                            ))?;
-                        }
-                        _ => {}
-                    }
+
+                #[dbus_interface(property)]
+                fn is_status_notifier_host_registered(&self) -> bool { true }
+
+                #[dbus_interface(property)]
+                fn protocol_version(&self) -> i32 { 0 }
+
+                #[dbus_interface(property)]
+                fn registered_status_notifier_items(&self) -> Vec<String> {
+                    DATA.with(|cell| {
+                        let tray = cell.get().unwrap();
+                        tray.reg_db.take_in(|reg_db| {
+                            reg_db.iter().filter(|v| v.1 == $is_kde).map(|v| v.0.clone()).collect()
+                        })
+                    })
                 }
-                _ => {}
             }
-            Ok(())
-        });
-        dbus.send(rsp);
-        rv
-    }
+        }
+    };
 }
+build_snw!(snw_kde, "org.kde.StatusNotifierWatcher", true);
+build_snw!(snw_fdo, "org.freedesktop.StatusNotifierWatcher", false);
 
 async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
     let who = if is_kde { "kde" } else { "freedesktop" };
