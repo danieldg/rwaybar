@@ -762,7 +762,7 @@ impl TrayPopupMenu {
             use futures_util::StreamExt;
             let weak = Rc::downgrade(&self);
             // Not using SignalStream because we want all signals
-            let mut conn : zbus::azync::MessageStream = dbm.connection().into();
+            let mut conn : zbus::MessageStream = dbm.connection().into();
             spawn_handle("Menu refresh", async move {
                 while let Some(Ok(msg)) = conn.next().await {
                     if let Some(menu) = weak.upgrade() {

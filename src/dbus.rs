@@ -19,7 +19,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::task;
 use tokio::net::UnixStream;
-use zbus::azync::{Connection,ConnectionBuilder,MessageStream};
+use zbus::{Connection,ConnectionBuilder,MessageStream};
 use zbus::names::BusName;
 use zbus::zvariant;
 use zvariant::OwnedValue;
@@ -355,7 +355,7 @@ impl DBus {
 #[derive(Debug)]
 struct AsSocket(UnixStream);
 
-impl zbus::azync::Socket for AsSocket {
+impl zbus::Socket for AsSocket {
     fn poll_recvmsg(&mut self, cx: &mut task::Context<'_>, buf: &mut [u8]) -> task::Poll<io::Result<(usize, Vec<zvariant::OwnedFd>)>> {
         use tokio::io::AsyncRead;
         //use futures::ready;

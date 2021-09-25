@@ -34,7 +34,7 @@ futures-util = { version = "*", features = ['channel'] }
 json = "*"
 libc = "*"
 log = "*"
-memmap2 = "*"
+memmap2 = "0.3"
 once_cell = "*"
 serde = "1"
 strfmt = "=0.1.6"

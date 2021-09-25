@@ -37,9 +37,9 @@ checksum = "23b62fc65de8e4e7f52534fb52b0f3ed04746ae267519eef2a83941e8085068b"
 
 [[package]]
 name = "async-broadcast"
-version = "0.3.3"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "186fa9af996163d0d446775d084df32f2f5b195bcfebb0d49d0bf18e2eec528c"
+checksum = "90622698a1218e0b2fb846c97b5f19a0831f6baddee73d9454156365ccfa473b"
 dependencies = [
  "easy-parallel",
  "event-listener",
@@ -123,6 +123,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e91831deabf0d6d7ec49552e489aed63b7456a7a3c46cff62adad428110b0af0"
 
 [[package]]
+name = "async-trait"
+version = "0.1.51"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44318e776df68115a881de9a8fd1b9e53368d7a4a5ce4cc48517da3393233a5e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "atty"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -202,12 +213,24 @@ dependencies = [
 
 [[package]]
 name = "chrono-tz"
-version = "0.5.3"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2554a3155fec064362507487171dcc4edc3df60cb10f3a1fb10ed8094822b120"
+checksum = "64c01c1c607d25c71bbaa67c113d6c6b36c434744b4fd66691d711b5b1bc0c8b"
 dependencies = [
  "chrono",
+ "chrono-tz-build",
+ "phf",
+]
+
+[[package]]
+name = "chrono-tz-build"
+version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db058d493fb2f65f41861bfed7e3fe6335264a9f0f92710cab5bdf01fef09069"
+dependencies = [
  "parse-zoneinfo",
+ "phf",
+ "phf_codegen",
 ]
 
 [[package]]
@@ -465,9 +488,9 @@ checksum = "9a3a5bfb195931eeb336b2a7b4d761daec841b97f947d34394601737a7bba5e4"
 
 [[package]]
 name = "instant"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bee0328b1209d157ef001c94dd85b4f8f64139adb0eac2659f4b08382b2f474d"
+checksum = "716d3d89f35ac6a34fd0eed635395f4c3b76fa889338a4632e5231a8684216bd"
 dependencies = [
  "cfg-if",
 ]
@@ -714,6 +737,45 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c705f256449c60da65e11ff6626e0c16a0a0b96aaa348de61376b249bc340f41"
 dependencies = [
  "regex",
+]
+
+[[package]]
+name = "phf"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9fc3db1018c4b59d7d582a739436478b6035138b6aecbce989fc91c3e98409f"
+dependencies = [
+ "phf_shared",
+]
+
+[[package]]
+name = "phf_codegen"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fb1c3a8bc4dd4e5cfce29b44ffc14bedd2ee294559a294e2a4d4c9e9a6a13cd"
+dependencies = [
+ "phf_generator",
+ "phf_shared",
+]
+
+[[package]]
+name = "phf_generator"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d5285893bb5eb82e6aaf5d59ee909a06a16737a8970984dd7746ba9283498d6"
+dependencies = [
+ "phf_shared",
+ "rand",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6796ad771acdc0123d2a88dc428b5e38ef24456743ddb1744ed628f9815c096"
+dependencies = [
+ "siphasher",
+ "uncased",
 ]
 
 [[package]]
@@ -1092,9 +1154,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "1.0.76"
+version = "1.0.77"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6f107db402c2c2055242dbf4d2af0e69197202e9faacbef9571bbe47f5a1b84"
+checksum = "5239bc68e0fef57495900cfea4e8dc75596d9a319d7e16b1e0a440d24e6fe0a0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1156,9 +1218,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.11.0"
+version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4efe6fc2395938c8155973d7be49fe8d03a843726e285e100a8a383cc0154ce"
+checksum = "c2c2416fdedca8443ae44b4527de1ea633af61d8f7169ffa6e72c5b53d24efcc"
 dependencies = [
  "autocfg",
  "bytes",
@@ -1185,6 +1247,15 @@ name = "ttf-parser"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ae2f58a822f08abdaf668897e96a5656fe72f5a9ce66422423e8849384872e6"
+
+[[package]]
+name = "uncased"
+version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5baeed7327e25054889b9bd4f975f32e5f4c5d434042d59ab6cd4142c0a76ed0"
+dependencies = [
+ "version_check",
+]
 
 [[package]]
 name = "unicode-xid"
@@ -1373,7 +1444,7 @@ checksum = "114ba2b24d2167ef6d67d7d04c8cc86522b87f490025f39f0303b7db5bf5e3d8"
 [[package]]
 name = "zbus"
 version = "2.0.0-beta.6"
-source = "git+https://gitlab.freedesktop.org/dbus/zbus#760789c4dd35d528eccf240629486c3c1f73fb9b"
+source = "git+https://gitlab.freedesktop.org/dbus/zbus#961043680c26fd0430712ce3c659d3106f2bc519"
 dependencies = [
  "async-broadcast",
  "async-channel",
@@ -1382,6 +1453,7 @@ dependencies = [
  "async-lock",
  "async-recursion",
  "async-task",
+ "async-trait",
  "byteorder",
  "derivative",
  "enumflags2",
@@ -1406,7 +1478,7 @@ dependencies = [
 [[package]]
 name = "zbus_macros"
 version = "2.0.0-beta.6"
-source = "git+https://gitlab.freedesktop.org/dbus/zbus#760789c4dd35d528eccf240629486c3c1f73fb9b"
+source = "git+https://gitlab.freedesktop.org/dbus/zbus#961043680c26fd0430712ce3c659d3106f2bc519"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1418,7 +1490,7 @@ dependencies = [
 [[package]]
 name = "zbus_names"
 version = "1.0.0"
-source = "git+https://gitlab.freedesktop.org/dbus/zbus#760789c4dd35d528eccf240629486c3c1f73fb9b"
+source = "git+https://gitlab.freedesktop.org/dbus/zbus#961043680c26fd0430712ce3c659d3106f2bc519"
 dependencies = [
  "serde",
  "static_assertions",
@@ -1428,7 +1500,7 @@ dependencies = [
 [[package]]
 name = "zvariant"
 version = "2.8.0"
-source = "git+https://gitlab.freedesktop.org/dbus/zbus#760789c4dd35d528eccf240629486c3c1f73fb9b"
+source = "git+https://gitlab.freedesktop.org/dbus/zbus#961043680c26fd0430712ce3c659d3106f2bc519"
 dependencies = [
  "byteorder",
  "enumflags2",
@@ -1441,7 +1513,7 @@ dependencies = [
 [[package]]
 name = "zvariant_derive"
 version = "2.8.0"
-source = "git+https://gitlab.freedesktop.org/dbus/zbus#760789c4dd35d528eccf240629486c3c1f73fb9b"
+source = "git+https://gitlab.freedesktop.org/dbus/zbus#961043680c26fd0430712ce3c659d3106f2bc519"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
