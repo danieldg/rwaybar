@@ -24,6 +24,7 @@ pub struct Item {
 #[derive(Debug,Default)]
 pub struct ItemFormat {
     markup : bool,
+    oneline: bool,
     cfg : Option<toml::Value>,
 }
 
@@ -31,6 +32,7 @@ impl ItemFormat {
     pub fn from_toml(config : &toml::Value) -> Self {
         let mut rv = Self::default();
         rv.markup = config.get("markup").and_then(|v| v.as_bool()).unwrap_or(false);
+        rv.oneline = config.get("oneline").and_then(|v| v.as_bool()).unwrap_or(false);
 
         rv.cfg = config.as_table()
             .map(|t| t.iter()
@@ -770,7 +772,11 @@ impl Item {
             // All other modules are rendered as text
             _ => {
                 let markup = self.format.markup;
-                let text = self.data.read_to_owned(ctx.err_name, "text", &ctx.runtime).into_text();
+                let oneline = self.format.oneline;
+                let mut text = self.data.read_to_owned(ctx.err_name, "text", &ctx.runtime).into_text();
+                if oneline && text.contains('\n') {
+                    text = text.replace('\n', " ").into();
+                }
 
                 let (mut to_draw, (width, height)) = layout_font(ctx.font, ctx.font_size, &ctx.runtime, ctx.font_color, &text, markup);
 

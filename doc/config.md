@@ -133,7 +133,8 @@ Any module that does not declare otherwise is displayed as text, controlled by t
 
 Key | Expanded | Value | Details
 ----|----------|-------|---------
-`markup` | No | true/false | True if the value contains Pango (HTML-style) markup
+`markup` | No | true/false | True if the value contains HTML-style markup
+`oneline` | No | true/false | True if the value should have newlines stripped
 
 The actual text displayed is `{`modulename`.text}` with a tooltip of `{`modulename`.tooltip}`.
 
