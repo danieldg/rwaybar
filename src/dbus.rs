@@ -270,15 +270,13 @@ impl DBus {
 
     fn dispatch(&self, msg : Arc<zbus::Message>) -> zbus::Result<()> {
         use zbus::MessageType;
-        let head = msg.header()?;
-        let mtype = head.message_type()?;
-        match mtype {
+        match msg.message_type() {
             MessageType::Signal => {
                 let mut watchers = self.sig_watchers.replace(Vec::new());
-                match (head.path()?, head.interface()?, head.member()?) {
+                match (msg.path()?, msg.interface()?, msg.member()?) {
                     (Some(path), Some(iface), Some(memb)) => {
                         for watcher in &mut watchers {
-                            watcher.call(path, iface, memb, &msg);
+                            watcher.call(&path, &iface, &memb, &msg);
                         }
                     }
                     _ => {
@@ -295,10 +293,10 @@ impl DBus {
             }
             MessageType::Error |
             MessageType::MethodReturn => {
-                if let Some(cb) = head.reply_serial()?
+                if let Some(cb) = msg.reply_serial()?
                     .and_then(|sn| self.pending_calls.take_in(|map| map.remove(&sn)))
                 {
-                    if mtype == MessageType::Error {
+                    if msg.message_type() == MessageType::Error {
                         cb(Err(msg.into()))
                     } else {
                         cb(Ok(msg))

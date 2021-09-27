@@ -716,12 +716,14 @@ impl TrayPopupMenu {
             return;
         }
         let dbm = self.proxy().unwrap();
-        let hdr = msg.header().unwrap();
-        if hdr.interface() != Ok(Some(&dbm.interface())) ||
-            hdr.path() != Ok(Some(&dbm.path())) ||
-            hdr.sender().ok().flatten().map(|s| s.as_str()) != Some(&*self.owner)
+        if msg.interface() != Ok(Some(dbm.interface().as_ref())) ||
+            msg.path() != Ok(Some(dbm.path().as_ref()))
         {
             return;
+        }
+        match msg.header() {
+            Ok(h) if h.sender().ok().flatten().map(|s| s.as_str()) == Some(&*self.owner) => {}
+            _ => return
         }
 
         if self.fresh.replace(None).is_some() {
