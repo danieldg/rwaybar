@@ -4,6 +4,7 @@ use crate::state::NotifierList;
 use crate::util;
 use crate::util::{Cell,spawn_noerr};
 use futures_channel::mpsc::{self,UnboundedSender};
+use futures_util::future::RemoteHandle;
 use futures_util::StreamExt;
 use log::{info,warn,error};
 use once_cell::unsync::OnceCell;
@@ -213,17 +214,6 @@ impl DBus {
         rv
     }
 
-    pub fn stop_signal_watcher(&self, t : &mut SigWatcherToken) {
-        if let Some(stop_ptr) = t.0.take() {
-            self.sig_watchers.take_in(|w| {
-                w.retain(|w| {
-                    let ptr = w.get_sw_ptr();
-                    ptr != Some(stop_ptr)
-                });
-            });
-        }
-    }
-
     pub fn add_property_change_watcher<F>(&self, f : F)
         where F : FnMut(&zbus::MessageHeader, &str, &HashMap<&str, OwnedValue>, &[&str]) + 'static
     {
@@ -368,12 +358,6 @@ impl<F> SignalWatcherCall for SignalWatcherZST<F>
 #[derive(Debug,Default)]
 pub struct SigWatcherToken(Option<NonNull<()>>);
 
-impl SigWatcherToken {
-    pub fn is_active(&self) -> bool {
-        self.0.is_some()
-    }
-}
-
 /// The "dbus" block
 #[derive(Debug)]
 pub struct DbusValue {
@@ -386,16 +370,7 @@ pub struct DbusValue {
     sig : Cell<Option<Rc<str>>>,
     value : RefCell<Option<OwnedValue>>,
     interested : Cell<NotifierList>,
-    watch : Cell<SigWatcherToken>,
-}
-
-impl Drop for DbusValue {
-    fn drop(&mut self) {
-        let mut w = self.watch.take();
-        if w.is_active() {
-            self.bus.stop_signal_watcher(&mut w);
-        }
-    }
+    watch : Cell<Option<RemoteHandle<()>>>,
 }
 
 impl DbusValue {
@@ -469,26 +444,28 @@ impl DbusValue {
                 let watch_path : Option<Box<str>> = watch_path.map(Into::into);
                 let watch_method = watch_method.unwrap().to_owned();
                 let weak = Rc::downgrade(&rc);
-                let watch = dbus.add_signal_watcher(move |msg_path, msg_iface, msg_member, _msg| {
-                    if let Some(rc) = weak.upgrade() {
-                        let (i,m) = watch_method.rsplit_once(".").unwrap();
-                        match (|| -> zbus::Result<bool> {
-                            if msg_iface != i || msg_member != m {
-                                return Ok(false);
+                let h = util::spawn_handle("DBus value watcher", async move {
+                    let zbus = dbus.connection().await;
+                    let mut stream = zbus::MessageStream::from(zbus);
+                    while let Some(Ok(msg)) = stream.next().await {
+                        if let Some(rc) = weak.upgrade() {
+                            let (i,m) = watch_method.rsplit_once(".").unwrap();
+                            if msg.interface()?.as_deref() != Some(i) ||
+                                msg.member()?.as_deref() != Some(m)
+                            {
+                                continue;
                             }
                             if let Some(path) = &watch_path {
-                                Ok(msg_path == &**path)
-                            } else {
-                                Ok(true)
+                                if msg.path()?.as_deref() != Some(&*path) {
+                                    continue;
+                                }
                             }
-                        })() {
-                            Ok(true) => { rc.call_now(); }
-                            Ok(false) => {}
-                            Err(e) => warn!("Invalid signal: {}", e),
+                            rc.call_now();
                         }
                     }
+                    Ok(())
                 });
-                rc.watch.set(watch);
+                rc.watch.set(Some(h));
             }
             Some(None) if watch_method == Some("") => {}
             Some(None) => error!("Invalid dbus watch expression, ignoring"),
