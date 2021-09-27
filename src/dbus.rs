@@ -197,7 +197,6 @@ impl DBus {
     }
 
     pub fn add_signal_watcher<F>(&self, f : F)
-        -> SigWatcherToken
         where F : FnMut(&zvariant::ObjectPath, &str, &str, &zbus::Message) + 'static
     {
         if std::mem::size_of::<F>() != 0 {
@@ -207,11 +206,9 @@ impl DBus {
         }
     }
 
-    fn do_add_signal_watcher(&self, b : Box<dyn SignalWatcherCall>) -> SigWatcherToken
+    fn do_add_signal_watcher(&self, b : Box<dyn SignalWatcherCall>)
     {
-        let rv = SigWatcherToken(b.get_sw_ptr());
         self.sig_watchers.take_in(|w| w.push(b));
-        rv
     }
 
     pub fn add_property_change_watcher<F>(&self, f : F)
@@ -354,9 +351,6 @@ impl<F> SignalWatcherCall for SignalWatcherZST<F>
         NonNull::new(self as *const SignalWatcherZST<F> as *mut ())
     }
 }
-
-#[derive(Debug,Default)]
-pub struct SigWatcherToken(Option<NonNull<()>>);
 
 /// The "dbus" block
 #[derive(Debug)]

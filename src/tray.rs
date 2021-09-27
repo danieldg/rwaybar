@@ -396,7 +396,6 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
         });
     });
 
-    let zbus = dbus.connection().await;
     zbus.send_message(zbus::Message::method(
         None::<&str>,
         Some(snw_path),
