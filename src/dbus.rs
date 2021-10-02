@@ -26,8 +26,7 @@ use zvariant::OwnedValue;
 use zvariant::Value as Variant;
 
 pub struct DBus {
-    send : UnboundedSender<(zbus::Message, Option<Box<dyn FnOnce(zbus::Result<Arc<zbus::Message>>)>>)>,
-    pending_calls : util::Cell<HashMap<u32, Box<dyn FnOnce(zbus::Result<Arc<zbus::Message>>)>>>,
+    send : UnboundedSender<zbus::Message>,
 
     bus: util::Cell<Result<Connection, Vec<task::Waker>>>,
 
@@ -89,7 +88,6 @@ impl DBus {
         let tb = Rc::new(DBus {
             send,
             bus : Cell::new(Err(Vec::new())),
-            pending_calls : Default::default(),
             sig_watchers : Default::default(),
             prop_watchers : Default::default(),
             name_watchers : Default::default(),
@@ -177,11 +175,8 @@ impl DBus {
             util::spawn("Incoming DBus Events", this.clone().dispatcher((&zbus).into()));
 
             let rv = zbus.executor().run(async {
-                while let Some((msg, cb)) = recv.next().await {
-                    let seq = zbus.send_message(msg).await?;
-                    if let Some(cb) = cb {
-                        this.pending_calls.take_in(|pend| pend.insert(seq, cb));
-                    }
+                while let Some(msg) = recv.next().await {
+                    zbus.send_message(msg).await?;
                 }
                 Ok(())
             }).await;
@@ -193,7 +188,7 @@ impl DBus {
     }
 
     pub fn send(&self, msg : zbus::Message) {
-        let _ = self.send.unbounded_send((msg, None));
+        let _ = self.send.unbounded_send(msg);
     }
 
     pub fn add_signal_watcher<F>(&self, f : F)
@@ -277,18 +272,6 @@ impl DBus {
                         w.extend(watchers);
                     }
                 });
-            }
-            MessageType::Error |
-            MessageType::MethodReturn => {
-                if let Some(cb) = msg.reply_serial()?
-                    .and_then(|sn| self.pending_calls.take_in(|map| map.remove(&sn)))
-                {
-                    if msg.message_type() == MessageType::Error {
-                        cb(Err(msg.into()))
-                    } else {
-                        cb(Ok(msg))
-                    }
-                }
             }
             _ => {}
         }
