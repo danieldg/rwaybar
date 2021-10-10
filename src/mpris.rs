@@ -12,7 +12,7 @@ use zbus::zvariant;
 use zvariant::Value as Variant;
 use zvariant::{Dict,OwnedValue};
 use zbus::dbus_proxy;
-use zbus::fdo::AsyncDBusProxy;
+use zbus::fdo::DBusProxy;
 use zbus::names::BusName;
 
 #[dbus_proxy(interface = "org.mpris.MediaPlayer2")]
@@ -152,7 +152,7 @@ impl PlayState {
 #[derive(Debug)]
 struct Player {
     name_tail : Rc<str>,
-    proxy : AsyncPlayerProxy<'static>,
+    proxy : PlayerProxy<'static>,
     playing : Option<PlayState>,
     meta : Dict<'static, 'static>,
 }
@@ -168,14 +168,14 @@ async fn initial_query(target : Rc<MediaPlayer2>, bus_name : BusName<'static>) -
     let name_tail = bus_name[skip..].into();
     let dbus = DBus::get_session();
     let zbus = dbus.connection().await;
-    let owner = AsyncDBusProxy::builder(&zbus)
+    let owner = DBusProxy::builder(&zbus)
         .cache_properties(false)
         .build().await?
         .get_name_owner(bus_name)
         .await?
         .into_inner();
 
-    let proxy = AsyncPlayerProxy::builder(&zbus)
+    let proxy = PlayerProxy::builder(&zbus)
         .destination(owner)?
         .build().await?;
 
@@ -235,7 +235,7 @@ impl MediaPlayer2 {
             });
 
             let zbus = dbus.connection().await;
-            let names = AsyncDBusProxy::builder(&zbus)
+            let names = DBusProxy::builder(&zbus)
                 .cache_properties(false)
                 .build().await?
                 .list_names().await?;

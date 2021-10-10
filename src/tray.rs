@@ -17,7 +17,7 @@ use std::time::Instant;
 use std::mem::ManuallyDrop;
 use std::time::{SystemTime,Duration,UNIX_EPOCH};
 use log::{debug,warn};
-use zbus::fdo::AsyncDBusProxy;
+use zbus::fdo::DBusProxy;
 use zbus::dbus_proxy;
 use zbus::fdo;
 use zbus::zvariant;
@@ -314,7 +314,7 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
     let zbus = dbus.connection().await;
     let name = format!("org.{}.StatusNotifierHost-{}", who, std::process::id());
 
-    let dbif = AsyncDBusProxy::builder(&zbus)
+    let dbif = DBusProxy::builder(&zbus)
         .cache_properties(false)
         .build().await?;
 
@@ -453,7 +453,7 @@ fn do_add_item(is_kde : bool, item : String) {
 
             /* This is a nice idea but not actually useful
              * It also needs AsyncOnceCell now
-            let sni = AsyncStatusNotifierItemProxy::builder(&zbus)
+            let sni = StatusNotifierItemProxy::builder(&zbus)
                 .destination(String::from(&*owner))?
                 .path(String::from(&*path))?
                 .interface(sni_path)?
@@ -605,7 +605,7 @@ impl PartialEq for TrayPopup {
 struct TrayPopupMenu {
     owner : Rc<str>,
     menu_path : Cell<Option<Rc<str>>>,
-    menu : AsyncOnceCell<AsyncDBusMenuProxy<'static>>,
+    menu : AsyncOnceCell<DBusMenuProxy<'static>>,
     watcher : OnceCell<RemoteHandle<()>>,
     refresh: Cell<Option<RemoteHandle<()>>>,
     fresh : Cell<Option<Instant>>,
@@ -675,7 +675,7 @@ impl TrayPopupMenu {
         }
     }
 
-    async fn get_proxy<'a>(self : &'a Rc<Self>) -> Result<Option<&'a AsyncDBusMenuProxy<'static>>, Box<dyn Error>> {
+    async fn get_proxy<'a>(self : &'a Rc<Self>) -> Result<Option<&'a DBusMenuProxy<'static>>, Box<dyn Error>> {
         if let Some(dbm) = self.proxy() {
             return Ok(Some(dbm));
         }
@@ -687,7 +687,7 @@ impl TrayPopupMenu {
         let dbm = self.menu.get_or_try_init(async {
             let dbus = DBus::get_session();
             let zbus = dbus.connection().await;
-            AsyncDBusMenuProxy::builder(&zbus)
+            DBusMenuProxy::builder(&zbus)
                 .destination(String::from(&*self.owner))?
                 .path(String::from(&*menu_path))?
                 .build().await
@@ -735,7 +735,7 @@ impl TrayPopupMenu {
         }
     }
 
-    fn proxy(&self) -> Option<&AsyncDBusMenuProxy<'static>> {
+    fn proxy(&self) -> Option<&DBusMenuProxy<'static>> {
         self.menu.get()
     }
 
