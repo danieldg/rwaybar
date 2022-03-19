@@ -65,7 +65,7 @@ impl OwnedImage {
         let svg_height = tree.svg_node().size.height();
         let width = (height as f64 * svg_width / svg_height).ceil() as u32;
         let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
-        resvg::render(&tree, usvg::FitTo::Height(height), pixmap.as_mut())?;
+        resvg::render(&tree, usvg::FitTo::Height(height), tiny_skia::Transform::identity(), pixmap.as_mut())?;
         Some(Self(pixmap))
     }
 }

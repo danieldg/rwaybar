@@ -34,7 +34,7 @@ futures-util = { version = "*", features = ['channel'] }
 json = "*"
 libc = "*"
 log = "*"
-memmap2 = "0.3"
+memmap2 = "0.5"
 once_cell = "*"
 serde = "1"
 strfmt = "=0.1.6"
@@ -55,12 +55,12 @@ wayland-cursor = "0.29"
 wayland-protocols = "0.29"
 
 # Module specific
-chrono = "*"
+chrono = { version = "*", default-features = false, features = ['clock'] }
 chrono-tz = "*"
 evalexpr = "*"
 libpulse-binding = { version = "*", features = ['pa_v14'], optional = true }
 regex = "1.5"
-zbus = { version = "2.0.0-beta", git = "https://gitlab.freedesktop.org/dbus/zbus", default-features = false }
+zbus = { version = "2.0.0-beta", git = "https://gitlab.freedesktop.org/dbus/zbus", default-features = false, features = ['tokio'] }
 
 [[bin]]
 name = 'font-dump'

@@ -169,7 +169,7 @@ async fn initial_query(target : Rc<MediaPlayer2>, bus_name : BusName<'static>) -
     let dbus = DBus::get_session();
     let zbus = dbus.connection().await;
     let owner = DBusProxy::builder(&zbus)
-        .cache_properties(false)
+        .cache_properties(zbus::CacheProperties::No)
         .build().await?
         .get_name_owner(bus_name)
         .await?
@@ -236,7 +236,7 @@ impl MediaPlayer2 {
 
             let zbus = dbus.connection().await;
             let names = DBusProxy::builder(&zbus)
-                .cache_properties(false)
+                .cache_properties(zbus::CacheProperties::No)
                 .build().await?
                 .list_names().await?;
             for name in names {

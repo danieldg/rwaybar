@@ -38,7 +38,7 @@ impl FontMapped {
     }
 
     pub fn scale_from_pt(&self, pt : f32) -> f32 {
-        pt * 1.33333333 / self.as_ref().units_per_em().unwrap_or(1) as f32
+        pt * 1.33333333 / self.as_ref().units_per_em() as f32
     }
 }
 
@@ -116,10 +116,15 @@ pub fn layout_font<'a>(
             }
             let mut id = fid.as_ref().glyph_index(c).unwrap_or_default();
             if id.0 != 0 {
+                let kern = ttf_parser::Tag::from_bytes(b"kern");
                 if let Some(prev) = prev {
                     xpos += fid.as_ref()
-                        .kerning_subtables()
-                        .filter(|st| st.is_horizontal() && !st.is_variable())
+                        .table_data(kern)
+                        .and_then(ttf_parser::kern::Table::parse)
+                        .map(|t| t.subtables)
+                        .into_iter()
+                        .flatten()
+                        .filter(|st| st.horizontal && !st.variable)
                         .filter_map(|st| st.glyphs_kerning(prev, id))
                         .next()
                         .unwrap_or(0) as f32 * scale;
@@ -186,7 +191,7 @@ pub fn draw_font_with(target : &mut PixmapMut, xform: Transform, to_draw : &[CGl
             }
             continue;
         }
-        let target_ppem = scale * font.as_ref().units_per_em().unwrap_or(1) as f32;
+        let target_ppem = scale * font.as_ref().units_per_em() as f32;
         let target_h = scale * font.as_ref().height() as f32;
         if let Some(raster_img) = font.as_ref().glyph_raster_image(id, target_ppem as u16) {
             // This is a PNG glyph (color emoji); read it into a pixbuf and draw like an icon

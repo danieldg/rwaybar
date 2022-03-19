@@ -179,8 +179,8 @@ impl Tray {
             let dbus = DBus::get_session();
             let zbus = dbus.connection().await;
 
-            zbus.object_server_mut().await.at("/StatusNotifierWatcher", snw_kde::StatusNotifierWatcher)?;
-            zbus.object_server_mut().await.at("/StatusNotifierWatcher", snw_fdo::StatusNotifierWatcher)?;
+            zbus.object_server().at("/StatusNotifierWatcher", snw_kde::StatusNotifierWatcher).await?;
+            zbus.object_server().at("/StatusNotifierWatcher", snw_fdo::StatusNotifierWatcher).await?;
 
             dbus.add_name_watcher(move |name, old, _new| {
                 if old.is_empty() {
@@ -315,7 +315,7 @@ async fn init_snw(is_kde : bool) -> Result<(), Box<dyn Error>> {
     let name = format!("org.{}.StatusNotifierHost-{}", who, std::process::id());
 
     let dbif = DBusProxy::builder(&zbus)
-        .cache_properties(false)
+        .cache_properties(zbus::CacheProperties::No)
         .build().await?;
 
     match futures_util::future::join(
@@ -715,8 +715,8 @@ impl TrayPopupMenu {
             return;
         }
         let dbm = self.proxy().unwrap();
-        if msg.interface() != Ok(Some(dbm.interface().as_ref())) ||
-            msg.path() != Ok(Some(dbm.path().as_ref()))
+        if msg.interface() != Some(dbm.interface().as_ref()) ||
+            msg.path() != Some(dbm.path().as_ref())
         {
             return;
         }

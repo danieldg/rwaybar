@@ -163,6 +163,7 @@ impl DBus {
                         .internal_executor(false)
                         .build().await?
                 }
+                _ => panic!(),
             };
             match this.bus.replace(Ok(zbus.clone())) {
                 Ok(_) => unreachable!(),
@@ -255,7 +256,7 @@ impl DBus {
         match msg.message_type() {
             MessageType::Signal => {
                 let mut watchers = self.sig_watchers.replace(Vec::new());
-                match (msg.path()?, msg.interface()?, msg.member()?) {
+                match (msg.path(), msg.interface(), msg.member()) {
                     (Some(path), Some(iface), Some(memb)) => {
                         for watcher in &mut watchers {
                             watcher.call(&path, &iface, &memb, &msg);
@@ -427,13 +428,13 @@ impl DbusValue {
                     while let Some(Ok(msg)) = stream.next().await {
                         if let Some(rc) = weak.upgrade() {
                             let (i,m) = watch_method.rsplit_once(".").unwrap();
-                            if msg.interface()?.as_deref() != Some(i) ||
-                                msg.member()?.as_deref() != Some(m)
+                            if msg.interface().as_deref() != Some(i) ||
+                                msg.member().as_deref() != Some(m)
                             {
                                 continue;
                             }
                             if let Some(path) = &watch_path {
-                                if msg.path()?.as_deref() != Some(&*path) {
+                                if msg.path().as_deref() != Some(&*path) {
                                     continue;
                                 }
                             }
