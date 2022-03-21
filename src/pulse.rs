@@ -55,6 +55,7 @@ struct WireInfo {
     client : Option<u32>,
     port : u32,
     volume : u32,
+    #[allow(unused)] // not currently queried
     mute : bool,
 }
 

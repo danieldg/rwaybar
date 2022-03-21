@@ -164,7 +164,7 @@ impl TokioMain {
         });
         let v = Rc::get_mut(&mut mi).unwrap();
         v.api.userdata = v as *mut MainInner as *mut _;
-        Rc::downgrade(&mi).into_raw();
+        let _cyclic = Rc::downgrade(&mi).into_raw();
         TokioMain { mi }
     }
 
@@ -375,7 +375,7 @@ impl MainInner {
     unsafe fn from_api(api : *const MainloopApi) -> Rc<Self> {
         let ptr = Weak::from_raw((*api).userdata as *const Self);
         let rv = ptr.upgrade();
-        ptr.into_raw(); // we only want to borrow the Weak, not own it...
+        let _ = ptr.into_raw(); // we only want to borrow the Weak, not own it...
         rv.expect("Called from_api on a dropped MainloopApi")
     }
 
