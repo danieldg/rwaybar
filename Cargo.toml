@@ -60,7 +60,7 @@ chrono-tz = "*"
 evalexpr = "*"
 libpulse-binding = { version = "*", features = ['pa_v14'], optional = true }
 regex = "1.5"
-zbus = { version = "2.0.0-beta", git = "https://gitlab.freedesktop.org/dbus/zbus", default-features = false, features = ['tokio'] }
+zbus = { version = "2.1", default-features = false, features = ['tokio'] }
 
 [[bin]]
 name = 'font-dump'
