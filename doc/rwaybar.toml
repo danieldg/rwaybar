@@ -36,6 +36,7 @@ the-clock-font = "Liberation Sans 20"
 mono = "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf"
 symbola = "/usr/share/fonts/gdouros-symbola/Symbola.ttf"
 emoji = "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf"
+fontawesome = "/usr/share/fonts/fontawesome/FontAwesome.otf"
 
 # Everything else is defined in its own section and addressed by name elsewhere.
 [dpl]
