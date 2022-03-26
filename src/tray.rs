@@ -6,6 +6,7 @@ use crate::item::{Item,PopupDesc};
 use crate::render::Render;
 use crate::state::{Runtime,NotifierList};
 use crate::util::{Cell,spawn,spawn_handle};
+use crate::wayland::Button;
 use futures_util::future::RemoteHandle;
 use once_cell::unsync::OnceCell;
 use async_once_cell::OnceCell as AsyncOnceCell;
@@ -855,7 +856,7 @@ impl TrayPopup {
         ctx.render_pos = tiny_skia::Point { x: xsize.ceil() + 2.0, y: ypos };
     }
 
-    pub fn button(&mut self, x : f64, y : f64, button : u32, _runtime : &mut Runtime) {
+    pub fn button(&mut self, x : f64, y : f64, button : Button, _runtime : &mut Runtime) {
         let y = y as f32;
         let _ = (x, button);
         for &(min, max, id) in &self.rendered_ids {

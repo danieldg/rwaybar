@@ -5,6 +5,7 @@ use crate::font::{render_font,render_font_item};
 use crate::icon;
 use crate::render::{Render,Align,Width};
 use crate::state::Runtime;
+use crate::wayland::Button;
 #[cfg(feature="dbus")]
 use crate::tray;
 use log::{debug,warn,error};
@@ -886,7 +887,7 @@ impl PopupDesc {
         }
     }
 
-    pub fn button(&mut self, x : f64, y : f64, button : u32, runtime : &mut Runtime) {
+    pub fn button(&mut self, x : f64, y : f64, button : Button, runtime : &mut Runtime) {
         match self {
             PopupDesc::RenderItem { item, iter } => {
                 if let Some(ii) = iter.as_ref() {

@@ -18,15 +18,11 @@ lto = true
 default = ['pulse', 'dbus']
 dbus = []
 pulse = ['libpulse-binding']
-# This changes the static dependency on libxkbcommon.so to an optional run-time
-# dependency, but also changes the wayland-client code to link to the C
-# library.  No actual changes in functionality are present.
-dlopen = ['smithay-client-toolkit/dlopen']
 
 [dependencies]
 # Basic runtime
 bytes = "*"
-async-once-cell = "0.3"
+async-once-cell = "0.4"
 env_logger = "0.9"
 futures-channel = { version = "*" }
 futures-util = { version = "*", features = ['channel'] }
@@ -45,13 +41,19 @@ xml-rs = "*"
 # GUI
 png = "0.17"
 resvg = { version = "*", default-features = false }
-smithay-client-toolkit = { version = "*", default-features = false }
+#smithay-client-toolkit = { version = "*", default-features = false, git = "https://github.com/Smithay/client-toolkit.git", rev = "refs/heads/rework-wayland-rs-0.30" }
+smithay-client-toolkit = { version = "*", default-features = false, path = "../smithay-client-toolkit" }
 tiny-skia = "*"
 ttf-parser = "*"
 usvg = { version = "*", default-features = false }
-wayland-client = "0.29"
-wayland-cursor = "0.29"
-wayland-protocols = "0.29"
+wayland-client = { version = "0.30.0-beta.1" }
+wayland-cursor = { version = "0.30.0-beta.1" }
+wayland-protocols = { version = "0.30.0-beta.1", features = ['unstable', 'server'] }
+wayland-protocols-wlr = { version = "0.1.0-beta.1" }
+#wayland-client = { version = "0.30.0-alpha", path = "../smithay-wayland-rs/wayland-client" }
+#wayland-cursor = { version = "0.30.0-alpha", path = "../smithay-wayland-rs/wayland-cursor" }
+#wayland-protocols = { version = "0.30.0-alpha", features = ['unstable', 'server'], path = "../smithay-wayland-rs/wayland-protocols" }
+#wayland-protocols-wlr = { version = "0.1.0-dev", path = "../smithay-wayland-rs/wayland-protocols-wlr" }
 
 # Module specific
 chrono = { version = "*", default-features = false, features = ['clock'] }

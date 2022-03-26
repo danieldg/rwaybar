@@ -1,15 +1,14 @@
 use log::{debug,info,warn,error};
 use futures_util::future::poll_fn;
-use smithay_client_toolkit::output::with_output_info;
-use smithay_client_toolkit::output::OutputInfo;
-use smithay_client_toolkit::output::OutputStatusListener;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::time::Instant;
 use std::rc::{self,Rc};
 use std::task;
+use wayland_client::Connection;
 use wayland_client::protocol::wl_output::WlOutput;
+use wayland_client::protocol::wl_callback;
 
 use crate::bar::Bar;
 use crate::data::{Module,IterationItem,Value};
@@ -17,7 +16,7 @@ use crate::font::FontMapped;
 use crate::item::*;
 use crate::render::{Renderer,RenderCache};
 use crate::util::{Cell,spawn,spawn_noerr};
-use crate::wayland::WaylandClient;
+use crate::wayland::{SurfaceData,WaylandClient};
 
 #[derive(Debug,Clone)]
 struct Notifier {
@@ -86,6 +85,7 @@ impl NotifierList {
 }
 
 /// Common state available during rendering operations
+#[derive(Debug)]
 pub struct Runtime {
     pub xdg : xdg::BaseDirectories,
     pub fonts : Vec<FontMapped>,
@@ -176,39 +176,28 @@ impl Runtime {
 }
 
 /// The singleton global state object
+#[derive(Debug)]
 pub struct State {
     pub bars : Vec<Bar>,
     bar_config : Vec<toml::Value>,
     pub renderer : Renderer,
     pub runtime : Runtime,
     this : rc::Weak<RefCell<State>>,
-    #[allow(unused)] // need to hold this handle for the callback to remain alive
-    output_status_listener : OutputStatusListener,
 }
 
 impl State {
-    pub fn new(mut wayland : WaylandClient) -> Result<Rc<RefCell<Self>>, Box<dyn Error>> {
+    pub fn new(wayland : WaylandClient) -> Result<Rc<RefCell<Self>>, Box<dyn Error>> {
         let notify_inner = Rc::new(NotifierInner {
             waker : Cell::new(None),
             state : Cell::new(NotifyState::NewData),
             data_update_seq : Cell::new(1),
         });
-
-        let output_status_listener = wayland.add_output_listener(move |output, _oi, mut data| {
-            let state : &mut State = data.get().unwrap();
-            let state = state.this.upgrade().unwrap();
-            spawn_noerr(async move {
-                let mut state = state.borrow_mut();
-                with_output_info(&output, |oi| {
-                    state.output_ready(&output, oi);
-                });
-            });
-        });
+        log::debug!("State::new");
 
         let mut state = Self {
             bars : Vec::new(),
             bar_config : Vec::new(),
-            renderer: Renderer::new(&wayland.env)?,
+            renderer: Renderer::new(),
             runtime : Runtime {
                 xdg : xdg::BaseDirectories::new()?,
                 fonts : Vec::new(),
@@ -220,25 +209,9 @@ impl State {
                 wayland,
             },
             this : rc::Weak::new(),
-            output_status_listener,
         };
 
         state.load_config(false)?;
-
-        let sync_cb = state.runtime.wayland.wl_display.sync();
-        sync_cb.quick_assign(move |_sync, _event, mut data| {
-            let state : &mut State = data.get().unwrap();
-            if !state.bars.is_empty() {
-                return;
-            }
-            error!("No bars matched this outptut configuration.  Available outputs:");
-            for output in state.runtime.wayland.env.get_all_outputs() {
-                with_output_info(&output, |oi| {
-                    error!(" name='{}' description='{}' make='{}' model='{}'",
-                        oi.name, oi.description, oi.make, oi.model);
-                });
-            }
-        });
 
         let rv = Rc::new(RefCell::new(state));
         rv.borrow_mut().this = Rc::downgrade(&rv);
@@ -273,6 +246,7 @@ impl State {
         Ok(rv)
     }
 
+    /// Note: always call from a task, not drectly from dispatch
     fn load_config(&mut self, reload : bool) -> Result<(), Box<dyn Error>> {
         let mut bar_config = Vec::new();
         let mut font_list = Vec::new();
@@ -345,19 +319,19 @@ impl State {
         self.runtime.notify.inner.state.set(NotifyState::NewData);
 
         self.bars.clear();
-        for output in self.runtime.wayland.env.get_all_outputs() {
-            with_output_info(&output, |oi| {
-                self.output_ready(&output, oi);
-            });
+        for output in self.runtime.wayland.output.outputs() {
+            self.output_ready(&output);
         }
         if reload {
             if self.bars.is_empty() {
                 error!("No bars matched this outptut configuration.  Available outputs:");
-                for output in self.runtime.wayland.env.get_all_outputs() {
-                    with_output_info(&output, |oi| {
+                for output in self.runtime.wayland.output.outputs() {
+                    if let Some(oi) = self.runtime.wayland.output.info(&output) {
                         error!(" name='{}' description='{}' make='{}' model='{}'",
-                            oi.name, oi.description, oi.make, oi.model);
-                    });
+                            oi.name.as_deref().unwrap_or_default(),
+                            oi.description.as_deref().unwrap_or_default(),
+                            oi.make, oi.model);
+                    }
                 }
             }
             self.runtime.notify.notify_data("reload");
@@ -383,8 +357,12 @@ impl State {
         let seq = self.runtime.notify.inner.data_update_seq.get();
         self.runtime.notify.inner.data_update_seq.set(seq + 1);
 
-        for bar in &mut self.bars {
-            bar.dirty = true;
+        // A smarter notify could only damage some of the surfaces
+        for bar in &self.bars {
+            SurfaceData::from_wl(bar.ls.wl_surface()).damage_full();
+            if let Some(popup) = &bar.popup {
+                SurfaceData::from_wl(&popup.wl.surf).damage_full();
+            }
         }
     }
 
@@ -401,15 +379,18 @@ impl State {
         log::debug!("Frame took {}.{:06} ms", render_time / 1_000_000, render_time % 1_000_000);
     }
 
-    pub fn output_ready(&mut self, output : &WlOutput, data : &OutputInfo) {
-        if data.obsolete {
-            return;
-        }
+    pub fn output_ready(&mut self, output : &WlOutput) {
+        let data = match self.runtime.wayland.output.info(&output) {
+            Some(info) => info,
+            None => return,
+        };
         info!("Output name='{}' description='{}' make='{}' model='{}'",
-            data.name, data.description, data.make, data.model);
+            data.name.as_deref().unwrap_or_default(),
+            data.description.as_deref().unwrap_or_default(),
+            data.make, data.model);
         for (i, cfg) in self.bar_config.iter().enumerate() {
             if let Some(name) = cfg.get("name").and_then(|v| v.as_str()) {
-                if name != &data.name {
+                if Some(name) != data.name.as_deref() {
                     continue;
                 }
             }
@@ -440,7 +421,7 @@ impl State {
             if let Some(description) = cfg.get("description").and_then(|v| v.as_str()) {
                 match regex::Regex::new(description) {
                     Ok(re) => {
-                        if !re.is_match(&data.description) {
+                        if !re.is_match(data.description.as_deref().unwrap_or_default()) {
                             continue;
                         }
                     }
@@ -450,17 +431,45 @@ impl State {
                 }
             }
             let mut cfg = cfg.clone();
+            let name = data.name.clone().unwrap_or_default();
+            self.bars.retain(|bar| {
+                bar.cfg_index != i || &*bar.name != name
+            });
             if let Some(table) = cfg.as_table_mut() {
-                table.insert("name".into(), data.name.clone().into());
+                table.insert("name".into(), name.into());
             }
 
-            let bar = Bar::new(&self.runtime.wayland, &output, &data, cfg, i);
-            self.bars.retain(|bar| {
-                bar.cfg_index != i || &*bar.name != data.name
-            });
+            let bar = Bar::new(&mut self.runtime.wayland, &output, &data, cfg, i);
             self.bars.push(bar);
             self.runtime.wayland.flush();
         }
     }
+}
 
+#[derive(Copy,Clone,Eq,PartialEq,Debug)]
+pub enum Callbacks {
+    Init2,
+}
+
+impl wayland_client::Dispatch<wl_callback::WlCallback, Callbacks> for State {
+    fn event(&mut self, _: &wl_callback::WlCallback, _: wl_callback::Event, why: &Callbacks,
+        _: &Connection, _: &wayland_client::QueueHandle<Self>)
+    {
+        match why {
+            Callbacks::Init2 => {
+                debug!("Done with initial events; checking if config is empty.");
+                if self.bars.is_empty() {
+                    error!("No bars matched this outptut configuration.  Available outputs:");
+                    for output in self.runtime.wayland.output.outputs() {
+                        if let Some(oi) = self.runtime.wayland.output.info(&output) {
+                            error!(" name='{}' description='{}' make='{}' model='{}'",
+                                oi.name.as_deref().unwrap_or_default(),
+                                oi.description.as_deref().unwrap_or_default(),
+                                oi.make, oi.model);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

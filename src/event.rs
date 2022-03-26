@@ -2,6 +2,7 @@
 use crate::data::IterationItem;
 use crate::item::PopupDesc;
 use crate::state::Runtime;
+use crate::wayland::Button;
 #[cfg(feature="dbus")]
 use crate::tray;
 use log::{info,error};
@@ -117,7 +118,8 @@ impl EventSink {
         }
     }
 
-    pub fn button(&self, x : f32, y : f32, button : u32, runtime : &mut Runtime) {
+    pub fn button(&self, x : f32, y : f32, button: Button, runtime : &mut Runtime) {
+        let button = button as u32;
         let _ = y;
         for h in &self.handlers {
             if x < h.x_min || x > h.x_max {

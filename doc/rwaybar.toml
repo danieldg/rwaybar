@@ -416,6 +416,10 @@ format = "⏱"
 # contain the requested glyph, but it may be useful in case more than one font
 # defines it.
 
+[clip]
+#type = 'clipboard'
+format = ""
+
 [tvl]
 type = "group"
 fg = "white"
@@ -423,7 +427,7 @@ bg = "black"
 bg-alpha = 0.5
 spacing = 1.5
 alpha = 0.7
-items = ["emoji", "mode", "workspaces-repr"]
+items = ["emoji", "mode", "workspaces-repr", "clip"]
 
 [tvr]
 type = "group"

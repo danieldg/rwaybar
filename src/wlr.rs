@@ -1,16 +1,22 @@
 use crate::data::Value;
-use crate::state::{NotifierList,Runtime};
+use crate::state::{NotifierList,Runtime,State};
 use crate::util::{Cell,spawn};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::{Rc,Weak};
+// TODO use std::sync::Mutex;
 use bytes::{Bytes,BytesMut};
+use wayland_client::Connection;
+use wayland_client::QueueHandle;
+use wayland_client::Proxy;
 use wayland_client::protocol::wl_seat::WlSeat;
-use wayland_protocols::wlr::unstable::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
-use wayland_protocols::wlr::unstable::data_control::v1::client::zwlr_data_control_offer_v1::ZwlrDataControlOfferV1;
+use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_manager_v1::{self,ZwlrDataControlManagerV1};
+use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_offer_v1::{self, ZwlrDataControlOfferV1};
+use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_device_v1;
 use futures_channel::oneshot;
 use futures_util::future::{Either,select};
 
+#[derive(Debug)]
 enum OfferValue {
     Available,
     Running {
@@ -21,14 +27,20 @@ enum OfferValue {
     Failed,
 }
 
+#[derive(Debug)]
 struct OfferType {
     mime: Box<str>,
     value: OfferValue,
 }
 
-struct OfferData {
+#[derive(Debug)]
+pub struct OfferData {
     mimes: RefCell<Vec<OfferType>>,
 }
+
+// XXX this would need reworking to be threadsafe, rely on no threads
+unsafe impl Send for OfferData {}
+unsafe impl Sync for OfferData {}
 
 struct Clipboard {
     seat: WlSeat,
@@ -41,61 +53,54 @@ thread_local! {
     static CLIPBOARDS: RefCell<Option<VecDeque<Clipboard>>> = RefCell::new(None);
 }
 
-fn start_dcm(rt: &Runtime) -> VecDeque<Clipboard> {
-    let mut rv = VecDeque::new();
-    if let Some(dcm) = rt.wayland.env.get_global::<ZwlrDataControlManagerV1>() {
-        for seat in rt.wayland.env.get_all_seats() {
-            rv.push_back(Clipboard {
-                seat: seat.detach(),
-                selection: true,
-                contents: None,
-                interested: Vec::new(),
-            });
-            rv.push_back(Clipboard {
-                seat: seat.detach(),
-                selection: false,
-                contents: None,
-                interested: Vec::new(),
-            });
-            let dcd = dcm.get_data_device(&seat);
-            dcd.quick_assign(move |dcd, event, _data| {
-                use wayland_protocols::wlr::unstable::data_control::v1::client::zwlr_data_control_device_v1::Event;
-                match event {
-                    Event::DataOffer { id } => {
-                        init_offer(id);
-                    }
-                    Event::Selection { id } => {
-                        set_seat_offer(&seat, id, false);
-                    }
-                    Event::PrimarySelection { id } => {
-                        set_seat_offer(&seat, id, true);
-                    }
-                    Event::Finished => {
-                        set_seat_offer(&seat, None, false);
-                        set_seat_offer(&seat, None, true);
-                        dcd.destroy();
-                    }
-                    _ => {}
-                }
-            });
-        }
-    } else {
-        log::error!("Clipboard not available, no zwp_primary_selection_device_manager_v1 found");
+impl wayland_client::Dispatch<ZwlrDataControlManagerV1, ()> for State {
+    fn event(&mut self, _: &ZwlrDataControlManagerV1, _: zwlr_data_control_manager_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
     }
-    rv
 }
 
-fn init_offer(offer: wayland_client::Main<ZwlrDataControlOfferV1>) {
-    offer.as_ref().user_data().set(|| {
-        OfferData {
-            mimes: RefCell::new(Vec::new())
-        }
-    });
-    offer.quick_assign(move |dco, event, _data| {
-        use wayland_protocols::wlr::unstable::data_control::v1::client::zwlr_data_control_offer_v1::Event;
-        let data: &OfferData = dco.as_ref().user_data().get().unwrap();
+impl wayland_client::Dispatch<zwlr_data_control_device_v1::ZwlrDataControlDeviceV1, WlSeat> for State {
+    fn event(&mut self,
+        dcd: &zwlr_data_control_device_v1::ZwlrDataControlDeviceV1,
+        event: zwlr_data_control_device_v1::Event,
+        seat: &WlSeat,
+        _: &Connection,
+        _: &QueueHandle<Self>)
+    {
+        use zwlr_data_control_device_v1::Event;
         match event {
-            Event::Offer { mime_type } => {
+            Event::DataOffer { .. } => { }
+            Event::Selection { id } => {
+                set_seat_offer(seat, id, false);
+            }
+            Event::PrimarySelection { id } => {
+                set_seat_offer(seat, id, true);
+            }
+            Event::Finished => {
+                set_seat_offer(seat, None, false);
+                set_seat_offer(seat, None, true);
+                dcd.destroy();
+            }
+            _ => {}
+        }
+    }
+
+    wayland_client::event_created_child!(State, zwlr_data_control_device_v1::ZwlrDataControlDeviceV1, [
+        0 => (ZwlrDataControlOfferV1, OfferData {
+            mimes: RefCell::new(Vec::new())
+        }),
+    ]);
+}
+
+impl wayland_client::Dispatch<ZwlrDataControlOfferV1, OfferData> for State {
+    fn event(&mut self,
+        _: &zwlr_data_control_offer_v1::ZwlrDataControlOfferV1,
+        event: zwlr_data_control_offer_v1::Event,
+        data: &OfferData,
+        _: &Connection,
+        _: &QueueHandle<Self>)
+    {
+        match event {
+            zwlr_data_control_offer_v1::Event::Offer { mime_type } => {
                 data.mimes.borrow_mut().push(OfferType {
                     mime: mime_type.into(),
                     value: OfferValue::Available,
@@ -103,7 +108,36 @@ fn init_offer(offer: wayland_client::Main<ZwlrDataControlOfferV1>) {
             }
             _ => {}
         }
-    });
+    }
+}
+
+fn start_dcm(rt: &Runtime) -> VecDeque<Clipboard> {
+    let mut rv = VecDeque::new();
+    if let Some(dcm) = &rt.wayland.wlr_dcm {
+        for seat in rt.wayland.seat.seats() {
+            rv.push_back(Clipboard {
+                seat: seat.clone(),
+                selection: true,
+                contents: None,
+                interested: Vec::new(),
+            });
+            rv.push_back(Clipboard {
+                seat: seat.clone(),
+                selection: false,
+                contents: None,
+                interested: Vec::new(),
+            });
+
+            dcm.get_data_device(
+                &seat,
+                &rt.wayland.queue,
+                seat.clone())
+                .unwrap();
+        }
+    } else {
+        log::error!("Clipboard not available, no zwp_primary_selection_device_manager_v1 found");
+    }
+    rv
 }
 
 fn set_seat_offer(seat: &WlSeat, contents: Option<ZwlrDataControlOfferV1>, selection: bool) {
@@ -119,7 +153,7 @@ fn set_seat_offer(seat: &WlSeat, contents: Option<ZwlrDataControlOfferV1>, selec
                 prev.destroy();
             }
             // use the prior interest list to read the new clipboard
-            let data = contents.as_ref().map(|c| c.as_ref().user_data().get::<OfferData>());
+            let data = contents.as_ref().map(|c| c.data::<OfferData>());
             for view in clip.interested.iter().filter_map(Weak::upgrade) {
                 if let (Some(contents), &Some(Some(data))) = (&contents, &data) {
                     if let Some(idx) = view.find_best_mime(data) {
@@ -239,8 +273,8 @@ impl ClipboardData {
                     continue;
                 }
                 if let Some(seat) = &self.seat {
-                    if smithay_client_toolkit::seat::with_seat_data(&clip.seat, |data| {
-                        data.name == &**seat
+                    if rt.wayland.seat.info(&clip.seat).map(|data| {
+                        data.name.as_deref() == Some(&**seat)
                     }) != Some(true) {
                         continue;
                     }
@@ -251,7 +285,7 @@ impl ClipboardData {
                 }
 
                 if let Some(contents) = &clip.contents {
-                    if let Some(data) = contents.as_ref().user_data().get::<OfferData>() {
+                    if let Some(data) = contents.data::<OfferData>() {
                         if let Some(idx) = self.find_best_mime(data) {
                             let mut mimes = data.mimes.borrow_mut();
                             let best = &mut mimes[idx];

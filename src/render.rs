@@ -1,66 +1,62 @@
 use crate::font::{FontMapped,RenderKey,TextImage};
 use crate::state::Runtime;
-use crate::wayland::{Globals,Surface};
+use crate::wayland::{SurfaceData, WaylandClient};
 use log::error;
 use tiny_skia::PixmapMut;
 use std::borrow::Cow;
 use std::convert::TryInto;
-use std::io;
 use std::time;
-use smithay_client_toolkit::environment::Environment;
-use smithay_client_toolkit::shm::AutoMemPool;
-use wayland_client::Attached;
+use smithay_client_toolkit::shm::pool::slot::SlotPool;
 use wayland_client::protocol::wl_pointer::WlPointer;
+use wayland_client::protocol::wl_shm::Format;
 use wayland_client::protocol::wl_surface::WlSurface;
 
+#[derive(Debug)]
 pub struct Renderer {
-    shm : AutoMemPool,
-    pub cursor : Cursor,
-    has_be_rgba: bool,
+    shm : Option<SlotPool>,
+    cursor_surf : Option<WlSurface>,
+    cursor_spot : (i32, i32),
+    has_be_rgba: Option<bool>,
 }
 
 impl Renderer {
-    pub fn new(env : &Environment<Globals>) -> io::Result<Self> {
-        use smithay_client_toolkit::shm::ShmHandling;
-        let shm = env.create_auto_pool()?;
-
-        let mut cursor_scale = 1;
-
-        for output in env.get_all_outputs() {
-            smithay_client_toolkit::output::with_output_info(&output, |oi| {
-                if oi.scale_factor > cursor_scale {
-                    cursor_scale = oi.scale_factor;
-                }
-            });
+    pub fn new() -> Self {
+        Renderer {
+            shm: None,
+            cursor_surf: None,
+            cursor_spot: (0, 0),
+            has_be_rgba: None,
         }
-
-        let has_be_rgba = env.with_inner(|i| i.sctk_shm.shm_formats())
-            .contains(&smithay_client_toolkit::shm::Format::Abgr8888);
-        let cursor = Cursor::new(&env, cursor_scale);
-
-        Ok(Renderer {
-            cursor,
-            shm,
-            has_be_rgba,
-        })
     }
 
-    pub fn render_be_rgba(&mut self, surface: &Surface) -> (&mut [u8], impl FnOnce(&mut [u8])) {
-        let width = surface.pixel_width();
-        let height = surface.pixel_height();
-        let target = &surface.wl;
-
+    pub fn render_be_rgba(&mut self, wl: &WaylandClient, target: &WlSurface) -> (&mut [u8], impl FnOnce(&mut [u8])) {
+        let data = SurfaceData::from_wl(target);
+        let width = data.pixel_width();
+        let height = data.pixel_height();
         let stride = width * 4;
-        let has_be_rgba = self.has_be_rgba;
+
+        let len = height as usize * stride as usize;
+
+        let shm = match &mut self.shm {
+            Some(shm) => shm,
+            v @ None => {
+                let shm = wl.shm.new_slot_pool(len * 2).unwrap();
+                v.get_or_insert(shm)
+            }
+        };
+
+        let has_be_rgba = *self.has_be_rgba.get_or_insert_with(|| {
+            wl.shm.formats().contains(&Format::Abgr8888)
+        });
         let fmt = if has_be_rgba {
-            smithay_client_toolkit::shm::Format::Abgr8888
+            Format::Abgr8888
         } else {
             // wayland always supports this format, so we convert to it as a fallback
-            smithay_client_toolkit::shm::Format::Argb8888
+            Format::Argb8888
         };
-        let (canvas, wl_buf) = self.shm.buffer(width, height, stride, fmt).expect("OOM");
+        let (buffer, canvas) = shm.create_buffer(width, height, stride, fmt).expect("OOM");
 
-        target.attach(Some(&wl_buf), 0, 0);
+        buffer.attach_to(&target).expect("New buffers are not already attached");
         target.damage_buffer(0, 0, width, height);
 
         (canvas, move |buf| {
@@ -72,39 +68,44 @@ impl Renderer {
             }
         })
     }
-}
 
-pub struct Cursor {
-    cursor_surf : Attached<WlSurface>,
-    spot : (i32, i32),
-}
+    fn setup_cursor(&mut self, wl: &WaylandClient) {
+        let mut scale = 1;
 
-impl Cursor {
-    fn new(env : &Environment<Globals>, scale : i32) -> Self {
-        let shm = env.require_global();
+        for output in wl.output.outputs() {
+            if let Some(oi) = wl.output.info(&output) {
+                if oi.scale_factor > scale {
+                    scale = oi.scale_factor;
+                }
+            }
+        }
+
         let base_theme = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".into());
         let base_size = std::env::var("XCURSOR_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(24u32);
 
-        let mut cursor_theme = wayland_cursor::CursorTheme::load_from_name(&base_theme, base_size * scale as u32, &shm);
+        let mut cursor_theme = wayland_cursor::CursorTheme::load_from_name(&wl.conn, wl.shm.wl_shm().unwrap().clone(), &base_theme, base_size * scale as u32).unwrap();
         let cursor = cursor_theme.get_cursor("default").expect("Could not load cursor, check XCURSOR_THEME").clone();
 
-        let cursor_surf = env.create_surface();
+        let cursor_surf = wl.compositor.create_surface(&wl.queue).unwrap();
         let cursor_img = &cursor[0];
-        let dim = cursor_img.dimensions();
-        let spot = cursor[0].hotspot();
+        let (w, h) = cursor_img.dimensions();
+        let (x, y) = cursor[0].hotspot();
+        self.cursor_spot = (x as i32 / scale, y as i32 / scale);
         cursor_surf.set_buffer_scale(scale);
         cursor_surf.attach(Some(&cursor_img), 0, 0);
-        cursor_surf.damage_buffer(0, 0, dim.0 as _, dim.1 as _);
+        cursor_surf.damage_buffer(0, 0, w as _, h as _);
         cursor_surf.commit();
-        Cursor {
-            spot : (spot.0 as i32 / scale, spot.1 as i32 / scale),
-            cursor_surf,
-        }
+        self.cursor_surf = Some(cursor_surf);
     }
 
-    pub fn set(&self, mouse : &WlPointer, serial : u32) {
-        let spot = self.spot;
-        mouse.set_cursor(serial, Some(&self.cursor_surf), spot.0, spot.1);
+    pub fn set_cursor(&mut self, wl: &WaylandClient, mouse : &WlPointer, serial : u32) {
+        if self.cursor_surf.is_none() {
+            self.setup_cursor(wl);
+        }
+        if self.cursor_surf.is_some() {
+            let (x, y) = self.cursor_spot;
+            mouse.set_cursor(serial, self.cursor_surf.as_ref(), x, y);
+        }
     }
 }
 
@@ -121,7 +122,7 @@ impl RenderCache {
             last_expire: time::Instant::now(),
         }
     }
-    
+
     pub fn prune(&mut self, as_of: time::Instant) {
         if self.last_expire > as_of - time::Duration::from_secs(300) {
             return;
