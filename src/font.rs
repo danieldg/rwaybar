@@ -1,12 +1,13 @@
 use crate::icon::OwnedImage;
 use crate::item::Formatting;
 use crate::state::Runtime;
-use crate::render::Render;
+use crate::render::{Render,UID};
 use log::info;
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
-use tiny_skia::{Color,PixmapMut,Transform};
+use std::time::Instant;
+use tiny_skia::{Color,PixmapMut,Point,Transform};
 use ttf_parser::{Face,GlyphId};
 
 #[derive(Debug)]
@@ -18,6 +19,7 @@ pub struct FontMapped {
     mmap : memmap2::Mmap,
     pub file : PathBuf,
     pub name : String,
+    pub uid: UID,
 }
 
 impl FontMapped {
@@ -30,7 +32,8 @@ impl FontMapped {
         let buf = unsafe { &*(mmap.as_ref() as *const [u8]) };
         let parsed = Face::from_slice(&buf, 0)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        Ok(FontMapped { parsed, mmap, file : path, name })
+        let uid = UID::default();
+        Ok(FontMapped { parsed, mmap, file : path, name, uid })
     }
 
     pub fn as_ref<'a>(&'a self) -> &'a Face<'a> {
@@ -242,4 +245,217 @@ pub fn render_font(ctx: &mut Render, start: (f32, f32), text: &str, markup: bool
         canvas.fill_path(&path, &paint, tiny_skia::FillRule::EvenOdd, Transform::identity(), None);
     });
     size
+}
+
+#[derive(Eq,Hash,PartialEq,Debug)]
+pub struct RenderKey {
+    x_offset_centipixel: u8,
+    scale: u8,
+
+    font : UID,
+    font_size_millipt : u32,
+    font_color : u32,
+    text_stroke : Option<u32>,
+    text_stroke_size_milli : Option<u32>,
+
+    text: String,
+}
+
+#[derive(Debug)]
+pub struct TextImage {
+    width: f32,
+    height: f32,
+    y_offset_centipixel: u8,
+    pixmap: tiny_skia::Pixmap,
+    pub last_used: Instant,
+}
+
+impl RenderKey {
+    fn new(ctx: &Render, xform: tiny_skia::Transform, text: &str) -> Option<Self> {
+        let xi = (xform.tx * 100.0).round() as u64 % 100;
+        let scale = xform.sx as u8;
+        if scale as f32 != xform.sy || xform.sx != xform.sy {
+            return None;
+        }
+        let text_stroke_size_milli = ctx.text_stroke.and_then(|_| ctx.text_stroke_size.map(|s| (s * 1000.0).round() as u32));
+        Some(RenderKey {
+            x_offset_centipixel: xi as u8,
+            scale,
+            font: ctx.font.uid,
+            font_size_millipt: (ctx.font_size * 1000.0).round() as u32,
+            font_color: ctx.font_color.to_color_u8().get(),
+
+            text_stroke: ctx.text_stroke.map(|c| c.to_color_u8().get()),
+            text_stroke_size_milli,
+
+            text: text.into(),
+        })
+    }
+}
+
+
+pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
+    if text.is_empty() {
+        return;
+    }
+
+    let Point { x: xstart, y: ystart } = ctx.render_pos;
+
+    let mut xform = ctx.render_xform.pre_translate(xstart, ystart);
+
+    let clip_w = ctx.render_extents.1.x - ctx.render_pos.x;
+    let clip_h = ctx.render_extents.1.y - ctx.render_extents.0.y;
+
+    let mut key = RenderKey::new(ctx, xform, text);
+
+    if key.as_ref().and_then(|k| {
+        let mut xform = xform;
+        let mut cache = ctx.cache.text.borrow_mut();
+        let ti = cache.get_mut(k)?;
+        if ti.width > clip_w {
+            return None;
+        }
+        let mut xlate_y = xform.ty;
+        match ctx.align.vert {
+            Some(f) if !ctx.render_flex => {
+                let extra = clip_h - ti.height;
+                if extra >= 0.0 {
+                    xform = xform.pre_translate(0.0, extra * f);
+                    xlate_y = xform.ty;
+                }
+            }
+            _ => {}
+        }
+        if ti.y_offset_centipixel as u64 != (xlate_y * 100.0).round() as u64 % 100 {
+            return None;
+        }
+
+        let mut origin = [ Point {
+            x: -(k.x_offset_centipixel as f32 / 100.0),
+            y: -(ti.y_offset_centipixel as f32 / 100.0),
+        } ];
+        xform.map_points(&mut origin);
+        let draw_x = origin[0].x.round() as i32;
+        let draw_y = origin[0].y.round() as i32;
+
+        ctx.canvas.draw_pixmap(draw_x, draw_y, ti.pixmap.as_ref(),
+            &tiny_skia::PixmapPaint::default(),
+            tiny_skia::Transform::identity(),
+            None)?;
+
+        ti.last_used = Instant::now();
+
+        ctx.render_pos.x += ti.width;
+        ctx.render_pos.y += ti.height;
+        Some(())
+    }).is_some() {
+        return;
+    }
+
+    let (mut to_draw, (width, height)) = layout_font(ctx.font, ctx.font_size, &ctx.runtime, ctx.font_color, &text, markup);
+
+    if width > clip_w {
+        to_draw.retain(|glyph| glyph.position.0 < clip_w);
+        key = None;
+    }
+
+    ctx.render_pos.x += width;
+    ctx.render_pos.y += height;
+
+    if to_draw.is_empty() {
+        return;
+    }
+
+    if !ctx.render_flex {
+        match ctx.align.vert {
+            Some(f) => {
+                let extra = clip_h - height;
+                if extra >= 0.0 {
+                    xform = xform.pre_translate(0.0, extra * f);
+                    ctx.render_pos.y += extra * f;
+                }
+            }
+            _ => {}
+        }
+    }
+    let x_offset_centipixel = ((xform.tx * 100.0).round() as u64 % 100) as u8;
+    let y_offset_centipixel = ((xform.ty * 100.0).round() as u64 % 100) as u8;
+
+    let mut bounding = [
+        Point::zero(),
+        Point {
+            x: width + (x_offset_centipixel as f32 / 100.0),
+            y: height + (y_offset_centipixel as f32 / 100.0),
+        },
+        Point {
+            x: -(x_offset_centipixel as f32 / 100.0),
+            y: -(y_offset_centipixel as f32 / 100.0),
+        },
+    ];
+
+    xform.map_points(&mut bounding);
+    let xsize = bounding[1].x - bounding[0].x;
+    let ysize = bounding[1].y - bounding[0].y;
+    let draw_x = bounding[2].x.round() as i32;
+    let draw_y = bounding[2].y.round() as i32;
+
+    let render_xform = tiny_skia::Transform {
+        sx: xform.sx,
+        sy: xform.sy,
+        tx: bounding[2].x - draw_x as f32,
+        ty: bounding[2].y - draw_y as f32,
+        ..tiny_skia::Transform::identity()
+    };
+
+    let mut pixmap = match tiny_skia::Pixmap::new(xsize.ceil() as u32, ysize.ceil() as u32) {
+        Some(pixmap) => pixmap,
+        None => { log::debug!("Not rendering \"{text}\" ({xsize}, {ysize})"); return }
+    };
+    let mut canvas = pixmap.as_mut();
+
+    if let Some(rgba) = ctx.text_stroke {
+        let stroke_paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(rgba),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        let stroke = tiny_skia::Stroke {
+            width : ctx.text_stroke_size.unwrap_or(1.0),
+            ..Default::default()
+        };
+
+        draw_font_with(&mut canvas, render_xform, &to_draw, |canvas, path, color| {
+            canvas.stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), None);
+            let paint = tiny_skia::Paint {
+                shader: tiny_skia::Shader::SolidColor(color),
+                anti_alias: true,
+                ..tiny_skia::Paint::default()
+            };
+            canvas.fill_path(&path, &paint, tiny_skia::FillRule::EvenOdd, Transform::identity(), None);
+        });
+    } else {
+        draw_font_with(&mut canvas, render_xform, &to_draw, |canvas, path, color| {
+            let paint = tiny_skia::Paint {
+                shader: tiny_skia::Shader::SolidColor(color),
+                anti_alias: true,
+                ..tiny_skia::Paint::default()
+            };
+            canvas.fill_path(&path, &paint, tiny_skia::FillRule::EvenOdd, Transform::identity(), None);
+        });
+    }
+
+    ctx.canvas.draw_pixmap(draw_x, draw_y, canvas.as_ref(),
+        &tiny_skia::PixmapPaint::default(),
+        tiny_skia::Transform::identity(),
+        None);
+
+    if let Some(key) = key {
+        ctx.cache.text.borrow_mut().insert(key, TextImage {
+            width,
+            height,
+            y_offset_centipixel,
+            pixmap,
+            last_used: Instant::now(),
+        });
+    }
 }

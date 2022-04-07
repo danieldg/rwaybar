@@ -1,4 +1,4 @@
-use crate::font::FontMapped;
+use crate::font::{FontMapped,RenderKey,TextImage};
 use crate::state::Runtime;
 use crate::wayland::Globals;
 use log::error;
@@ -6,11 +6,23 @@ use tiny_skia::PixmapMut;
 use std::borrow::Cow;
 use std::convert::TryInto;
 use std::io;
+use std::time;
 use smithay_client_toolkit::environment::Environment;
 use smithay_client_toolkit::shm::AutoMemPool;
 use wayland_client::Attached;
 use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_client::protocol::wl_surface::WlSurface;
+
+#[derive(Copy,Clone,Debug,Eq,PartialEq,Hash,Ord,PartialOrd)]
+pub struct UID(u64);
+
+impl Default for UID {
+    fn default() -> Self {
+        use std::sync::atomic::{AtomicU64,Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        Self(N.fetch_add(1, Ordering::Relaxed))
+    }
+}
 
 pub struct Renderer {
     shm : AutoMemPool,
@@ -103,9 +115,40 @@ impl Cursor {
     }
 }
 
+#[derive(Debug)]
+pub struct RenderCache {
+    pub text: std::cell::RefCell<std::collections::HashMap<RenderKey, TextImage>>,
+    last_expire: time::Instant,
+}
+
+impl RenderCache {
+    pub fn new() -> Self {
+        Self {
+            text: Default::default(),
+            last_expire: time::Instant::now(),
+        }
+    }
+    
+    pub fn prune(&mut self, as_of: time::Instant) {
+        if self.last_expire > as_of - time::Duration::from_secs(300) {
+            return;
+        }
+        if let Some(min) = as_of.checked_sub(time::Duration::from_secs(130)) {
+            let had = self.text.get_mut().len();
+            self.text.get_mut().retain(|_k,v| {
+                v.last_used > min
+            });
+            log::debug!("Cache pruned from {} to {} entries", had, self.text.get_mut().len());
+        }
+        self.last_expire = as_of;
+    }
+}
+
 /// State available to an [Item][crate::item::Item] render function
 pub struct Render<'a, 'c> {
     pub canvas : &'a mut PixmapMut<'c>,
+
+    pub cache: &'a RenderCache,
 
     pub render_xform : tiny_skia::Transform,
     pub render_extents : (tiny_skia::Point, tiny_skia::Point),

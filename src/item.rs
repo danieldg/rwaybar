@@ -1,7 +1,7 @@
 //! Graphical rendering of an [Item]
 use crate::data::{Module,ModuleContext,ItemReference,IterationItem,Value};
 use crate::event::EventSink;
-use crate::font::{draw_font_with,layout_font,render_font};
+use crate::font::{render_font,render_font_item};
 use crate::icon;
 use crate::render::{Render,Align,Width};
 use crate::state::Runtime;
@@ -678,6 +678,7 @@ impl Item {
 
                 let mut group = Render {
                     canvas : &mut canvas,
+                    cache : &ctx.cache,
                     render_extents,
                     render_xform: ctx.render_xform,
                     render_pos: Point::zero(),
@@ -778,61 +779,7 @@ impl Item {
                     text = text.replace('\n', " ").into();
                 }
 
-                let (mut to_draw, (width, height)) = layout_font(ctx.font, ctx.font_size, &ctx.runtime, ctx.font_color, &text, markup);
-
-                let Point { x: xstart, y: mut ystart } = ctx.render_pos;
-                if !ctx.render_flex {
-                    match ctx.align.vert {
-                        Some(f) => {
-                            let clip_h = ctx.render_extents.1.y - ctx.render_extents.0.y;
-                            let extra = clip_h - height;
-                            if extra >= 0.0 {
-                                ystart += extra * f;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                let xform = ctx.render_xform.pre_translate(xstart, ystart);
-                if let Some(rgba) = ctx.text_stroke {
-                    let stroke_paint = tiny_skia::Paint {
-                        shader: tiny_skia::Shader::SolidColor(rgba),
-                        anti_alias: true,
-                        ..tiny_skia::Paint::default()
-                    };
-                    let stroke = tiny_skia::Stroke {
-                        width : ctx.text_stroke_size.unwrap_or(1.0),
-                        ..Default::default()
-                    };
-
-                    let clip_w = ctx.render_extents.1.x - ctx.render_pos.x;
-                    if width > clip_w {
-                        to_draw.retain(|glyph| glyph.position.0 < clip_w);
-                    }
-
-                    draw_font_with(ctx.canvas, xform, &to_draw, |canvas, path, color| {
-                        canvas.stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), None);
-                        let paint = tiny_skia::Paint {
-                            shader: tiny_skia::Shader::SolidColor(color),
-                            anti_alias: true,
-                            ..tiny_skia::Paint::default()
-                        };
-                        canvas.fill_path(&path, &paint, tiny_skia::FillRule::EvenOdd, Transform::identity(), None);
-                    });
-                } else {
-                    draw_font_with(ctx.canvas, xform, &to_draw, |canvas, path, color| {
-                        let paint = tiny_skia::Paint {
-                            shader: tiny_skia::Shader::SolidColor(color),
-                            anti_alias: true,
-                            ..tiny_skia::Paint::default()
-                        };
-                        canvas.fill_path(&path, &paint, tiny_skia::FillRule::EvenOdd, Transform::identity(), None);
-                    });
-                }
-
-                ctx.render_pos.x = xstart + width;
-                ctx.render_pos.y = ystart + height;
+                render_font_item(ctx, &text, markup);
 
                 match &self.data {
                     Module::Formatted { tooltip : Some(item), .. } => {
@@ -895,6 +842,7 @@ impl PopupDesc {
 
         let mut ctx = Render {
             canvas : target,
+            cache : &runtime.cache,
             font,
             font_size : 16.0,
             font_color : Color::WHITE,

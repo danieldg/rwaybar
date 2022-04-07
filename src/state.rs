@@ -15,7 +15,7 @@ use crate::bar::Bar;
 use crate::data::{Module,IterationItem,Value};
 use crate::font::FontMapped;
 use crate::item::*;
-use crate::render::Renderer;
+use crate::render::{Renderer,RenderCache};
 use crate::util::{Cell,spawn,spawn_noerr};
 use crate::wayland::WaylandClient;
 
@@ -90,6 +90,7 @@ pub struct Runtime {
     pub xdg : xdg::BaseDirectories,
     pub fonts : Vec<FontMapped>,
     pub items : HashMap<String, Rc<Item>>,
+    pub cache: RenderCache,
     pub wayland : WaylandClient,
     item_var : Rc<Item>,
     notify : Notifier,
@@ -211,6 +212,7 @@ impl State {
             runtime : Runtime {
                 xdg : xdg::BaseDirectories::new()?,
                 fonts : Vec::new(),
+                cache: RenderCache::new(),
                 items : Default::default(),
                 item_var : Rc::new(Module::new_current_item().into()),
                 notify : Notifier { inner : notify_inner.clone() },
@@ -388,6 +390,7 @@ impl State {
         for bar in &mut self.bars {
             bar.render_with(&mut self.runtime, &mut self.renderer);
         }
+        self.runtime.cache.prune(begin);
         self.runtime.wayland.flush();
         let render_time = begin.elapsed().as_nanos();
         log::debug!("Frame took {}.{:06} ms", render_time / 1_000_000, render_time % 1_000_000);

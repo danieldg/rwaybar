@@ -172,6 +172,7 @@ impl Bar {
 
             let mut ctx = Render {
                 canvas : &mut canvas, 
+                cache : &runtime.cache,
                 render_extents : (tiny_skia::Point::zero(), tiny_skia::Point { x: (self.pixel_width / self.scale) as f32, y: self.size as f32 }),
                 render_pos : tiny_skia::Point::zero(),
                 render_flex : false,
