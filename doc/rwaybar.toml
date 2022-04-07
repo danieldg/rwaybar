@@ -30,6 +30,19 @@ text-outline = "black"
 text-outline-alpha = 0.8
 the-clock-font = "Liberation Sans 20"
 
+[[bar]]
+name = "WL-2"
+side = "top"
+center = "clock"
+size = 28
+size-exclusive = 2
+fg = "white"
+bg = "black"
+bg-alpha = 0.0
+text-outline = "black"
+text-outline-alpha = 0.8
+the-clock-font = "Liberation Sans 20"
+
 [fonts]
 # Named fonts are tried first, then all other fonts are searched for missing glyphs
 "Liberation Sans" = "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf"
