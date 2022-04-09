@@ -293,10 +293,10 @@ margin = "0 0 10 0"
 [weather-cmd]
 type = "exec-json"
 command = "/home/daniel/bin/weather-widget"
-# This script outputs lines like '{"text": "Clear 16°"}'
+# This script outputs lines like '{"temp": "16°", "emoji": "🌥"}'
 
 [weather]
-format = "{weather-cmd.text}"
+format = "{weather-cmd.emoji} {weather-cmd.temp}"
 markup = true
 
 
@@ -413,4 +413,4 @@ fg = "white"
 bg = "black"
 bg-alpha = "0.2"
 spacing = 15
-items = ["players", "tray", "hdd", "cpu" ]
+items = ["players", "weather", "tray", "hdd", "cpu" ]
