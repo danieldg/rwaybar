@@ -19,6 +19,7 @@ use json::JsonValue;
 use log::{debug,info,warn,error};
 use std::borrow::Cow;
 use std::fmt;
+use std::fs;
 use std::future::Future;
 use std::io;
 use std::io::Write;
@@ -464,6 +465,10 @@ pub enum Module {
         cases : toml::value::Table,
         default : Box<str>,
     },
+    Thermal {
+        poll: Periodic<(Box<str>, Cell<u32>)>,
+        label: Option<Box<str>>,
+    },
     Tray {
         passive : Rc<Item>,
         active : Rc<Item>,
@@ -792,6 +797,61 @@ impl Module {
                 Module::Switch { format, cases, default }
             }
             // "text" is an alias for "formatted"
+            Some("thermal") => {
+                let label;
+                let path;
+                if let Some(file) = toml_to_string(value.get("file")) {
+                    path = file.into_boxed_str();
+                    label = None;
+                } else if let Some(name) = toml_to_string(value.get("name")) {
+                    use once_cell::sync::OnceCell;
+                    static TEMP_NAMES : OnceCell<Vec<(Box<str>, Box<str>)>> = OnceCell::new();
+                    path = match TEMP_NAMES.get_or_init(|| {
+                        fs::read_dir("/sys/class/hwmon")
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Result::ok)
+                            .filter(|e| match e.file_name().to_str() {
+                                Some(n) => n.starts_with("hwmon"),
+                                None => false,
+                            })
+                            .filter_map(|e| fs::read_dir(e.path()).ok())
+                            .flatten()
+                            .filter_map(Result::ok)
+                            .filter(|e| match e.file_name().to_str() {
+                                Some(n) => n.starts_with("temp") && n.ends_with("_label"),
+                                None => false,
+                            })
+                            .filter_map(|e| {
+                                let path = e.path();
+                                let mut name = fs::read_to_string(&path).ok()?;
+                                name.pop();
+                                let path = path.into_os_string().into_string().ok()?;
+                                let path = format!("{}_input", path.strip_suffix("_label")?);
+                                debug!("{path}: {name}");
+                                Some((name.into_boxed_str(), path.into_boxed_str()))
+                            })
+                            .collect()
+                    }).iter().find(|(n,_)| **n == name) {
+                        Some((_, path)) => path.clone(),
+                        None => return Module::None,
+                    };
+                    label = Some(name.into());
+                } else {
+                    error!("'thermal' requires a 'file' or 'name'");
+                    return Module::None;
+                };
+
+                let poll = Periodic::new(
+                    toml_to_f64(value.get("poll")).unwrap_or(60.0),
+                    (path, Cell::new(0)),
+                );
+
+                Module::Thermal {
+                    poll,
+                    label,
+                }
+            }
             Some("tray") => {
                 let active = Rc::new(value.get("item").map(Item::from_toml_ref).unwrap_or_else(|| {
                     Module::Icon {
@@ -1267,6 +1327,32 @@ impl Module {
                 let case = case.as_deref().unwrap_or(default);
                 let res = rt.format_or(case, &name);
                 f(res)
+            }
+            Module::Thermal { poll, label } => {
+                match key {
+                    "label" => return f(label.as_deref().map_or(Value::Null, Value::Borrow)),
+                    _ => {}
+                }
+                poll.read_refresh(rt, move |(name, value)| {
+                    match fs::read_to_string(&**name) {
+                        Ok(mut s) => {
+                            s.pop();
+                            match s.parse() {
+                                Ok(v) => value.set(v),
+                                _ => {
+                                    debug!("Invalid value '{}' read from {}", s, name);
+                                }
+                            }
+                            Some(name)
+                        }
+                        Err(e) => {
+                            debug!("Could not read {}: {}", name, e);
+                            None
+                        }
+                    }
+                });
+                let (_, value) = poll.data();
+                f(Value::Float(value.get() as f64 / 1000.0))
             }
             Module::Value { value, interested } => {
                 interested.take_in(|i| i.add(rt));

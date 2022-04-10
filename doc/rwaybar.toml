@@ -299,16 +299,11 @@ command = "/home/daniel/bin/weather-widget"
 format = "{weather-cmd.emoji} {weather-cmd.temp}"
 markup = true
 
-
-[temp1_raw]
-type = "read-file"
-file = "/sys/class/hwmon/hwmon1/temp1_input"
-poll = 20
-
 [temp1]
-type = "eval"
-temp = "{temp1_raw}"
-expr = "float(temp) / 1000"
+type = "thermal"
+#file = "/sys/class/hwmon/hwmon1/temp1_input"
+name = "Composite"
+poll = 20
 
 [hdd-icon]
 type = "meter"
@@ -347,15 +342,11 @@ markup = true
 #[bat]
 #format = "{bat-charge} mAh {bat_icon}"
 
-[temp3_raw]
-type = "read-file"
-file = "/sys/class/hwmon/hwmon3/temp1_input"
-poll = 20
-
 [cpu_temp]
-type = "eval"
-temp = "{temp3_raw}"
-expr = "float(temp) / 1000"
+type = "thermal"
+name = "Package id 0"
+#file = "/sys/class/hwmon/hwmon3/temp1_input"
+poll = 20
 
 [cpu_icon]
 type = "meter"

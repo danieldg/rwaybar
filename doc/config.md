@@ -460,6 +460,16 @@ default = "<span color='#ff8888'></span>"
 1 = ""
 ```
 
+## thermal
+
+Key | Expanded | Default | Details
+----|----------|---------|--------
+`name` | No | -- | Name of the sensor
+`file` | No | -- | File name for the sensor, such as `/sys/class/hwmon/hwmon3/temp9_input`
+`poll` | No | 60 | Number of seconds to wait between reads
+
+This returns the temperature as reported by the kernel (in degrees celsius).
+
 ## tray
 
 The tray contains up to three sub-blocks (like focus-list).  The `item` block
