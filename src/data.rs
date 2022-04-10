@@ -24,6 +24,7 @@ use std::future::Future;
 use std::io;
 use std::io::Write;
 use std::os::unix::io::{AsRawFd,IntoRawFd};
+use std::path::PathBuf;
 use std::process::{Command,Stdio,ChildStdin};
 use std::rc::{Rc,Weak};
 use std::time::{Duration,Instant};
@@ -801,7 +802,55 @@ impl Module {
                 let label;
                 let path;
                 if let Some(file) = toml_to_string(value.get("file")) {
-                    path = file.into_boxed_str();
+                    if file.contains('*') {
+                        if !file.starts_with("/") {
+                            error!("'thermal' requires an absolute path for 'file'");
+                            return Module::None;
+                        }
+                        let mut candidates = vec![PathBuf::from("/")];
+                        for component in file[1..].split('/') {
+                            if component.contains('*') {
+                                let mut re = String::new();
+                                for (i, chunk) in component.split('*').enumerate() {
+                                    if i == 0 {
+                                        re.push('^');
+                                    } else {
+                                        re.push_str(".*");
+                                    }
+                                    re.push_str(&regex::escape(chunk));
+                                }
+                                re.push('$');
+                                let re = regex::Regex::new(&re).expect("Invalid regex");
+                                candidates = candidates.into_iter()
+                                    .filter_map(|c| fs::read_dir(c).ok())
+                                    .flatten()
+                                    .filter_map(Result::ok)
+                                    .filter(|e| match e.file_name().to_str() {
+                                        Some(name) => re.is_match(name),
+                                        None => false,
+                                    })
+                                    .map(|e| e.path())
+                                    .collect();
+                            } else {
+                                for p in &mut candidates {
+                                    p.push(component);
+                                }
+                            }
+                        }
+                        let mut candidates = candidates.into_iter()
+                            .filter_map(|p| p.into_os_string().into_string().ok());
+                        if let Some(c) = candidates.next() {
+                            path = c.into_boxed_str();
+                        } else {
+                            error!("No matches found for glob '{file}'");
+                            return Module::None;
+                        }
+                        if candidates.next().is_some() {
+                            warn!("Multiple matches found for glob '{file}', using '{path}'");
+                        }
+                    } else {
+                        path = file.into_boxed_str();
+                    }
                     label = None;
                 } else if let Some(name) = toml_to_string(value.get("name")) {
                     use once_cell::sync::OnceCell;
@@ -834,7 +883,10 @@ impl Module {
                             .collect()
                     }).iter().find(|(n,_)| **n == name) {
                         Some((_, path)) => path.clone(),
-                        None => return Module::None,
+                        None => {
+                            error!("Sensor '{name}' not found");
+                            return Module::None;
+                        }
                     };
                     label = Some(name.into());
                 } else {

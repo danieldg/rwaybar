@@ -301,8 +301,8 @@ markup = true
 
 [temp1]
 type = "thermal"
-#file = "/sys/class/hwmon/hwmon1/temp1_input"
-name = "Composite"
+#name = "Composite"
+file = "/sys/block/nvme0n1/device/hwmon*/temp1_input"
 poll = 20
 
 [hdd-icon]
