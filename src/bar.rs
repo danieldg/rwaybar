@@ -50,7 +50,16 @@ impl Bar {
         let scale = output_data.scale_factor;
         let ls : Attached<ZwlrLayerShellV1> = wayland.env.require_global();
         let surf : Attached<_> = wayland.env.create_surface();
-        let ls_surf = ls.get_layer_surface(&surf, Some(output), Layer::Top, "bar".to_owned());
+        let layer = match cfg.get("layer").and_then(|v| v.as_str()) {
+            Some("overlay") => Layer::Overlay,
+            Some("bottom") => Layer::Bottom,
+            Some("top") | None => Layer::Top,
+            Some(layer) => {
+                error!("Unknown layer '{layer}', defaulting to top");
+                Layer::Top
+            }
+        };
+        let ls_surf = ls.get_layer_surface(&surf, Some(output), layer, "bar".to_owned());
 
         let size = cfg.get("size")
             .and_then(|v| v.as_integer())

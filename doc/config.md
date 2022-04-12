@@ -23,6 +23,7 @@ Key | Value | Expanded | Default
 `size-exclusive` | Number of pixels to reserve for the bar | No | (`size`)
 `size-clickable` | Number of pixels of the bar that are clickable | No | (`size-exclusive`)
 `side` | `top` or `bottom` | No | `bottom`
+`layer` | `top`, `bottom`, or `overlay` | No | `top`
 `sparse-clicks` | `true` if clicks should only be captured where active | No | `true`
 `left` | Block or list of blocks | No | None
 `center` | Block or list of blocks | No | None
