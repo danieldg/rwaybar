@@ -2,10 +2,13 @@ use log::error;
 use futures_util::FutureExt;
 use futures_util::future::RemoteHandle;
 use std::error::Error;
+use std::borrow::Cow;
 use std::fmt;
+use std::fs;
 use std::future::Future;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::io::RawFd;
+use std::path::PathBuf;
 
 pub fn toml_to_string(value : Option<&toml::Value>) -> Option<String> {
     value.and_then(|value| {
@@ -146,4 +149,55 @@ pub fn spawn_handle(owner : &'static str, fut : impl Future<Output=Result<(), Bo
     }.remote_handle();
     spawn_noerr(task);
     rh
+}
+
+pub fn glob_expand<'a>(file: impl Into<Cow<'a, str>>) -> Option<(Cow<'a, str>, bool)> {
+    let file = file.into();
+    if !file.contains('*') {
+        return Some((file, false));
+    }
+
+    let mut candidates;
+    let components;
+    if file.starts_with("/") {
+        candidates = vec![PathBuf::from("/")];
+        components = file[1..].split('/');
+    } else {
+        candidates = vec![PathBuf::from(".")];
+        components = file.split('/');
+    }
+    for component in components {
+        if component.contains('*') {
+            let mut re = String::new();
+            for (i, chunk) in component.split('*').enumerate() {
+                if i == 0 {
+                    re.push('^');
+                } else {
+                    re.push_str(".*");
+                }
+                re.push_str(&regex::escape(chunk));
+            }
+            re.push('$');
+            let re = regex::Regex::new(&re).expect("Invalid regex");
+            candidates = candidates.into_iter()
+                .filter_map(|c| fs::read_dir(c).ok())
+                .flatten()
+                .filter_map(Result::ok)
+                .filter(|e| match e.file_name().to_str() {
+                    Some(name) => re.is_match(name),
+                    None => false,
+                })
+                .map(|e| e.path())
+                .collect();
+        } else {
+            for p in &mut candidates {
+                p.push(component);
+            }
+        }
+    }
+    let mut candidates = candidates.into_iter()
+        .filter_map(|p| p.into_os_string().into_string().ok());
+
+    let c = candidates.next()?;
+    Some((c.into(), candidates.next().is_some()))
 }

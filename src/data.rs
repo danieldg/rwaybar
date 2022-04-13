@@ -11,7 +11,7 @@ use crate::state::Runtime;
 use crate::sway;
 #[cfg(feature="dbus")]
 use crate::tray;
-use crate::util::{Cell,Fd,toml_to_string,toml_to_f64,spawn_noerr,spawn_handle};
+use crate::util::{Cell,Fd,glob_expand,toml_to_string,toml_to_f64,spawn_noerr,spawn_handle};
 use crate::wlr::ClipboardData;
 use evalexpr::Node as EvalExpr;
 use futures_util::future::RemoteHandle;
@@ -24,7 +24,6 @@ use std::future::Future;
 use std::io;
 use std::io::Write;
 use std::os::unix::io::{AsRawFd,IntoRawFd};
-use std::path::PathBuf;
 use std::process::{Command,Stdio,ChildStdin};
 use std::rc::{Rc,Weak};
 use std::time::{Duration,Instant};
@@ -753,12 +752,22 @@ impl Module {
                 }
             }
             Some("read-file") => {
-                let name = match value.get("file").and_then(|v| v.as_str()) {
-                    Some(name) => name.into(),
-                    None => {
-                        error!("Read-file requires a file name: {}", value);
+                let name;
+                if let Some(file) = toml_to_string(value.get("file")) {
+                    name = file.into_boxed_str();
+                } else if let Some(file) = toml_to_string(value.get("path")) {
+                    if let Some((p, extra)) = glob_expand(&file) {
+                        name = p.into_owned().into_boxed_str();
+                        if extra {
+                            warn!("Multiple matches found for glob '{file}', using '{name}'");
+                        }
+                    } else {
+                        error!("No matches found for glob '{file}'");
                         return Module::None;
                     }
+                } else {
+                    error!("Read-file requires a file name: {}", value);
+                    return Module::None;
                 };
                 let on_err = value.get("on-err").and_then(|v| v.as_str()).unwrap_or_default().into();
                 let poll = Periodic::new(
@@ -802,54 +811,17 @@ impl Module {
                 let label;
                 let path;
                 if let Some(file) = toml_to_string(value.get("file")) {
-                    if file.contains('*') {
-                        if !file.starts_with("/") {
-                            error!("'thermal' requires an absolute path for 'file'");
-                            return Module::None;
-                        }
-                        let mut candidates = vec![PathBuf::from("/")];
-                        for component in file[1..].split('/') {
-                            if component.contains('*') {
-                                let mut re = String::new();
-                                for (i, chunk) in component.split('*').enumerate() {
-                                    if i == 0 {
-                                        re.push('^');
-                                    } else {
-                                        re.push_str(".*");
-                                    }
-                                    re.push_str(&regex::escape(chunk));
-                                }
-                                re.push('$');
-                                let re = regex::Regex::new(&re).expect("Invalid regex");
-                                candidates = candidates.into_iter()
-                                    .filter_map(|c| fs::read_dir(c).ok())
-                                    .flatten()
-                                    .filter_map(Result::ok)
-                                    .filter(|e| match e.file_name().to_str() {
-                                        Some(name) => re.is_match(name),
-                                        None => false,
-                                    })
-                                    .map(|e| e.path())
-                                    .collect();
-                            } else {
-                                for p in &mut candidates {
-                                    p.push(component);
-                                }
-                            }
-                        }
-                        let mut candidates = candidates.into_iter()
-                            .filter_map(|p| p.into_os_string().into_string().ok());
-                        if let Some(c) = candidates.next() {
-                            path = c.into_boxed_str();
-                        } else {
-                            error!("No matches found for glob '{file}'");
-                            return Module::None;
-                        }
-                        if candidates.next().is_some() {
+                    path = file.into_boxed_str();
+                    label = None;
+                } else if let Some(file) = toml_to_string(value.get("path")) {
+                    if let Some((p, extra)) = glob_expand(&file) {
+                        path = p.into_owned().into_boxed_str();
+                        if extra {
                             warn!("Multiple matches found for glob '{file}', using '{path}'");
                         }
                     } else {
-                        path = file.into_boxed_str();
+                        error!("No matches found for glob '{file}'");
+                        return Module::None;
                     }
                     label = None;
                 } else if let Some(name) = toml_to_string(value.get("name")) {

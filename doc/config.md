@@ -360,6 +360,7 @@ This block's value either the replaced string when called with a blank key or th
 Key | Expanded | Default | Details
 ----|----------|---------|--------
 `file` | No | -- | File name to read
+`path` | Wildcards | -- | File name to read, with wildcard `*` expansion
 `poll` | No | 60 | Number of seconds to wait between reads
 
 Note: this is intended for reading files like `/proc/loadavg` where there is no mechanism to watch for changes to the file.
@@ -466,15 +467,17 @@ default = "<span color='#ff8888'></span>"
 Key | Expanded | Default | Details
 ----|----------|---------|--------
 `name` | No | -- | Name of the sensor
-`file` | Wildcards | -- | File name for the sensor, such as `/sys/class/hwmon/hwmon3/temp9_input`
+`file` | No | -- | File name for the sensor, such as `/sys/class/hwmon/hwmon3/temp9_input`
+`path` | Wildcards | -- | File name for the sensor, such as `/sys/block/nvme0n1/device/hwmon*/temp1_input`
 `poll` | No | 60 | Number of seconds to wait between reads
 
 This returns the temperature as reported by the kernel (in degrees celsius).
 
-If the `file` entry contains a `*`, it will be expanded similar to a shell
-glob.  This allows using paths such as
-`/sys/block/nvme0n1/device/hwmon*/temp1_input` that do not change depending on
-the kernel version and/or the order the kernel discovers devices.
+Only one of `name`, `file`, or `path` needs to be specified.
+
+The `path` entry will have an contained `*` characters expanded similar to
+shell wildcard expansion.  This allows using paths that do not change depending
+on the kernel version and/or the order the kernel discovers devices.
 
 ## tray
 
