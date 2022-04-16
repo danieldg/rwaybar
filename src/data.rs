@@ -443,7 +443,9 @@ pub enum Module {
         src : Box<Module>,
         values : Box<[Box<str>]>,
     },
-    None,
+    ParseError {
+        msg : Cow<'static, str>,
+    },
     #[cfg(feature="pulse")]
     Pulse {
         target : Box<str>,
@@ -534,8 +536,7 @@ impl Module {
                     None => false,
                     Some(Some(b)) => b,
                     Some(None) => {
-                        error!("Invalid clipboard type");
-                        return Module::None;
+                        return Module::parse_error("Invalid clipboard type");
                     }
                 };
                 let mime_list = value.get("types")
@@ -561,8 +562,8 @@ impl Module {
             #[cfg(feature="dbus")]
             Some("dbus") => {
                 let rc = match DbusValue::from_toml(value) {
-                    Some(rc) => rc,
-                    None => return Module::None,
+                    Ok(rc) => rc,
+                    Err(e) => return Module::parse_error(e),
                 };
                 let poll = Periodic::new(toml_to_f64(value.get("poll")).unwrap_or(0.0), rc);
                 Module::DbusCall { poll }
@@ -593,20 +594,17 @@ impl Module {
                                     vars.push((ident.into(), value));
                                 }
                                 None => {
-                                    error!("Undefined variable '{}' in expression", ident);
-                                    return Module::None;
+                                    return Module::parse_error(format!("Undefined variable '{ident}' in expression"));
                                 }
                             }
                         }
                         Module::Eval { expr, vars }
                     }
                     Some(Err(e)) => {
-                        error!("Could not parse expression: {}", e);
-                        Module::None
+                        return Module::parse_error(format!("Could not parse expression: {e}"));
                     }
                     None => {
-                        error!("Eval blocks require an expression");
-                        Module::None
+                        return Module::parse_error("Eval blocks require an expression");
                     }
                 }
             }
@@ -614,8 +612,7 @@ impl Module {
                 let command = match value.get("command").and_then(|v| v.as_str()) {
                     Some(cmd) => cmd.into(),
                     None => {
-                        error!("Comamnd to execute is required: {}", value);
-                        return Module::None;
+                        return Module::parse_error("Comamnd to execute is required");
                     }
                 };
                 Module::ExecJson {
@@ -629,8 +626,7 @@ impl Module {
                 let source = match value.get("source") {
                     Some(s) => Box::new(Module::from_toml_in(s, ModuleContext::Source)),
                     None => {
-                        error!("A source is required for focus-list");
-                        return Module::None.into();
+                        return Module::parse_error("A source is required for focus-list");
                     }
                 };
                 let spacing = toml_to_string(value.get("spacing")).unwrap_or_default().into();
@@ -699,8 +695,7 @@ impl Module {
                 let src = match value.get("src").or_else(|| value.get("source")) {
                     Some(item) => Box::new(Module::from_toml_in(item, ModuleContext::Source)),
                     None => {
-                        error!("Meter requires a source expression");
-                        return Module::None;
+                        return Module::parse_error("Meter requires a source expression");
                     }
                 };
                 let mut values = match Some(Some("")).into_iter()
@@ -711,8 +706,7 @@ impl Module {
                     {
                         Some(v) if v.len() > 2 => v,
                         _ => {
-                            error!("Meter requires an array of string values");
-                            return Module::None;
+                            return Module::parse_error("Meter requires an array of string values");
                         }
                     };
                 let e = values.len() - 1;
@@ -745,10 +739,7 @@ impl Module {
                     .build()
                 {
                     Ok(regex) => Module::Regex { regex, text, replace },
-                    Err(e) => {
-                        error!("Error compiling regex '{}': {}", regex, e);
-                        Module::None
-                    }
+                    Err(e) => Module::parse_error(format!("Error compiling regex '{regex}': {e}")),
                 }
             }
             Some("read-file") => {
@@ -762,12 +753,10 @@ impl Module {
                             warn!("Multiple matches found for glob '{file}', using '{name}'");
                         }
                     } else {
-                        error!("No matches found for glob '{file}'");
-                        return Module::None;
+                        return Module::parse_error(format!("No matches found for glob '{file}'"));
                     }
                 } else {
-                    error!("Read-file requires a file name: {}", value);
-                    return Module::None;
+                    return Module::parse_error(format!("Read-file requires a file name: {value}"));
                 };
                 let on_err = value.get("on-err").and_then(|v| v.as_str()).unwrap_or_default().into();
                 let poll = Periodic::new(
@@ -779,13 +768,13 @@ impl Module {
                 }
             }
             Some("sway-mode") => {
-                sway::Mode::from_toml(value).map_or(Module::None, Module::SwayMode)
+                Module::SwayMode(sway::Mode::from_toml(value))
             }
             Some("sway-tree") => {
-                sway::Tree::from_toml(value).map_or(Module::None, Module::SwayTree)
+                Module::SwayTree(sway::Tree::from_toml(value))
             }
             Some("sway-workspace") => {
-                sway::Workspace::from_toml(value).map_or(Module::None, Module::SwayWorkspace)
+                Module::SwayWorkspace(sway::Workspace::from_toml(value))
             }
             Some("switch") => {
                 let format = if let Some(item) = value.get("format") {
@@ -793,14 +782,12 @@ impl Module {
                 } else if let Some(item) = value.get("source") {
                     Box::new(Module::from_toml_in(item, ModuleContext::Source))
                 } else {
-                    error!("'switch' requires a 'format' or 'source' item");
-                    return Module::None;
+                    return Module::parse_error("'switch' requires a 'format' or 'source' item");
                 };
                 let cases = match value.get("cases") {
                     Some(toml::Value::Table(cases)) => cases.clone(),
                     _ => {
-                        error!("'cases' must be a table in the 'switch' type");
-                        return Module::None;
+                        return Module::parse_error("'cases' must be a table in the 'switch' type");
                     }
                 };
                 let default = toml_to_string(value.get("default")).unwrap_or_default().into();
@@ -820,8 +807,7 @@ impl Module {
                             warn!("Multiple matches found for glob '{file}', using '{path}'");
                         }
                     } else {
-                        error!("No matches found for glob '{file}'");
-                        return Module::None;
+                        return Module::parse_error(format!("No matches found for glob '{file}'"));
                     }
                     label = None;
                 } else if let Some(name) = toml_to_string(value.get("name")) {
@@ -856,14 +842,12 @@ impl Module {
                     }).iter().find(|(n,_)| **n == name) {
                         Some((_, path)) => path.clone(),
                         None => {
-                            error!("Sensor '{name}' not found");
-                            return Module::None;
+                            return Module::parse_error(format!("Sensor '{name}' not found"));
                         }
                     };
                     label = Some(name.into());
                 } else {
-                    error!("'thermal' requires a 'file' or 'name'");
-                    return Module::None;
+                    return Module::parse_error("'thermal' requires a 'file' or 'name'");
                 };
 
                 let poll = Periodic::new(
@@ -895,8 +879,8 @@ impl Module {
             Some("value") => {
                 Module::new_value(toml_to_string(value.get("value")).unwrap_or_default())
             }
-            Some(_) => {
-                Module::None
+            Some(t) => {
+                Module::parse_error(format!("Unknown module type '{t}'"))
             }
             None => {
                 if let Some(value) = value.as_str() {
@@ -917,7 +901,7 @@ impl Module {
                 } else if let Some(value) = toml_to_string(value.get("value")) {
                     Module::new_value(value)
                 } else {
-                    Module::None
+                    Module::parse_error("The 'type' value is required")
                 }
             }
         }
@@ -928,10 +912,6 @@ impl Module {
             value : Cell::new(t.into()),
             interested : Default::default(),
         }
-    }
-
-    pub fn is_none(&self) -> bool {
-        matches!(self, Module::None)
     }
 
     /// One-time setup, if needed
@@ -1289,7 +1269,7 @@ impl Module {
                 };
                 f(rt.format_or(&expr, &name))
             }
-            Module::None => f(Value::Null),
+            Module::ParseError { .. } => f(Value::Null),
             #[cfg(feature="pulse")]
             Module::Pulse { target } => pulse::read_in(name, target, key, rt, f),
             Module::ReadFile { on_err, poll } => {
@@ -1445,8 +1425,10 @@ impl Module {
         }
     }
 
-    pub fn none() -> Self {
-        Module::None
+    pub fn parse_error(msg : impl Into<Cow<'static, str>>) -> Self {
+        Module::ParseError {
+            msg: msg.into(),
+        }
     }
 
     pub fn new_current_item() -> Self {

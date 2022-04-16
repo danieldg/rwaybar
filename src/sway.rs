@@ -209,8 +209,8 @@ struct ModeInner {
 }
 
 impl Mode {
-    pub fn from_toml(_config : &toml::Value) -> Option<Self> {
-        Some(Mode::default())
+    pub fn from_toml(_config : &toml::Value) -> Self {
+        Mode::default()
     }
 
     fn interest(&self, rt : &Runtime) {
@@ -426,12 +426,12 @@ impl WorkspacesData {
 }
 
 impl Workspace {
-    pub fn from_toml(config : &toml::Value) -> Option<Self> {
+    pub fn from_toml(config : &toml::Value) -> Self {
         let output = config.get("output").and_then(|v| v.as_str()).map(Into::into);
-        Some(Workspace {
+        Workspace {
             output,
             value : Default::default(),
-        })
+        }
     }
 
     fn interest(&self, rt : &Runtime) {
@@ -757,7 +757,7 @@ impl TreeInner {
 }
 
 impl Tree {
-    pub fn from_toml(config : &toml::Value) -> Option<Self> {
+    pub fn from_toml(config : &toml::Value) -> Self {
         let items = TreeItems {
             pre_workspace : config.get("pre-workspace").map(Item::from_toml_ref).map(Rc::new),
             pre_node : config.get("pre-node").map(Item::from_toml_ref).map(Rc::new),
@@ -769,12 +769,12 @@ impl Tree {
         };
         let output = config.get("output").and_then(|v| v.as_str()).map(Into::into);
         let workspace = config.get("workspace").and_then(|v| v.as_str()).map(Into::into);
-        Some(Tree {
+        Tree {
             value : Default::default(),
             items : Box::new(items),
             output,
             workspace,
-        })
+        }
     }
 
     fn interest(&self, rt : &Runtime) {

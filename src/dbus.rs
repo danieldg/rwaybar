@@ -352,13 +352,12 @@ pub struct DbusValue {
 }
 
 impl DbusValue {
-    pub fn from_toml(value : &toml::Value) -> Option<Rc<Self>> {
+    pub fn from_toml(value : &toml::Value) -> Result<Rc<Self>, &'static str> {
         let dbus = match value.get("bus").and_then(|v| v.as_str()) {
             None | Some("session") => DBus::get_session(),
             Some("system") => DBus::get_system(),
             _ => {
-                error!("bus must be either 'session' or 'system'");
-                return None;
+                return Err("bus must be either 'session' or 'system'");
             }
         };
         let bus_name = value.get("owner").and_then(|v| v.as_str()).unwrap_or("").into();
@@ -368,8 +367,7 @@ impl DbusValue {
         let (interface, member, args);
         match (method.map(|s| s.rsplit_once(".")) , property.map(|s| s.rsplit_once("."))) {
             (Some(_), Some(_)) => {
-                error!("dbus cannot query both a property and a method");
-                return None;
+                return Err("dbus cannot query both a property and a method");
             }
             (Some(Some((i,m))), None) => {
                 interface = i.into();
@@ -386,8 +384,7 @@ impl DbusValue {
                 args = Box::new([i.into(), p.into()]);
             }
             _ => {
-                error!("dbus requires a member or property to query");
-                return None;
+                return Err("dbus requires a member or property to query");
             }
         }
 
@@ -470,7 +467,7 @@ impl DbusValue {
             }
             None => {}
         }
-        Some(rc)
+        Ok(rc)
     }
 
     fn call_now(self : Rc<Self>) {

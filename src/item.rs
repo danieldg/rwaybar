@@ -315,7 +315,7 @@ impl Item {
         Self {
             format : ItemFormat::default(),
             events : EventSink::default(),
-            data : Module::none(),
+            data : Module::parse_error(""),
         }
     }
 
@@ -358,11 +358,8 @@ impl Item {
         }
 
         let data = Module::from_toml_in(value, ModuleContext::Item);
-        if data.is_none() {
-            match value.get("type").and_then(|v| v.as_str()) {
-                Some(tipe) => error!("Unknown item type '{}' in '{}'", tipe, key),
-                None => error!("Type required for item '{}'", key),
-            }
+        if let Module::ParseError { msg } = &data {
+            error!("Error parsing {key}: {msg}");
         }
         Item {
             events : EventSink::from_toml(value),
@@ -768,7 +765,6 @@ impl Item {
             Module::Tray { passive, active, urgent } => {
                 tray::show(ctx, rv, [passive, active, urgent])
             }
-            Module::None => {}
 
             // All other modules are rendered as text
             _ => {
