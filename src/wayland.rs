@@ -26,7 +26,9 @@ use wayland_client::protocol::wl_shm::WlShm;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1;
 use wayland_protocols::wlr::unstable::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
+use wayland_protocols::wlr::unstable::layer_shell::v1::client::zwlr_layer_shell_v1 as layer_shell;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1;
+use wayland_protocols::wlr::unstable::layer_shell::v1::client::zwlr_layer_surface_v1 as layer_surface;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 use wayland_protocols::xdg_shell::client::xdg_popup::XdgPopup;
 use wayland_protocols::xdg_shell::client::xdg_surface::XdgSurface;
@@ -153,7 +155,7 @@ impl WaylandClient {
                             over = None;
                         }
                         for bar in &mut state.bars {
-                            if bar.surf.as_ref().id() == id {
+                            if bar.ls.surf.wl.as_ref().id() == id {
                                 bar.no_hover(&mut state.runtime);
                             }
                             if let Some(popup) = &bar.popup {
@@ -179,7 +181,7 @@ impl WaylandClient {
                             }
                         };
                         for bar in &mut state.bars {
-                            if Some(bar.surf.as_ref().id()) == over {
+                            if Some(bar.ls.surf.wl.as_ref().id()) == over {
                                 bar.sink.button(x as f32, y as f32, button_id, &mut state.runtime);
                             }
                             if bar.popup.as_ref().map(|p| p.wl.surf.as_ref().id()) == over {
@@ -230,7 +232,7 @@ impl WaylandClient {
                             };
                         }
                         for bar in &mut state.bars {
-                            if Some(bar.surf.as_ref().id()) == over {
+                            if Some(bar.ls.surf.wl.as_ref().id()) == over {
                                 bar.sink.button(x as f32, y as f32, button_id, &mut state.runtime);
                             }
                             if bar.popup.as_ref().map(|p| p.wl.surf.as_ref().id()) == over {
@@ -245,7 +247,7 @@ impl WaylandClient {
                 }
                 if let Some(id) = over {
                     for bar in &mut state.bars {
-                        if bar.surf.as_ref().id() == id {
+                        if bar.ls.surf.wl.as_ref().id() == id {
                             bar.hover(x,y, &mut state.runtime);
                         }
                         if let Some(popup) = &bar.popup {
@@ -267,7 +269,7 @@ impl WaylandClient {
                     Event::Down { surface, x, y, .. } => {
                         // TODO support gestures?  Wait for Up, detect Cancel
                         for bar in &mut state.bars {
-                            if surface == *bar.surf {
+                            if surface == *bar.ls.surf.wl {
                                 bar.sink.button(x as f32, y as f32, 9, &mut state.runtime);
                                 break;
                             }
@@ -283,7 +285,7 @@ impl WaylandClient {
     }
 
     pub fn new_popup(&self, bar : &Bar, anchor : (i32, i32, i32, i32), size : (i32, i32)) -> Popup {
-        self.new_popup_on(&bar.ls_surf, !bar.anchor_top, anchor, size, bar.scale)
+        self.new_popup_on(&bar.ls.ls_surf, !bar.anchor_top, anchor, size, bar.ls.surf.scale)
     }
 
     fn new_popup_on(&self, ls_surf : &ZwlrLayerSurfaceV1, prefer_top : bool, anchor : (i32, i32, i32, i32), size : (i32, i32), scale : i32) -> Popup {
@@ -453,6 +455,120 @@ pub async fn run_queue(mut wl_queue : wayland_client::EventQueue, state : Rc<Ref
         wl_queue.dispatch_pending(&mut *lock, |event, object, _| {
             error!("Orphan event: {}@{} : {}", event.interface, object.as_ref().id(), event.name);
         })?;
+    }
+}
+
+pub struct Surface {
+    pub wl: Attached<WlSurface>,
+    pub scale : i32,
+}
+
+impl Surface {
+    pub fn new(wayland : &WaylandClient) -> Self {
+        let wl : Attached<_> = wayland.env.create_surface();
+        Self { wl, scale: 1 }
+    }
+
+    pub fn set_buffer_scale(&mut self, scale: i32) {
+        self.scale = scale;
+        self.wl.set_buffer_scale(scale);
+    }
+
+    pub fn scale_transform(&self) -> tiny_skia::Transform {
+        tiny_skia::Transform::from_scale(self.scale as f32, self.scale as f32)
+    }
+}
+
+/// A [ZwlrLayerSurfaceV1] with readable copies of state
+pub struct LayerSurface {
+    pub surf: Surface,
+    pub ls_surf: Attached<ZwlrLayerSurfaceV1>,
+    anchor: layer_surface::Anchor,
+    config_width: u32,
+    config_height: u32,
+    #[allow(unused)]
+    layer: layer_shell::Layer,
+}
+
+impl LayerSurface {
+    pub fn new(wayland : &WaylandClient, output: &WlOutput, layer: layer_shell::Layer) -> Self {
+        let ls : Attached<ZwlrLayerShellV1> = wayland.env.require_global();
+        let surf = Surface::new(wayland);
+        let ls_surf = ls.get_layer_surface(&surf.wl, Some(output), layer, "bar".to_owned());
+
+        ls_surf.quick_assign(move |ls_surf, event, mut data| {
+            use layer_surface::Event;
+            let state : &mut State = data.get().unwrap();
+            match event {
+                Event::Configure { serial, width, height } => {
+                    for bar in &mut state.bars {
+                        if bar.ls.ls_surf != *ls_surf {
+                            continue;
+                        }
+                        
+                        bar.ls.config_width = width;
+                        bar.ls.config_height = height;
+
+                        ls_surf.ack_configure(serial);
+                        bar.dirty = true;
+                    }
+                    state.request_draw();
+                }
+                Event::Closed => {
+                    state.bars.retain(|bar| {
+                        if bar.ls.ls_surf == *ls_surf {
+                            bar.ls.ls_surf.destroy();
+                            bar.ls.surf.wl.destroy();
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                },
+                _ => ()
+            }
+        });
+
+        Self {
+            surf,
+            ls_surf: ls_surf.into(),
+            anchor: layer_surface::Anchor::empty(),
+            config_width: 0,
+            config_height: 0,
+            layer
+        }
+    }
+
+    pub fn can_render(&self) -> bool {
+        self.config_width != 0
+    }
+
+    pub fn config_width(&self) -> u32 {
+        self.config_width
+    }
+
+    pub fn config_height(&self) -> u32 {
+        self.config_height
+    }
+
+    pub fn pixel_width(&self) -> i32 {
+        self.config_width as i32 * self.surf.scale
+    }
+
+    pub fn pixel_height(&self) -> i32 {
+        self.config_height as i32 * self.surf.scale
+    }
+
+    pub fn set_anchor(&mut self, anchor: layer_surface::Anchor) {
+        self.anchor = anchor;
+        self.ls_surf.set_anchor(anchor);
+    }
+}
+
+impl Drop for LayerSurface {
+    fn drop(&mut self) {
+        self.ls_surf.destroy();
+        self.surf.wl.destroy();
     }
 }
 

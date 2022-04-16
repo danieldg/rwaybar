@@ -5,20 +5,19 @@ use std::rc::Rc;
 use smithay_client_toolkit::output::OutputInfo;
 use wayland_client::Attached;
 use wayland_client::protocol::wl_output::WlOutput;
-use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::protocol::wl_callback::WlCallback;
 use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_protocols::wlr::unstable::layer_shell::v1::client as layer_shell;
 
-use layer_shell::zwlr_layer_shell_v1::{ZwlrLayerShellV1, Layer};
-use layer_shell::zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Anchor};
+use layer_shell::zwlr_layer_shell_v1::Layer;
+use layer_shell::zwlr_layer_surface_v1::Anchor;
 
 use crate::event::EventSink;
 use crate::item::*;
 use crate::render::{Align,Render,Renderer};
 use crate::state::{NotifierList,Runtime,State};
 use crate::util::spawn_noerr;
-use crate::wayland::{Popup,WaylandClient};
+use crate::wayland::{LayerSurface,Popup,WaylandClient};
 
 pub struct BarPopup {
     pub wl : Popup,
@@ -29,14 +28,10 @@ pub struct BarPopup {
 /// A single taskbar on a single output
 pub struct Bar {
     pub name : Box<str>,
-    pub surf : Attached<WlSurface>,
-    pub ls_surf : Attached<ZwlrLayerSurfaceV1>,
+    pub ls: LayerSurface,
     pub popup : Option<BarPopup>,
     pub sink : EventSink,
     pub anchor_top : bool,
-    pub scale : i32,
-    pixel_width : i32,
-    size : i32,
     click_size : u32,
     pub dirty : bool,
     sparse : bool,
@@ -48,8 +43,6 @@ pub struct Bar {
 impl Bar {
     pub fn new(wayland : &WaylandClient, output : &WlOutput, output_data : &OutputInfo, cfg : toml::Value, cfg_index : usize) -> Bar {
         let scale = output_data.scale_factor;
-        let ls : Attached<ZwlrLayerShellV1> = wayland.env.require_global();
-        let surf : Attached<_> = wayland.env.create_surface();
         let layer = match cfg.get("layer").and_then(|v| v.as_str()) {
             Some("overlay") => Layer::Overlay,
             Some("bottom") => Layer::Bottom,
@@ -59,7 +52,7 @@ impl Bar {
                 Layer::Top
             }
         };
-        let ls_surf = ls.get_layer_surface(&surf, Some(output), layer, "bar".to_owned());
+        let mut ls = LayerSurface::new(wayland, output, layer);
 
         let size = cfg.get("size")
             .and_then(|v| v.as_integer())
@@ -86,12 +79,12 @@ impl Bar {
             }
         };
         if anchor_top {
-            ls_surf.set_anchor(Anchor::Top | Anchor::Left | Anchor::Right);
+            ls.set_anchor(Anchor::Top | Anchor::Left | Anchor::Right);
         } else {
-            ls_surf.set_anchor(Anchor::Bottom | Anchor::Left | Anchor::Right);
+            ls.set_anchor(Anchor::Bottom | Anchor::Left | Anchor::Right);
         }
-        ls_surf.set_size(0, size);
-        ls_surf.set_exclusive_zone(size_excl);
+        ls.ls_surf.set_size(0, size);
+        ls.ls_surf.set_exclusive_zone(size_excl);
         let sparse = cfg.get("sparse-clicks").and_then(|v| v.as_bool()).unwrap_or(true);
         if size != click_size {
             // Only handle input in the exclusive region; clicks in the overhang region will go
@@ -108,53 +101,17 @@ impl Bar {
             } else {
                 region.add(0, yoff, i32::MAX, click_size as i32);
             }
-            surf.set_input_region(Some(&region));
+            ls.surf.wl.set_input_region(Some(&region));
             region.destroy();
         }
-        ls_surf.quick_assign(move |ls_surf, event, mut data| {
-            use layer_shell::zwlr_layer_surface_v1::Event;
-            let state : &mut State = data.get().unwrap();
-            match event {
-                Event::Configure { serial, width, height } => {
-                    for bar in &mut state.bars {
-                        if bar.ls_surf != *ls_surf {
-                            continue;
-                        }
+        ls.surf.set_buffer_scale(scale);
 
-                        bar.pixel_width = width as i32 * bar.scale;
-                        bar.size = height as i32;
-
-                        ls_surf.ack_configure(serial);
-                        bar.dirty = true;
-                    }
-                    state.request_draw();
-                }
-                Event::Closed => {
-                    state.bars.retain(|bar| {
-                        if bar.ls_surf == *ls_surf {
-                            bar.ls_surf.destroy();
-                            bar.surf.destroy();
-                            false
-                        } else {
-                            true
-                        }
-                    });
-                },
-                _ => ()
-            }
-        });
-        surf.set_buffer_scale(scale);
-
-        surf.commit();
+        ls.surf.wl.commit();
 
         Bar {
             name : output_data.name.clone().into(),
-            surf,
-            ls_surf : ls_surf.into(),
+            ls,
             item : Rc::new(Item::new_bar(cfg)),
-            scale,
-            pixel_width : 0,
-            size : size as i32,
             click_size,
             anchor_top,
             sink : EventSink::default(),
@@ -167,12 +124,12 @@ impl Bar {
     }
 
     pub fn render_with(&mut self, runtime : &mut Runtime, renderer: &mut Renderer) {
-        if self.dirty && self.throttle.is_none() && self.pixel_width != 0 {
+        if self.dirty && self.throttle.is_none() && self.ls.can_render() {
             let rt_item = runtime.items.entry("bar".into()).or_insert_with(|| Rc::new(Item::none()));
             std::mem::swap(&mut self.item, rt_item);
 
-            let (canvas, finalize) = renderer.render_be_rgba((self.pixel_width, self.size * self.scale), &self.surf);
-            let mut canvas = match tiny_skia::PixmapMut::from_bytes(canvas, self.pixel_width as u32, (self.size * self.scale) as u32) {
+            let (canvas, finalize) = renderer.render_be_rgba((self.ls.pixel_width(), self.ls.pixel_height()), &self.ls.surf.wl);
+            let mut canvas = match tiny_skia::PixmapMut::from_bytes(canvas, self.ls.pixel_width() as u32, self.ls.pixel_height() as u32) {
                 Some(canvas) => canvas,
                 None => return,
             };
@@ -182,10 +139,10 @@ impl Bar {
             let mut ctx = Render {
                 canvas : &mut canvas, 
                 cache : &runtime.cache,
-                render_extents : (tiny_skia::Point::zero(), tiny_skia::Point { x: (self.pixel_width / self.scale) as f32, y: self.size as f32 }),
+                render_extents : (tiny_skia::Point::zero(), tiny_skia::Point { x: self.ls.config_width() as f32, y: self.ls.config_height() as f32 }),
                 render_pos : tiny_skia::Point::zero(),
                 render_flex : false,
-                render_xform: tiny_skia::Transform::from_scale(self.scale as f32, self.scale as f32),
+                render_xform: self.ls.surf.scale_transform(),
 
                 font,
                 font_size : 16.0,
@@ -215,12 +172,12 @@ impl Bar {
                     let yoff = if self.anchor_top {
                         0
                     } else {
-                        (self.size as u32).saturating_sub(self.click_size) as i32
+                        self.ls.config_height().saturating_sub(self.click_size) as i32
                     };
                     for (lo, len) in new_regions {
                         region.add(lo, yoff, len, self.click_size as i32);
                     }
-                    self.surf.set_input_region(Some(&region));
+                    self.ls.surf.wl.set_input_region(Some(&region));
                     region.destroy();
                 }
             }
@@ -228,7 +185,7 @@ impl Bar {
 
             std::mem::swap(&mut self.item, runtime.items.get_mut("bar").unwrap());
 
-            let frame = self.surf.frame();
+            let frame = self.ls.surf.wl.frame();
             let id = frame.as_ref().id();
             frame.quick_assign(move |_frame, _event, mut data| {
                 let state : &mut State = data.get().unwrap();
@@ -244,7 +201,7 @@ impl Bar {
                 }
                 state.request_draw();
             });
-            self.surf.commit();
+            self.ls.surf.wl.commit();
             self.throttle = Some(frame.into());
             self.dirty = false;
         }
@@ -266,7 +223,7 @@ impl Bar {
                 finalize(canvas.data_mut());
                 popup.wl.surf.commit();
                 if new_size.0 > popup.wl.size.0 || new_size.1 > popup.wl.size.1 {
-                    runtime.wayland.resize_popup(&self.ls_surf, &mut popup.wl, new_size, scale);
+                    runtime.wayland.resize_popup(&self.ls.ls_surf, &mut popup.wl, new_size, scale);
                 }
             }
         }
@@ -283,9 +240,9 @@ impl Bar {
                     self.popup = None;
                 }
             }
-            let anchor = (min_x as i32, 0, (max_x - min_x) as i32, self.size as i32);
+            let anchor = (min_x as i32, 0, (max_x - min_x) as i32, self.ls.config_height() as i32);
             let mut canvas = tiny_skia::Pixmap::new(1, 1).unwrap();
-            let size = desc.render_popup(runtime, &mut canvas.as_mut(), self.scale);
+            let size = desc.render_popup(runtime, &mut canvas.as_mut(), self.ls.surf.scale);
             if size.0 <= 0 || size.1 <= 0 {
                 return;
             }
@@ -323,12 +280,5 @@ impl Bar {
         if let Some(popup) = &mut self.popup {
             popup.desc.button(x, y, button, runtime);
         }
-    }
-}
-
-impl Drop for Bar {
-    fn drop(&mut self) {
-        self.ls_surf.destroy();
-        self.surf.destroy();
     }
 }
