@@ -213,15 +213,15 @@ impl Bar {
             if popup.wl.waiting_on_configure {
                 return;
             }
-            let scale = popup.wl.scale;
-            let pixel_size = (popup.wl.size.0 * scale, popup.wl.size.1 * scale);
+            let scale = popup.wl.surf.scale;
+            let pixel_size = popup.wl.pixel_size();
 
-            let (canvas, finalize) = renderer.render_be_rgba(pixel_size, &popup.wl.surf);
+            let (canvas, finalize) = renderer.render_be_rgba(pixel_size, &popup.wl.surf.wl);
             if let Some(mut canvas) = tiny_skia::PixmapMut::from_bytes(canvas, pixel_size.0 as u32, pixel_size.1 as u32) {
                 canvas.fill(tiny_skia::Color::TRANSPARENT);
                 let new_size = popup.desc.render_popup(runtime, &mut canvas, scale);
                 finalize(canvas.data_mut());
-                popup.wl.surf.commit();
+                popup.wl.surf.wl.commit();
                 if new_size.0 > popup.wl.size.0 || new_size.1 > popup.wl.size.1 {
                     runtime.wayland.resize_popup(&self.ls.ls_surf, &mut popup.wl, new_size, scale);
                 }

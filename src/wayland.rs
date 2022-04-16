@@ -159,7 +159,7 @@ impl WaylandClient {
                                 bar.no_hover(&mut state.runtime);
                             }
                             if let Some(popup) = &bar.popup {
-                                if popup.wl.surf.as_ref().id() == id {
+                                if popup.wl.surf.wl.as_ref().id() == id {
                                     bar.no_hover(&mut state.runtime);
                                 }
                             }
@@ -184,7 +184,7 @@ impl WaylandClient {
                             if Some(bar.ls.surf.wl.as_ref().id()) == over {
                                 bar.sink.button(x as f32, y as f32, button_id, &mut state.runtime);
                             }
-                            if bar.popup.as_ref().map(|p| p.wl.surf.as_ref().id()) == over {
+                            if bar.popup.as_ref().map(|p| p.wl.surf.wl.as_ref().id()) == over {
                                 bar.popup_button(x,y,button_id, &mut state.runtime);
                             }
                         }
@@ -235,7 +235,7 @@ impl WaylandClient {
                             if Some(bar.ls.surf.wl.as_ref().id()) == over {
                                 bar.sink.button(x as f32, y as f32, button_id, &mut state.runtime);
                             }
-                            if bar.popup.as_ref().map(|p| p.wl.surf.as_ref().id()) == over {
+                            if bar.popup.as_ref().map(|p| p.wl.surf.wl.as_ref().id()) == over {
                                 bar.popup_button(x,y,button_id, &mut state.runtime);
                             }
                         }
@@ -251,7 +251,7 @@ impl WaylandClient {
                             bar.hover(x,y, &mut state.runtime);
                         }
                         if let Some(popup) = &bar.popup {
-                            if popup.wl.surf.as_ref().id() == id {
+                            if popup.wl.surf.wl.as_ref().id() == id {
                                 bar.hover_popup(x, y, &mut state.runtime);
                             }
                         }
@@ -273,7 +273,7 @@ impl WaylandClient {
                                 bar.sink.button(x as f32, y as f32, 9, &mut state.runtime);
                                 break;
                             }
-                            if bar.popup.as_ref().map_or(false, |p| *p.wl.surf == surface) {
+                            if bar.popup.as_ref().map_or(false, |p| *p.wl.surf.wl == surface) {
                                 bar.popup_button(x,y,9, &mut state.runtime);
                             }
                         }
@@ -290,7 +290,7 @@ impl WaylandClient {
 
     fn new_popup_on(&self, ls_surf : &ZwlrLayerSurfaceV1, prefer_top : bool, anchor : (i32, i32, i32, i32), size : (i32, i32), scale : i32) -> Popup {
         use wayland_protocols::xdg_shell::client::xdg_positioner::{Anchor,Gravity};
-        let surf = self.env.create_surface();
+        let mut surf = Surface::new(self);
         let wmb : Attached<XdgWmBase> = self.env.require_global();
         let pos = wmb.create_positioner();
         pos.set_size(size.0, size.1);
@@ -305,7 +305,7 @@ impl WaylandClient {
         }
         pos.set_constraint_adjustment(0xF); // allow moving but not resizing
 
-        let as_xdg = wmb.get_xdg_surface(&surf);
+        let as_xdg = wmb.get_xdg_surface(&surf.wl);
         as_xdg.quick_assign(move |as_xdg, event, mut data| {
             use wayland_protocols::xdg_shell::client::xdg_surface::Event;
             let state : &mut State = data.get().unwrap();
@@ -347,14 +347,13 @@ impl WaylandClient {
         ls_surf.get_popup(&as_popup);
         as_xdg.set_window_geometry(0, 0, size.0, size.1);
         surf.set_buffer_scale(scale);
-        surf.commit();
+        surf.wl.commit();
         Popup {
             surf,
             as_xdg : as_xdg.into(),
             as_popup : as_popup.into(),
             anchor,
             size,
-            scale,
             prefer_top,
             waiting_on_configure : true,
         }
@@ -383,7 +382,7 @@ impl WaylandClient {
             // can't resize; emulate by destroying and re-creating.
             popup.as_popup.destroy();
             popup.as_xdg.destroy();
-            popup.surf.destroy();
+            popup.surf.wl.destroy();
             *popup = self.new_popup_on(ls_surf, popup.prefer_top, popup.anchor, size, scale);
         }
     }
@@ -573,20 +572,25 @@ impl Drop for LayerSurface {
 }
 
 pub struct Popup {
-    pub surf : Attached<WlSurface>,
+    pub surf : Surface,
     pub as_xdg : Attached<XdgSurface>,
     pub as_popup : Attached<XdgPopup>,
     pub anchor : (i32, i32, i32, i32),
     pub size : (i32, i32), // logical size
-    pub scale : i32,
     pub waiting_on_configure : bool,
     pub prefer_top : bool,
+}
+
+impl Popup {
+    pub fn pixel_size(&self) -> (i32, i32) {
+        (self.size.0 * self.surf.scale, self.size.1 * self.surf.scale)
+    }
 }
 
 impl Drop for Popup {
     fn drop(&mut self) {
         self.as_popup.destroy();
         self.as_xdg.destroy();
-        self.surf.destroy();
+        self.surf.wl.destroy();
     }
 }
