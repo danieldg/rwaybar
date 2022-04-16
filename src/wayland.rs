@@ -330,8 +330,15 @@ impl WaylandClient {
             use wayland_protocols::xdg_shell::client::xdg_popup::Event;
             let state : &mut State = data.get().unwrap();
             match event {
-                Event::Configure { .. } => {
-                    // no-op as we didn't allow changing w/h and we don't care about x/y
+                Event::Configure { width, height, .. } => {
+                    for bar in &mut state.bars {
+                        if let Some(popup) = &mut bar.popup {
+                            if popup.wl.as_popup == *as_popup {
+                                popup.wl.surf.width = width as u32;
+                                popup.wl.surf.height = height as u32;
+                            }
+                        }
+                    }
                 }
                 Event::PopupDone => {
                     for bar in &mut state.bars {
@@ -353,7 +360,7 @@ impl WaylandClient {
             as_xdg : as_xdg.into(),
             as_popup : as_popup.into(),
             anchor,
-            size,
+            req_size: size,
             prefer_top,
             waiting_on_configure : true,
         }
@@ -377,7 +384,7 @@ impl WaylandClient {
             }
             pos.set_constraint_adjustment(0xF); // allow moving but not resizing
             popup.as_popup.reposition(&pos, 0);
-            popup.size = size;
+            popup.req_size = size;
         } else {
             // can't resize; emulate by destroying and re-creating.
             popup.as_popup.destroy();
@@ -457,15 +464,26 @@ pub async fn run_queue(mut wl_queue : wayland_client::EventQueue, state : Rc<Ref
     }
 }
 
+/// A [WlSurface] with a defined scale and size
+///
+/// The size is determined by the server
 pub struct Surface {
     pub wl: Attached<WlSurface>,
-    pub scale : i32,
+    pub scale: i32,
+
+    width: u32,
+    height: u32,
 }
 
 impl Surface {
     pub fn new(wayland : &WaylandClient) -> Self {
         let wl : Attached<_> = wayland.env.create_surface();
-        Self { wl, scale: 1 }
+        Self {
+            wl,
+            scale: 1,
+            width: 0,
+            height: 0,
+        }
     }
 
     pub fn set_buffer_scale(&mut self, scale: i32) {
@@ -476,6 +494,14 @@ impl Surface {
     pub fn scale_transform(&self) -> tiny_skia::Transform {
         tiny_skia::Transform::from_scale(self.scale as f32, self.scale as f32)
     }
+
+    pub fn pixel_width(&self) -> i32 {
+        self.width as i32 * self.scale
+    }
+
+    pub fn pixel_height(&self) -> i32 {
+        self.height as i32 * self.scale
+    }
 }
 
 /// A [ZwlrLayerSurfaceV1] with readable copies of state
@@ -483,8 +509,6 @@ pub struct LayerSurface {
     pub surf: Surface,
     pub ls_surf: Attached<ZwlrLayerSurfaceV1>,
     anchor: layer_surface::Anchor,
-    config_width: u32,
-    config_height: u32,
     #[allow(unused)]
     layer: layer_shell::Layer,
 }
@@ -505,8 +529,8 @@ impl LayerSurface {
                             continue;
                         }
                         
-                        bar.ls.config_width = width;
-                        bar.ls.config_height = height;
+                        bar.ls.surf.width = width;
+                        bar.ls.surf.height = height;
 
                         ls_surf.ack_configure(serial);
                         bar.dirty = true;
@@ -532,30 +556,28 @@ impl LayerSurface {
             surf,
             ls_surf: ls_surf.into(),
             anchor: layer_surface::Anchor::empty(),
-            config_width: 0,
-            config_height: 0,
             layer
         }
     }
 
     pub fn can_render(&self) -> bool {
-        self.config_width != 0
+        self.surf.width != 0
     }
 
     pub fn config_width(&self) -> u32 {
-        self.config_width
+        self.surf.width
     }
 
     pub fn config_height(&self) -> u32 {
-        self.config_height
+        self.surf.height
     }
 
     pub fn pixel_width(&self) -> i32 {
-        self.config_width as i32 * self.surf.scale
+        self.surf.width as i32 * self.surf.scale
     }
 
     pub fn pixel_height(&self) -> i32 {
-        self.config_height as i32 * self.surf.scale
+        self.surf.height as i32 * self.surf.scale
     }
 
     pub fn set_anchor(&mut self, anchor: layer_surface::Anchor) {
@@ -571,19 +593,20 @@ impl Drop for LayerSurface {
     }
 }
 
+/// An [XdgPopup] with associated information
 pub struct Popup {
     pub surf : Surface,
     pub as_xdg : Attached<XdgSurface>,
     pub as_popup : Attached<XdgPopup>,
     pub anchor : (i32, i32, i32, i32),
-    pub size : (i32, i32), // logical size
+    pub req_size : (i32, i32), // requested logical size; may be rejected by compositor
     pub waiting_on_configure : bool,
     pub prefer_top : bool,
 }
 
 impl Popup {
     pub fn pixel_size(&self) -> (i32, i32) {
-        (self.size.0 * self.surf.scale, self.size.1 * self.surf.scale)
+        (self.surf.pixel_width(), self.surf.pixel_height())
     }
 }
 

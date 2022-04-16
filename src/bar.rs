@@ -128,7 +128,7 @@ impl Bar {
             let rt_item = runtime.items.entry("bar".into()).or_insert_with(|| Rc::new(Item::none()));
             std::mem::swap(&mut self.item, rt_item);
 
-            let (canvas, finalize) = renderer.render_be_rgba((self.ls.pixel_width(), self.ls.pixel_height()), &self.ls.surf.wl);
+            let (canvas, finalize) = renderer.render_be_rgba(&self.ls.surf);
             let mut canvas = match tiny_skia::PixmapMut::from_bytes(canvas, self.ls.pixel_width() as u32, self.ls.pixel_height() as u32) {
                 Some(canvas) => canvas,
                 None => return,
@@ -216,13 +216,13 @@ impl Bar {
             let scale = popup.wl.surf.scale;
             let pixel_size = popup.wl.pixel_size();
 
-            let (canvas, finalize) = renderer.render_be_rgba(pixel_size, &popup.wl.surf.wl);
+            let (canvas, finalize) = renderer.render_be_rgba(&popup.wl.surf);
             if let Some(mut canvas) = tiny_skia::PixmapMut::from_bytes(canvas, pixel_size.0 as u32, pixel_size.1 as u32) {
                 canvas.fill(tiny_skia::Color::TRANSPARENT);
                 let new_size = popup.desc.render_popup(runtime, &mut canvas, scale);
                 finalize(canvas.data_mut());
                 popup.wl.surf.wl.commit();
-                if new_size.0 > popup.wl.size.0 || new_size.1 > popup.wl.size.1 {
+                if new_size.0 > popup.wl.req_size.0 || new_size.1 > popup.wl.req_size.1 {
                     runtime.wayland.resize_popup(&self.ls.ls_surf, &mut popup.wl, new_size, scale);
                 }
             }

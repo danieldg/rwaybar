@@ -1,6 +1,6 @@
 use crate::font::{FontMapped,RenderKey,TextImage};
 use crate::state::Runtime;
-use crate::wayland::Globals;
+use crate::wayland::{Globals,Surface};
 use log::error;
 use tiny_skia::PixmapMut;
 use std::borrow::Cow;
@@ -56,8 +56,12 @@ impl Renderer {
         })
     }
 
-    pub fn render_be_rgba(&mut self, size : (i32, i32), target : &WlSurface) -> (&mut [u8], impl FnOnce(&mut [u8])) {
-        let stride = size.0 * 4;
+    pub fn render_be_rgba(&mut self, surface: &Surface) -> (&mut [u8], impl FnOnce(&mut [u8])) {
+        let width = surface.pixel_width();
+        let height = surface.pixel_height();
+        let target = &surface.wl;
+
+        let stride = width * 4;
         let has_be_rgba = self.has_be_rgba;
         let fmt = if has_be_rgba {
             smithay_client_toolkit::shm::Format::Abgr8888
@@ -65,10 +69,10 @@ impl Renderer {
             // wayland always supports this format, so we convert to it as a fallback
             smithay_client_toolkit::shm::Format::Argb8888
         };
-        let (canvas, wl_buf) = self.shm.buffer(size.0, size.1, stride, fmt).expect("OOM");
+        let (canvas, wl_buf) = self.shm.buffer(width, height, stride, fmt).expect("OOM");
 
         target.attach(Some(&wl_buf), 0, 0);
-        target.damage_buffer(0, 0, size.0, size.1);
+        target.damage_buffer(0, 0, width, height);
 
         (canvas, move |buf| {
             if !has_be_rgba {
