@@ -353,7 +353,7 @@ Key | Expanded | Default | Details
 `regex` | No | -- | The regular expression ([syntax](https://docs.rs/regex/#syntax) details)
 `replace` | No\* | -- | A replacement string for all matches of the regular expression.  `$1`, `${1}`, or `$name` refer to capture groups.
 
-This block's value either the replaced string when called with a blank key or the group identified by the key.
+This block's value is either the replaced string (when called with a blank key) or the group identified by the key.
 
 ## read-file
 
@@ -377,6 +377,7 @@ Key | Type | Default | Details
 `pre-node` | Block | -- | Block shown before displaying a container. See below for item contents.
 `window` | Block | -- | Block shown for every window in a container. See below for item contents.
 `post-node` | Block | -- | Block shown after displaying a container. See below for item contents.
+`pre-floats` | Block | -- | Block shown bewtween the tiled and floating containers on a workspace if there are floating windows.
 `pre-float` | Block | -- | Block shown before displaying a floating container.
 `post-float` | Block | -- | Block shown after displaying a floating container.
 `post-workspace` | Block | -- | Block shown after displaying the contents of a workspace. `{item.name}` and `{item.output}` are available.
@@ -478,6 +479,8 @@ Only one of `name`, `file`, or `path` needs to be specified.
 The `path` entry will have an contained `*` characters expanded similar to
 shell wildcard expansion.  This allows using paths that do not change depending
 on the kernel version and/or the order the kernel discovers devices.
+
+See the `meter` block to convert the number to a visual representation.
 
 ## tray
 

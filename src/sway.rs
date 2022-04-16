@@ -477,6 +477,7 @@ impl Workspace {
                         }
                         list.push(Rc::new(new));
                     }
+                    list.sort_by(sway_sort_fn);
                     value.list.set(list);
                     value.interested.take().notify_data("sway:workspace");
                 }
@@ -712,6 +713,7 @@ struct TreeItems {
     pre_node : Option<Rc<Item>>,
     window : Option<Rc<Item>>,
     post_node : Option<Rc<Item>>,
+    pre_floats : Option<Rc<Item>>,
     pre_float : Option<Rc<Item>>,
     post_float : Option<Rc<Item>>,
     post_workspace : Option<Rc<Item>>,
@@ -763,6 +765,7 @@ impl Tree {
             pre_node : config.get("pre-node").map(Item::from_toml_ref).map(Rc::new),
             window : config.get("window").map(Item::from_toml_ref).map(Rc::new),
             post_node : config.get("post-node").map(Item::from_toml_ref).map(Rc::new),
+            pre_floats : config.get("pre-floats").map(Item::from_toml_ref).map(Rc::new),
             pre_float : config.get("pre-float").map(Item::from_toml_ref).map(Rc::new),
             post_float : config.get("post-float").map(Item::from_toml_ref).map(Rc::new),
             post_workspace : config.get("post-workspace").map(Item::from_toml_ref).map(Rc::new),
@@ -852,6 +855,11 @@ impl Tree {
                     item.render_clamped_item(ctx, ev, &ii);
                 }
                 workspace.repr.render(items, ctx, ev);
+                if !workspace.floating.is_empty() {
+                    if let Some(item) = &items.pre_floats {
+                        item.render_clamped_item(ctx, ev, &ii);
+                    }
+                }
                 for float in &workspace.floating {
                     if let Some(item) = &items.pre_float {
                         item.render_clamped_item(ctx, ev, &ii);
