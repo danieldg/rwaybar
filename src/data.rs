@@ -406,7 +406,6 @@ pub enum Module {
     },
     FocusList {
         source : Box<Module>,
-        // always two items: non-focused, focused
         others : Rc<Item>,
         focused : Rc<Item>,
         spacing : Box<str>,

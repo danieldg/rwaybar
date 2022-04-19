@@ -5,13 +5,14 @@ the layer\_shell protocol (sway, most wlroots window managers, kwin).
 
 ## Available Modules
 
-- Clock
-- Custom scripts
+- Clipboard (viewer)
+- Clock and calendar
+- Custom scripts or dbus API queries
 - Disk (filesystem) free
 - File reader (for showing battery, temperature, load average, etc.)
-- MPRIS-compliant media player support
+- MPRIS-compliant media player support (title display, basic control)
 - PulseAudio volume controller
-- Sway (workspaces, binding mode)
+- Sway (window tree, workspaces, binding mode)
 - Tray
 
 See the [configuration documentation](doc/config.md) for details.
@@ -20,8 +21,7 @@ See the [configuration documentation](doc/config.md) for details.
 
 - Clicks can execute custom scripts or provide input to existing ones
 - Support for showing meters () and alerts.
-- Regular expressions
-- Simple expression evaluation
+- Reformatting of values using regular expressions and/or numeric expressions
 - Config reload on SIGHUP
 
 ## Building
@@ -31,6 +31,13 @@ cargo build --release
 cp doc/rwaybar.toml ~/.config/
 ./target/release/rwaybar
 ```
+
+You should modify the example config to match your outputs and to configure
+where and what you want on your bar.  Specify the environment variable
+`RUST_LOG=debug` to enable more verbose debugging.
+
+You can also disable some features using cargo's feature flags, which is useful
+if you don't use pulseaudio.
 
 ## Samples
 
