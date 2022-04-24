@@ -45,10 +45,14 @@ the-clock-font = "Liberation Sans 20"
 
 [fonts]
 # Named fonts are tried first, then all other fonts are searched for missing glyphs
+# `fc-list` can be used to find fonts on your system.
 "Liberation Sans" = "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf"
 mono = "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf"
 symbola = "/usr/share/fonts/gdouros-symbola/Symbola.ttf"
+# Note: this font provides images for emojis, so it disregards the font color.
 emoji = "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf"
+# This font provides the '' thermometer symbols used in the example
+# temperature meter, in addition to some non-colored emojis.
 fontawesome = "/usr/share/fonts/fontawesome/FontAwesome.otf"
 
 # Everything else is defined in its own section and addressed by name elsewhere.
@@ -312,7 +316,7 @@ max = 50
 src = "{temp1}"
 below = "{temp1}°C"
 above = "<span color='red'>{temp1}°C</span>"
-values = ["", "", "", "", "", ""]
+values = ["", "", "", "", "", "", "<span color='red'></span>"]
 
 [hdd-use]
 type = "disk"
@@ -387,7 +391,10 @@ format = "{psi-cpu-10.1} {psi-io-10.1} {cpu_icon}"
 
 [emoji]
 format = "⏱"
-font = "emoji"
+#font = "emoji"
+# Note: choosing a font explicitly is not required if the default fonts do not
+# contain the requested glyph, but it may be useful in case more than one font
+# defines it.
 
 [tvl]
 type = "group"

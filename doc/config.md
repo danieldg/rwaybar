@@ -139,6 +139,18 @@ Key | Expanded | Value | Details
 
 The actual text displayed is `{`modulename`.text}` with a tooltip of `{`modulename`.tooltip}`.
 
+# Fonts
+
+The fonts used to render text must currently be defined by declaring a name and
+filename in the `[fonts]` section.  You can find the font filenames used for
+specific named fonts by using the following command:
+
+`fc-list -f '%{family}: %{file}\n'|sort`
+
+If a given font does not contain glyphs for a given character, other fonts are
+tried in the order they are listed.  This configuration may be used to select
+particular fonts for emojis or other special characters.
+
 # Modules
 
 ## calendar

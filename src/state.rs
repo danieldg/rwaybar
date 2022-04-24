@@ -313,13 +313,18 @@ impl State {
             Err("At least one [[bar]] section is required")?;
         }
 
-        if font_list.is_empty() {
-            Err("At least one font is required in the [fonts] section")?;
-        }
-
         let mut fonts = Vec::with_capacity(font_list.len());
         for (name, path) in font_list {
-            fonts.push(FontMapped::new(name.clone(), path.as_str().unwrap_or("").to_owned().into())?);
+            match FontMapped::new(name.clone(), path.as_str().unwrap_or("").to_owned().into()) {
+                Ok(font) => fonts.push(font),
+                Err(e) => {
+                    error!("Could not load font '{name}' from {path}: {e}");
+                }
+            }
+        }
+
+        if fonts.is_empty() {
+            Err("At least one valid font is required in the [fonts] section")?;
         }
 
         debug!("Loading configuration");
