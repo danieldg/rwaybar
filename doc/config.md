@@ -181,7 +181,7 @@ If `mime_types` is unset, it defaults to `["text/plain;charset=utf-8", "text/pla
 
 Key | Expanded | Default | Details
 ----|----------|---------|--------
-`format` | Yes | `%H:%M` | Time format using the strftime format specifiers
+`format` | Yes | `%H:%M` | Time format using the strftime inspired date and time formatting [syntax](https://plot-rs.github.io/wasm32/chrono/format/strftime/index.html#specifiers)
 `timezone` | Yes | | Time zone to display (blank uses the system local time zone)
 
 ## dbus
