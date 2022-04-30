@@ -22,7 +22,6 @@ pulse = ['libpulse-binding']
 # dependency, but also changes the wayland-client code to link to the C
 # library.  No actual changes in functionality are present.
 dlopen = ['smithay-client-toolkit/dlopen']
-tools = []
 
 [dependencies]
 # Basic runtime
@@ -61,7 +60,3 @@ evalexpr = "*"
 libpulse-binding = { version = "*", features = ['pa_v14'], optional = true }
 regex = "1.5"
 zbus = { version = "2.1", default-features = false, features = ['tokio'] }
-
-[[bin]]
-name = 'font-dump'
-required-features = ['tools']
