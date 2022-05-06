@@ -201,7 +201,7 @@ pub fn draw_font_with<T>(target : &mut T, xform: Transform, to_draw : &[CGlyph],
         let target_h = scale * font.as_ref().height() as f32;
         if let Some(raster_img) = font.as_ref().glyph_raster_image(id, target_ppem as u16) {
             // This is a PNG glyph (color emoji); read it into a pixbuf and draw like an icon
-            if let Some(img) = OwnedImage::from_data(raster_img.data, target_h as u32) {
+            if let Some(img) = OwnedImage::from_data(raster_img.data, target_h as u32, false) {
                 let ypos = position.1 - font.as_ref().ascender() as f32 * scale;
                 let png_scale = target_ppem / raster_img.pixels_per_em as f32;
                 let xform = xform.pre_translate(position.0, ypos);
@@ -222,6 +222,13 @@ pub fn draw_font_with<T>(target : &mut T, xform: Transform, to_draw : &[CGlyph],
     }
 }
 
+/// High quality pixmap scaling - used when a resize may happen
+static HQ_PIXMAP_PAINT: tiny_skia::PixmapPaint = tiny_skia::PixmapPaint {
+    opacity: 1.0,
+    blend_mode: tiny_skia::BlendMode::SourceOver,
+    quality: tiny_skia::FilterQuality::Bicubic,
+};
+
 pub fn render_font(ctx: &mut Render, start: (f32, f32), text: &str, markup: bool) -> (f32, f32) {
     let (mut to_draw, size) = layout_font(ctx.font, ctx.font_size, ctx.runtime, ctx.font_color, text, markup);
     let clip_w = ctx.render_extents.1.x - ctx.render_pos.x;
@@ -240,7 +247,7 @@ pub fn render_font(ctx: &mut Render, start: (f32, f32), text: &str, markup: bool
         canvas.draw_pixmap(
             0, 0,
             img.0.as_ref(),
-            &tiny_skia::PixmapPaint::default(),
+            &HQ_PIXMAP_PAINT,
             xform,
             None);
     });
@@ -443,7 +450,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
             canvas.draw_pixmap(
                 0, 0,
                 img.0.as_ref(),
-                &tiny_skia::PixmapPaint::default(),
+                &HQ_PIXMAP_PAINT,
                 xform,
                 None);
         });
@@ -459,7 +466,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
             canvas.draw_pixmap(
                 0, 0,
                 img.0.as_ref(),
-                &tiny_skia::PixmapPaint::default(),
+                &HQ_PIXMAP_PAINT,
                 xform,
                 None);
         });

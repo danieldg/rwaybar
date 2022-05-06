@@ -18,14 +18,15 @@ impl OwnedImage {
         self.0.as_ref()
     }
 
-    pub fn from_file<R : io::Read>(mut file : R, tsize : u32) -> Option<Self> {
+    pub fn from_file<R : io::Read>(mut file : R, tsize : u32, rescale: bool) -> Option<Self> {
         let mut buf = Vec::new();
         file.read_to_end(&mut buf).ok()?;
-        Self::from_data(&buf, tsize)
+        Self::from_data(&buf, tsize, rescale)
     }
 
-    pub fn from_data(buf : &[u8], tsize : u32) -> Option<Self> {
+    pub fn from_data(buf : &[u8], tsize : u32, rescale: bool) -> Option<Self> {
         Self::from_png(buf)
+            .map(|img| if rescale { img.rescale_height(tsize) } else { img })
             .or_else(|| Self::from_svg(buf, tsize))
     }
 
@@ -59,6 +60,29 @@ impl OwnedImage {
         Some(Self(pixmap))
     }
 
+    pub fn rescale_height(self, height: u32) -> Self {
+        if self.0.height() == height {
+            return self;
+        }
+        let scale = height as f32 / self.0.height() as f32;
+        let xform = Transform::from_scale(scale, scale);
+        let px_width = (self.0.width() as f32 * scale).ceil() as u32;
+        let mut pixmap = tiny_skia::Pixmap::new(px_width, height).unwrap();
+
+        pixmap.draw_pixmap(
+            0, 0,
+            self.as_ref(),
+            &tiny_skia::PixmapPaint {
+                opacity: 1.0,
+                blend_mode: tiny_skia::BlendMode::Source,
+                quality: tiny_skia::FilterQuality::Bicubic,
+            },
+            xform,
+            None);
+
+        Self(pixmap)
+    }
+
     pub fn from_svg(data : &[u8], height : u32) -> Option<Self> {
         let tree = usvg::Tree::from_data(data, &usvg::Options::default().to_ref()).ok()?;
         let svg_width = tree.svg_node().size.width();
@@ -70,7 +94,7 @@ impl OwnedImage {
     }
 }
 
-fn open_icon(xdg : &xdg::BaseDirectories, name : &str, target_size : f32) -> io::Result<PathBuf> {
+fn open_icon(xdg : &xdg::BaseDirectories, name : &str, target_size : u32) -> io::Result<PathBuf> {
     if name.contains('/') {
         return Ok(PathBuf::from(name.to_owned()));
     }
@@ -118,7 +142,7 @@ fn open_icon(xdg : &xdg::BaseDirectories, name : &str, target_size : f32) -> io:
     Err(io::ErrorKind::NotFound.into())
 }
 
-fn iter_icons<F,R>(base : &PathBuf, target_size : f32, mut f : F) -> io::Result<Option<R>>
+fn iter_icons<F,R>(base : &PathBuf, target_size : u32, mut f : F) -> io::Result<Option<R>>
     where F : FnMut(PathBuf) -> Option<R>
 {
     let mut sorted_dirs = Vec::new();
@@ -139,9 +163,9 @@ fn iter_icons<F,R>(base : &PathBuf, target_size : f32, mut f : F) -> io::Result<
                 Some(s) => {
                     if let Some(size) = s.find('x').and_then(|p| s[..p].parse::<u32>().ok()) {
                         cur_size = size;
-                        if target_size == size as f32 {
+                        if target_size == size {
                             cur_rank = 5;
-                        } else if target_size > size as f32 {
+                        } else if target_size > size {
                             cur_rank = 2;
                         } else {
                             cur_rank = 1;
@@ -176,16 +200,15 @@ pub fn render(ctx : &mut Render, name : &str) -> Result<(), ()> {
     xform.map_points(&mut extent_points);
     let xsize = extent_points[1].x - extent_points[0].x;
     let ysize = extent_points[1].y - extent_points[0].y;
-    let pixel_size = f32::min(xsize, ysize);
-    if pixel_size < 1.0 {
+    let tsize = ysize as u32;
+    if f32::min(xsize, ysize) < 1.0 {
         return Err(());
     }
 
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let tsize = pixel_size as u32;
         match cache.entry((name.into(), tsize)).or_insert_with(|| {
-                open_icon(&ctx.runtime.xdg, name, pixel_size).ok()
+                open_icon(&ctx.runtime.xdg, name, tsize).ok()
                 .and_then(|mut path| {
                     match File::open(&path) { Ok(file) => return Some(file), _ => {} }
                     path.set_extension("png");
@@ -194,25 +217,20 @@ pub fn render(ctx : &mut Render, name : &str) -> Result<(), ()> {
                     match File::open(&path) { Ok(file) => return Some(file), _ => {} }
                     None
                 })
-                .and_then(|file| OwnedImage::from_file(file, tsize))
+                .and_then(|file| OwnedImage::from_file(file, tsize, true))
             })
         {
             Some(img) => {
-                let xscale = xsize / img.0.width() as f32;
-                let yscale = ysize / img.0.height() as f32;
-                let scale = f32::min(xscale, yscale);
-                // resize using real pixels
-                let img_xform = Transform::from_scale(scale, scale)
-                    .post_translate(extent_points[0].x, extent_points[0].y);
                 ctx.canvas.draw_pixmap(
-                    0, 0,
+                    extent_points[0].x.round() as i32,
+                    extent_points[0].y.round() as i32,
                     img.as_ref(),
                     &Default::default(),
-                    img_xform,
+                    Transform::identity(),
                     None);
-                // convert the sizes back to sclaed pixels (inverse xform)
-                ctx.render_pos.x += img.0.width() as f32 * scale / xform.sx;
-                ctx.render_pos.y += img.0.height() as f32 * scale / xform.sy;
+                // convert the sizes back to virtual pixels (inverse xform)
+                ctx.render_pos.x += img.0.width() as f32 / xform.sx;
+                ctx.render_pos.y += img.0.height() as f32 / xform.sy;
                 Ok(())
             }
             None => Err(()),
