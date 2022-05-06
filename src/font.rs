@@ -1,7 +1,8 @@
 use crate::icon::OwnedImage;
 use crate::item::Formatting;
 use crate::state::Runtime;
-use crate::render::{Render,UID};
+use crate::render::Render;
+use crate::util::UID;
 use log::info;
 use std::fs::File;
 use std::io;
@@ -32,7 +33,7 @@ impl FontMapped {
         let buf = unsafe { &*(mmap.as_ref() as *const [u8]) };
         let parsed = Face::from_slice(&buf, 0)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let uid = UID::default();
+        let uid = UID::new();
         Ok(FontMapped { parsed, mmap, file : path, name, uid })
     }
 

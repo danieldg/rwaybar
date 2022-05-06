@@ -13,17 +13,6 @@ use wayland_client::Attached;
 use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_client::protocol::wl_surface::WlSurface;
 
-#[derive(Copy,Clone,Debug,Eq,PartialEq,Hash,Ord,PartialOrd)]
-pub struct UID(u64);
-
-impl Default for UID {
-    fn default() -> Self {
-        use std::sync::atomic::{AtomicU64,Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        Self(N.fetch_add(1, Ordering::Relaxed))
-    }
-}
-
 pub struct Renderer {
     shm : AutoMemPool,
     pub cursor : Cursor,

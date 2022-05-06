@@ -201,3 +201,14 @@ pub fn glob_expand<'a>(file: impl Into<Cow<'a, str>>) -> Option<(Cow<'a, str>, b
     let c = candidates.next()?;
     Some((c.into(), candidates.next().is_some()))
 }
+
+#[derive(Copy,Clone,Debug,Eq,PartialEq,Hash,Ord,PartialOrd)]
+pub struct UID(u64);
+
+impl UID {
+    pub fn new() -> Self {
+        use std::sync::atomic::{AtomicU64,Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        Self(N.fetch_add(1, Ordering::Relaxed))
+    }
+}
