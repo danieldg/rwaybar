@@ -264,10 +264,30 @@ target = 'sink'
 # Instead of the default, you can specify a particular sink:
 # target = 'sink:alsa_output.pci-0000_00_1f.3.analog-stereo'
 # "pactl list" will show the available names
+on-click-middle = { send = "pulse-spk.mute", format = "toggle" }
+on-scroll-up = { send = "pulse-spk.volume", format = '+5%' }
+on-scroll-down = { send = "pulse-spk.volume", format = '-5%' }
 
 [pulse-mic]
-type = 'pulse'
-target = 'source'
+type = 'focus-list'
+source = { type = 'pulse', target = 'sources' }
+
+[pulse-mic.item]
+format = '{mic-s}'
+tooltip = '{item.tooltip}'
+markup = true
+on-click-middle = { send = "item.mute", format = "toggle" }
+on-scroll-up = { send = "item.volume", format = '+5%' }
+on-scroll-down = { send = "item.volume", format = '-5%' }
+
+[mic-s]
+type = 'switch'
+format = '{item.mute}'
+default = "{item.volume}<span color='#ff8888'></span>"
+
+[mic-s.cases]
+0 = "<span color='#88ff88'></span>"
+1 = ""
 
 [tray]
 type = "tray"
@@ -411,4 +431,4 @@ fg = "white"
 bg = "black"
 bg-alpha = "0.2"
 spacing = 15
-items = ["players", "weather", "tray", "hdd", "cpu" ]
+items = ["players", "weather", "tray", "pulse-mic", "hdd", "cpu" ]
