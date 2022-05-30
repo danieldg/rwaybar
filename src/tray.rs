@@ -801,15 +801,19 @@ impl TrayPopup {
             ..Default::default()
         };
 
-        let (mut xsize, mut ypos) = render_font(ctx, (2.0, 2.0), self.title.as_deref().unwrap_or_default(), false);
-        xsize += 2.0;
-        ypos = 2.0 + ypos.ceil();
+        let xbase = ctx.render_pos.x;
+
+        let (mut xsize, ysize) = render_font(ctx, self.title.as_deref().unwrap_or_default(), false);
+        xsize += xbase;
+        ctx.render_pos.y += ysize;
 
         if let Some(tooltip) = self.tooltip.as_ref() {
             if !tooltip.is_empty() {
-                let tsize = render_font(ctx, (10.0, ypos), &tooltip, true);
-                xsize = xsize.max(tsize.0 + 10.0);
-                ypos += tsize.1.ceil();
+                ctx.render_pos.x += 8.0;
+                let tsize = render_font(ctx, &tooltip, true);
+                xsize = xsize.max(tsize.0 + ctx.render_pos.x);
+                ctx.render_pos.x = xbase;
+                ctx.render_pos.y += tsize.1.ceil();
             }
         }
 
@@ -827,33 +831,35 @@ impl TrayPopup {
 
         self.menu.items.take_in(|items| {
             if !items.is_empty() {
-                if let Some(rect) = tiny_skia::Rect::from_xywh(0.0, ypos + 4.0, width, 2.0) {
+                if let Some(rect) = tiny_skia::Rect::from_xywh(xbase, ctx.render_pos.y + 4.0, width - xbase, 2.0) {
                     ctx.canvas.fill_rect(rect, &line_paint, ctx.render_xform, None);
                 }
 
-                ypos += 9.0;
+                ctx.render_pos.y += 9.0;
             }
             for item in items {
                 if !item.visible {
                     continue;
                 }
-                let indent = 2.0 + item.depth as f32 * 20.0;
+                let indent = xbase + item.depth as f32 * 20.0;
                 if item.is_sep {
-                    if let Some(rect) = tiny_skia::Rect::from_xywh(indent + 3.0, ypos + 3.0, width - indent - 5.0, 1.0) {
+                    if let Some(rect) = tiny_skia::Rect::from_xywh(indent + 3.0, ctx.render_pos.y + 3.0, width - indent - 5.0, 1.0) {
                         ctx.canvas.fill_rect(rect, &line_paint, ctx.render_xform, None);
                     }
 
-                    ypos += 7.0;
+                    ctx.render_pos.y += 7.0;
                 } else {
-                    let tsize = render_font(ctx, (indent, ypos), &item.label, false);
-                    let end = ypos + tsize.1.ceil();
+                    ctx.render_pos.x = indent;
+                    let tsize = render_font(ctx, &item.label, false);
+                    let end = ctx.render_pos.y + tsize.1.ceil();
                     xsize = xsize.max(indent + tsize.0);
-                    rendered_ids.push((ypos, end, item.id));
-                    ypos = end + 5.0;
+                    rendered_ids.push((ctx.render_pos.y, end, item.id));
+                    ctx.render_pos.y = end + 5.0;
                 }
             }
         });
-        ctx.render_pos = tiny_skia::Point { x: xsize.ceil() + 2.0, y: ypos };
+
+        ctx.render_pos.x = xsize.ceil();
     }
 
     pub fn button(&mut self, x : f64, y : f64, button : Button, _runtime : &mut Runtime) {

@@ -230,13 +230,13 @@ static HQ_PIXMAP_PAINT: tiny_skia::PixmapPaint = tiny_skia::PixmapPaint {
     quality: tiny_skia::FilterQuality::Bicubic,
 };
 
-pub fn render_font(ctx: &mut Render, start: (f32, f32), text: &str, markup: bool) -> (f32, f32) {
+pub fn render_font(ctx: &mut Render, text: &str, markup: bool) -> (f32, f32) {
     let (mut to_draw, size) = layout_font(ctx.font, ctx.font_size, ctx.runtime, ctx.font_color, text, markup);
     let clip_w = ctx.render_extents.1.x - ctx.render_pos.x;
     if size.1 > clip_w {
         to_draw.retain(|glyph| glyph.position.0 < clip_w);
     }
-    let xform = ctx.render_xform.pre_translate(start.0, start.1);
+    let xform = ctx.render_xform.pre_translate(ctx.render_pos.x, ctx.render_pos.y);
     draw_font_with(ctx.canvas, xform, &to_draw, |canvas,path,color| {
         let paint = tiny_skia::Paint {
             shader: tiny_skia::Shader::SolidColor(color),

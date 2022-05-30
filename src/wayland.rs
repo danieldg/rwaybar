@@ -191,11 +191,11 @@ impl SurfaceData {
     }
 
     pub fn pixel_width(&self) -> i32 {
-        self.width.load(Ordering::Relaxed) as i32 * self.sctk.scale_factor()
+        self.width.load(Ordering::Relaxed) as i32 * self.scale_factor()
     }
 
     pub fn pixel_height(&self) -> i32 {
-        self.height.load(Ordering::Relaxed) as i32 * self.sctk.scale_factor()
+        self.height.load(Ordering::Relaxed) as i32 * self.scale_factor()
     }
 }
 
@@ -569,11 +569,10 @@ impl smithay_client_toolkit::shell::xdg::XdgShellHandler for State {
 }
 
 impl smithay_client_toolkit::shell::xdg::popup::PopupHandler for State {
-    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, popup: &popup::Popup, _: u32) {
+    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, popup: &popup::Popup, config: popup::PopupConfigure) {
         let data = SurfaceData::from_wl(popup.wl_surface());
-        let (width, height) = popup.dimensions();
-        data.width.store(width as u32, Ordering::Relaxed);
-        data.height.store(height as u32, Ordering::Relaxed);
+        data.width.store(config.width as u32, Ordering::Relaxed);
+        data.height.store(config.height as u32, Ordering::Relaxed);
         data.state.fetch_or(SurfaceData::CONFIGURED, Ordering::Relaxed);
         if data.damage_full() {
             self.request_draw();
@@ -635,9 +634,9 @@ impl WaylandClient {
         self.flush.take().map(|f| f.wake());
     }
 
-    pub fn create_surface(&self) -> WlSurface {
+    pub fn create_surface(&self, scale: i32) -> WlSurface {
         let sd = SurfaceData {
-            sctk: Default::default(),
+            sctk: smithay_client_toolkit::compositor::SurfaceData::with_initial_scale(scale),
             height: AtomicU32::new(0),
             width: AtomicU32::new(0),
             state: AtomicU8::new(SurfaceData::NEW),
@@ -645,8 +644,8 @@ impl WaylandClient {
         self.compositor.create_surface_with_data(&self.queue, sd).unwrap()
     }
 
-    pub fn create_layer_surface(&mut self, builder: sctk_layer::LayerSurfaceBuilder, layer: sctk_layer::Layer) -> LayerSurface {
-        let surf = self.create_surface();
+    pub fn create_layer_surface(&mut self, builder: sctk_layer::LayerSurfaceBuilder, layer: sctk_layer::Layer, scale: i32) -> LayerSurface {
+        let surf = self.create_surface(scale);
         builder.map(&self.queue,
             &mut self.layer,
             surf,
@@ -776,7 +775,7 @@ impl Popup {
     pub fn new(wayland : &mut WaylandClient, parent: &ZwlrLayerSurfaceV1, prefer_top : bool, anchor : (i32, i32, i32, i32), size : (i32, i32), scale : i32) -> Self {
         use xdg_positioner::{Anchor,Gravity};
 
-        let surf = wayland.create_surface();
+        let surf = wayland.create_surface(scale);
 
         let pos = wayland.xdg.create_positioner().unwrap();
 
@@ -832,10 +831,5 @@ impl Popup {
             // can't resize; emulate by destroying and re-creating.
             *self = Self::new(wayland, ls_surf, self.prefer_top, self.anchor, size, scale);
         }
-    }
-
-    pub fn pixel_size(&self) -> (i32, i32) {
-        let data = SurfaceData::from_wl(&self.surf);
-        (data.pixel_width(), data.pixel_height())
     }
 }

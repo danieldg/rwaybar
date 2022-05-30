@@ -29,6 +29,65 @@ impl Renderer {
         }
     }
 
+    pub fn render_dummy<R>(rt: &mut Runtime, render: impl FnOnce(&mut Render) -> R) -> R {
+        let mut canvas = tiny_skia::Pixmap::new(1, 1).unwrap();
+        let mut canvas = canvas.as_mut();
+        let font = &rt.fonts[0];
+
+        let mut ctx = Render {
+            canvas : &mut canvas,
+            cache : &rt.cache,
+            render_extents : (tiny_skia::Point::zero(), tiny_skia::Point { x: 1.0, y: 1.0 }),
+            render_pos : tiny_skia::Point::zero(),
+            render_flex : false,
+            render_xform: tiny_skia::Transform::identity(),
+
+            font,
+            font_size : 16.0,
+            font_color : tiny_skia::Color::BLACK,
+            align : Align::bar_default(),
+            err_name: "dummy",
+            text_stroke : None,
+            text_stroke_size : None,
+            runtime: rt,
+        };
+        render(&mut ctx)
+    }
+
+    pub fn render<R>(&mut self, rt: &mut Runtime, surface: &WlSurface, render: impl FnOnce(&mut Render) -> R) -> Option<R> {
+        let surface_data = SurfaceData::from_wl(surface);
+        let (canvas, finalize) = self.render_be_rgba(&mut rt.wayland, surface);
+        let mut canvas = match tiny_skia::PixmapMut::from_bytes(canvas, surface_data.pixel_width() as u32, surface_data.pixel_height() as u32) {
+            Some(canvas) => canvas,
+            None => return None,
+        };
+        canvas.fill(tiny_skia::Color::TRANSPARENT);
+        let font = &rt.fonts[0];
+
+        let mut ctx = Render {
+            canvas : &mut canvas,
+            cache : &rt.cache,
+            render_extents : (tiny_skia::Point::zero(), tiny_skia::Point { x: surface_data.width() as f32, y: surface_data.height() as f32 }),
+            render_pos : tiny_skia::Point::zero(),
+            render_flex : false,
+            render_xform: surface_data.scale_transform(),
+
+            font,
+            font_size : 16.0,
+            font_color : tiny_skia::Color::BLACK,
+            align : Align::bar_default(),
+            err_name: "bar",
+            text_stroke : None,
+            text_stroke_size : None,
+            runtime: rt,
+        };
+        let rv = render(&mut ctx);
+        finalize(ctx.canvas.data_mut());
+        surface.frame(&ctx.runtime.wayland.queue, surface.clone()).unwrap();
+        surface.commit();
+        Some(rv)
+    }
+
     pub fn render_be_rgba(&mut self, wl: &WaylandClient, target: &WlSurface) -> (&mut [u8], impl FnOnce(&mut [u8])) {
         let data = SurfaceData::from_wl(target);
         let width = data.pixel_width();

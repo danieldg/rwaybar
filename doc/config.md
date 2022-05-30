@@ -28,6 +28,7 @@ Key | Value | Expanded | Default
 `left` | Block or list of blocks | No | None
 `center` | Block or list of blocks | No | None
 `right` | Block or list of blocks | No | None
+`tooltips` | Formatting for tooltips | No | `{ bg = "black", fg = "white", padding = "2" }`
 
 You can view the name/make/model/description for your monitors by running
 `RUST_LOG=info rwaybar`; they are also displayed by default if the

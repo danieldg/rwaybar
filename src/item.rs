@@ -299,6 +299,161 @@ impl Formatting {
     fn is_boring(&self) -> bool {
         *self == Self::default()
     }
+
+    fn render(&self, ctx: &mut Render, inner: impl FnOnce(&mut Render)) -> (Point, f32, f32, f32) {
+        let format = self;
+        let outer_clip = ctx.render_extents;
+        let mut start_pos = ctx.render_pos;
+        let mut inner_clip = outer_clip;
+
+        let shrink = format.get_shrink();
+        if (shrink, format.max_width) != (None, None) {
+            match shrink {
+                Some((t, r, b, l)) => {
+                    inner_clip.0.x += l;
+                    inner_clip.0.y += t;
+                    start_pos.x += l;
+                    start_pos.y += t;
+                    inner_clip.1.x -= r;
+                    inner_clip.1.y -= b;
+                }
+                None => {}
+            }
+            match format.max_width {
+                Some(Width::Pixels(n)) => {
+                    let clip_at = start_pos.x + n;
+                    if inner_clip.1.x > clip_at {
+                        ctx.render_flex = false;
+                        inner_clip.1.x = clip_at;
+                    }
+                }
+                Some(Width::Fraction(f)) => {
+                    let parent_width = outer_clip.1.x - outer_clip.0.x;
+                    inner_clip.1.x = inner_clip.1.x.min(start_pos.x + parent_width * f);
+                }
+                None => {}
+            }
+        }
+
+        ctx.render_pos = start_pos;
+        ctx.render_extents = inner_clip;
+
+        inner(ctx);
+
+        let mut end_pos = ctx.render_pos;
+
+        let child_render_width = end_pos.x - start_pos.x;
+        let mut min_width = match format.min_width {
+            None => 0.0,
+            Some(Width::Pixels(n)) => n,
+            Some(Width::Fraction(f)) => f * (outer_clip.1.x - outer_clip.0.x),
+        };
+        if min_width > inner_clip.1.x - start_pos.x {
+            // clamp the minimum to only the available region
+            min_width = inner_clip.1.x - start_pos.x;
+        }
+
+        let inner_x_offset;
+        if child_render_width < min_width {
+            // child is smaller than the box; align it
+            let expand = min_width - child_render_width;
+            match ctx.align.horiz {
+                Some(f) => {
+                    inner_x_offset = expand * f;
+                    let x0 = start_pos.x.floor() as usize;
+                    let x1 = end_pos.x.ceil() as usize;
+                    let ilen = x1 - x0;
+                    let wlen = min_width.ceil() as usize;
+                    if wlen > ilen {
+                        // Align by rotating the pixels of the inner clip region to the right.  The
+                        // right part of the clip region should just be blank pixels at this point,
+                        // which is what we want to put on the left.
+                        let rlen = (wlen - ilen) * 4;
+                        let stride = ctx.canvas.width() as usize * 4;
+                        let h = ctx.canvas.height() as usize;
+                        for y in 0..h {
+                            let x0 = y * stride + x0 * 4;
+                            let x2 = y * stride + (x0 + wlen) * 4;
+                            if let Some(buf) = ctx.canvas.data_mut().get_mut(x0..x2) {
+                                buf.rotate_right(rlen);
+                            }
+                        }
+                    }
+                }
+                _ => { // defaults to left align
+                    inner_x_offset = 0.0;
+                }
+            }
+        } else {
+            inner_x_offset = 0.0;
+        }
+
+        let shrink_r_width = shrink.map_or(0.0, |s| s.1);
+        let shrink_b_height = shrink.map_or(0.0, |s| s.2);
+        if !ctx.render_flex {
+            // clip to the allowed size
+            end_pos.x = end_pos.x.min(inner_clip.1.x);
+        }
+        let outer_pos = end_pos + Point { x: shrink_r_width, y: shrink_b_height };
+
+        if format.bg_rgba.is_some() || format.border.is_some() {
+            use tiny_skia::Rect;
+            let mut bg_clip = (start_pos, end_pos);
+            if let Some((t, r, b, l)) = format.padding {
+                bg_clip.0.x -= l;
+                bg_clip.0.y -= t;
+                bg_clip.1.x += r;
+                bg_clip.1.y += b;
+            }
+
+            if let Some(rgba) = format.bg_rgba {
+                if let Some(rect) = Rect::from_ltrb(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x, bg_clip.1.y) {
+                    let paint = tiny_skia::Paint {
+                        shader: tiny_skia::Shader::SolidColor(rgba),
+                        anti_alias: true,
+                        // background is painted "underneath"
+                        blend_mode : tiny_skia::BlendMode::DestinationOver,
+                        ..tiny_skia::Paint::default()
+                    };
+                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
+                }
+            }
+
+            if let Some((t, r, b, l)) = format.border {
+                let rgba = format.border_rgba.unwrap_or(ctx.font_color);
+                let paint = tiny_skia::Paint {
+                    shader: tiny_skia::Shader::SolidColor(rgba),
+                    anti_alias: true,
+                    ..tiny_skia::Paint::default()
+                };
+
+                bg_clip.0.y -= t;
+                if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x - bg_clip.0.x, t) {
+                    // top edge, no corners
+                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
+                }
+
+                bg_clip.0.x -= l;
+                if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, l, bg_clip.1.y - bg_clip.0.y) {
+                    // left edge + top-left corner
+                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
+                }
+
+                if let Some(rect) = Rect::from_xywh(bg_clip.1.x, bg_clip.0.y, r, bg_clip.1.y - bg_clip.0.y) {
+                    // right edge + top-right corner
+                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
+                }
+
+                bg_clip.1.x += r;
+                if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.1.y, bg_clip.1.x - bg_clip.0.x, b) {
+                    // bottom edge + both corners
+                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
+                }
+            }
+        }
+
+        (outer_pos, inner_x_offset, start_pos.x, end_pos.x)
+    }
 }
 
 impl From<Module> for Item {
@@ -324,12 +479,27 @@ impl Item {
         let left = Rc::new(cfg.get("left").map_or_else(Item::none, Item::from_toml_ref));
         let right = Rc::new(cfg.get("right").map_or_else(Item::none, Item::from_toml_ref));
         let center = Rc::new(cfg.get("center").map_or_else(Item::none, Item::from_toml_ref));
+        let mut tooltips = cfg.get("tooltips").map_or_else(ItemFormat::default, ItemFormat::from_toml);
+
+        if let Some(table) = tooltips.cfg.as_mut().and_then(|c| c.as_table_mut()) {
+            if !table.contains_key("bg") {
+                table.insert("bg".into(), "black".into());
+            }
+            if !table.contains_key("padding") {
+                table.insert("padding".into(), "2".into());
+            }
+        } else {
+            tooltips.cfg = Some(toml::toml! {
+                bg = "black"
+                padding = "2"
+            });
+        }
 
         Item {
             events : EventSink::from_toml(&cfg),
             format : ItemFormat::from_toml(&cfg),
             data : Module::Bar {
-                left, center, right,
+                left, center, right, tooltips,
                 config : cfg,
             },
         }
@@ -390,158 +560,12 @@ impl Item {
             return rv;
         }
 
-        let outer_clip = ctx.render_extents;
-        let mut start_pos = ctx.render_pos;
-        let mut inner_clip = outer_clip;
+        let (pos, offset, min, max) = format.render(&mut ctx, |ctx| {
+            self.render_inner(ctx, &mut rv);
+        });
 
-        let shrink = format.get_shrink();
-        if (shrink, format.max_width) != (None, None) {
-            match shrink {
-                Some((t, r, b, l)) => {
-                    inner_clip.0.x += l;
-                    inner_clip.0.y += t;
-                    start_pos.x += l;
-                    start_pos.y += t;
-                    inner_clip.1.x -= r;
-                    inner_clip.1.y -= b;
-                }
-                None => {}
-            }
-            match format.max_width {
-                Some(Width::Pixels(n)) => {
-                    let clip_at = start_pos.x + n;
-                    if inner_clip.1.x > clip_at {
-                        ctx.render_flex = false;
-                        inner_clip.1.x = clip_at;
-                    }
-                }
-                Some(Width::Fraction(f)) => {
-                    let parent_width = outer_clip.1.x - outer_clip.0.x;
-                    inner_clip.1.x = inner_clip.1.x.min(start_pos.x + parent_width * f);
-                }
-                None => {}
-            }
-        }
-
-        ctx.render_pos = start_pos;
-        ctx.render_extents = inner_clip;
-        self.render_inner(&mut ctx, &mut rv);
-
-        let mut end_pos = ctx.render_pos;
-
-        let child_render_width = end_pos.x - start_pos.x;
-        let mut min_width = match format.min_width {
-            None => 0.0,
-            Some(Width::Pixels(n)) => n,
-            Some(Width::Fraction(f)) => f * (outer_clip.1.x - outer_clip.0.x),
-        };
-        if min_width > inner_clip.1.x - start_pos.x {
-            // clamp the minimum to only the available region
-            min_width = inner_clip.1.x - start_pos.x;
-        }
-
-        let inner_x_offset;
-        if child_render_width < min_width {
-            // child is smaller than the box; align it
-            let expand = min_width - child_render_width;
-            match ctx.align.horiz {
-                Some(f) => {
-                    inner_x_offset = expand * f;
-                    let x0 = start_pos.x.floor() as usize;
-                    let x1 = end_pos.x.ceil() as usize;
-                    let ilen = x1 - x0;
-                    let wlen = min_width.ceil() as usize;
-                    if wlen > ilen {
-                        // Align by rotating the pixels of the inner clip region to the right.  The
-                        // right part of the clip region should just be blank pixels at this point,
-                        // which is what we want to put on the left.
-                        let rlen = (wlen - ilen) * 4;
-                        let stride = ctx.canvas.width() as usize * 4;
-                        let h = ctx.canvas.height() as usize;
-                        for y in 0..h {
-                            let x0 = y * stride + x0 * 4;
-                            let x2 = y * stride + (x0 + wlen) * 4;
-                            if let Some(buf) = ctx.canvas.data_mut().get_mut(x0..x2) {
-                                buf.rotate_right(rlen);
-                            }
-                        }
-                    }
-                }
-                _ => { // defaults to left align
-                    inner_x_offset = 0.0;
-                }
-            }
-        } else {
-            inner_x_offset = 0.0;
-        }
-
-        let shrink_r_width = shrink.map_or(0.0, |s| s.1);
-        let shrink_b_height = shrink.map_or(0.0, |s| s.2);
-        if !ctx.render_flex {
-            // clip to the allowed size
-            end_pos.x = end_pos.x.min(inner_clip.1.x);
-        }
-        let outer_pos = end_pos + Point { x: shrink_r_width, y: shrink_b_height };
-
-        rv.offset_clamp(inner_x_offset, start_pos.x, end_pos.x);
-
-        if format.bg_rgba.is_some() || format.border.is_some() {
-            use tiny_skia::Rect;
-            let mut bg_clip = (start_pos, end_pos);
-            if let Some((t, r, b, l)) = format.padding {
-                bg_clip.0.x -= l;
-                bg_clip.0.y -= t;
-                bg_clip.1.x += r;
-                bg_clip.1.y += b;
-            }
-
-            if let Some(rgba) = format.bg_rgba {
-                if let Some(rect) = Rect::from_ltrb(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x, bg_clip.1.y) {
-                    let paint = tiny_skia::Paint {
-                        shader: tiny_skia::Shader::SolidColor(rgba),
-                        anti_alias: true,
-                        // background is painted "underneath"
-                        blend_mode : tiny_skia::BlendMode::DestinationOver,
-                        ..tiny_skia::Paint::default()
-                    };
-                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
-                }
-            }
-
-            if let Some((t, r, b, l)) = format.border {
-                let rgba = format.border_rgba.unwrap_or(ctx.font_color);
-                let paint = tiny_skia::Paint {
-                    shader: tiny_skia::Shader::SolidColor(rgba),
-                    anti_alias: true,
-                    ..tiny_skia::Paint::default()
-                };
-
-                bg_clip.0.y -= t;
-                if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x - bg_clip.0.x, t) {
-                    // top edge, no corners
-                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
-                }
-
-                bg_clip.0.x -= l;
-                if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, l, bg_clip.1.y - bg_clip.0.y) {
-                    // left edge + top-left corner
-                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
-                }
-
-                if let Some(rect) = Rect::from_xywh(bg_clip.1.x, bg_clip.0.y, r, bg_clip.1.y - bg_clip.0.y) {
-                    // right edge + top-right corner
-                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
-                }
-
-                bg_clip.1.x += r;
-                if let Some(rect) = Rect::from_xywh(bg_clip.0.x, bg_clip.1.y, bg_clip.1.x - bg_clip.0.x, b) {
-                    // bottom edge + both corners
-                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
-                }
-            }
-        }
-
-        parent_ctx.render_pos = outer_pos;
+        rv.offset_clamp(offset, min, max);
+        parent_ctx.render_pos = pos;
 
         rv
     }
@@ -832,30 +856,23 @@ impl PartialEq for PopupDesc {
 }
 
 impl PopupDesc {
-    pub fn render_popup(&mut self, runtime : &Runtime, target : &mut tiny_skia::PixmapMut, scale: i32) -> (i32, i32) {
-        target.fill(tiny_skia::Color::BLACK);
-        let font = &runtime.fonts[0];
-        let render_extents = (Point::zero(), Point { x: target.width() as f32, y: target.height() as f32 });
+    pub fn render_popup(&mut self, ctx: &mut Render) -> (i32, i32) {
+        ctx.font_color = tiny_skia::Color::WHITE;
+        ctx.render_pos = tiny_skia::Point::zero();
+        ctx.render_flex = true;
+        ctx.err_name = "tooltip";
 
-        let mut ctx = Render {
-            canvas : target,
-            cache : &runtime.cache,
-            font,
-            font_size : 16.0,
-            font_color : Color::WHITE,
-            align : Align::bar_default(),
-            render_extents,
-            render_xform: Transform::from_scale(scale as f32, scale as f32),
-            render_pos : tiny_skia::Point { x: 2.0, y: 2.0 },
-            render_flex : true,
-            err_name: "popup",
-            text_stroke : None,
-            text_stroke_size : None,
-            runtime,
+        let format = match &ctx.runtime.items["bar"].data {
+            Module::Bar { tooltips, .. } => tooltips,
+            _ => return (0, 0),
         };
 
-        self.render(&mut ctx);
-        (ctx.render_pos.x as i32, ctx.render_pos.y as i32)
+        let (format, mut ctx) = format.setup_ctx(ctx);
+        let (pos, _, _, _) = format.render(&mut ctx, |ctx| {
+            self.render(ctx);
+        });
+
+        (pos.x as i32, pos.y as i32)
     }
 
     fn render(&mut self, ctx : &mut Render) {
@@ -878,7 +895,7 @@ impl PopupDesc {
 
                 let markup = source.format.markup;
 
-                let (width, height) = render_font(ctx, (2.0, 2.0), &value, markup);
+                let (width, height) = render_font(ctx, &value, markup);
                 ctx.render_pos.x = width + 4.0;
                 ctx.render_pos.y = height + 4.0;
             }

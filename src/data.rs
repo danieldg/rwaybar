@@ -1,5 +1,5 @@
 //! Text expansion and data sources
-use crate::item::Item;
+use crate::item::{Item,ItemFormat};
 #[cfg(feature="dbus")]
 use crate::dbus::DbusValue;
 #[cfg(feature="dbus")]
@@ -370,6 +370,7 @@ pub enum Module {
         left : Rc<Item>,
         center : Rc<Item>,
         right : Rc<Item>,
+        tooltips: ItemFormat,
         config : toml::Value,
     },
     Calendar {

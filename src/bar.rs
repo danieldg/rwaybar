@@ -8,7 +8,7 @@ use wayland_client::protocol::wl_output::WlOutput;
 
 use crate::event::EventSink;
 use crate::item::*;
-use crate::render::{Align,Render,Renderer};
+use crate::render::Renderer;
 use crate::state::{NotifierList,Runtime};
 use crate::util::{spawn_noerr, UID};
 use crate::wayland::{Button,Popup,SurfaceData,SurfaceEvents,WaylandClient};
@@ -82,7 +82,7 @@ impl Bar {
                 Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT
             })
             .exclusive_zone(size_excl);
-        let ls = wayland.create_layer_surface(builder, layer);
+        let ls = wayland.create_layer_surface(builder, layer, scale);
         let sparse = cfg.get("sparse-clicks").and_then(|v| v.as_bool()).unwrap_or(true);
         if size != click_size {
             // Only handle input in the exclusive region; clicks in the overhang region will go
@@ -119,92 +119,65 @@ impl Bar {
     }
 
     pub fn render_with(&mut self, runtime : &mut Runtime, renderer: &mut Renderer) {
+        runtime.items.insert("bar".into(), self.item.clone());
+
         let surface_data = SurfaceData::from_wl(self.ls.wl_surface());
         if surface_data.start_render() {
-            let rt_item = runtime.items.entry("bar".into()).or_insert_with(|| Rc::new(Item::none()));
-            std::mem::swap(&mut self.item, rt_item);
-
-            let (canvas, finalize) = renderer.render_be_rgba(&mut runtime.wayland, self.ls.wl_surface());
-            let mut canvas = match tiny_skia::PixmapMut::from_bytes(canvas, surface_data.pixel_width() as u32, surface_data.pixel_height() as u32) {
-                Some(canvas) => canvas,
-                None => return,
-            };
-            canvas.fill(tiny_skia::Color::TRANSPARENT);
-            let font = &runtime.fonts[0];
-
-            let mut ctx = Render {
-                canvas : &mut canvas,
-                cache : &runtime.cache,
-                render_extents : (tiny_skia::Point::zero(), tiny_skia::Point { x: surface_data.width() as f32, y: surface_data.height() as f32 }),
-                render_pos : tiny_skia::Point::zero(),
-                render_flex : false,
-                render_xform: surface_data.scale_transform(),
-
-                font,
-                font_size : 16.0,
-                font_color : tiny_skia::Color::BLACK,
-                align : Align::bar_default(),
-                err_name: "bar",
-                text_stroke : None,
-                text_stroke_size : None,
-                runtime,
-            };
-            let new_sink = ctx.runtime.items["bar"].render(&mut ctx);
-            finalize(canvas.data_mut());
-
             let surf = self.ls.wl_surface();
+            renderer.render(runtime, surf, |ctx| {
+                let new_sink = ctx.runtime.items["bar"].render(ctx);
 
-            if self.sparse {
-                let mut old_regions = Vec::new();
-                let mut new_regions = Vec::new();
-                self.sink.for_active_regions(|lo, hi| {
-                    old_regions.push((lo as i32, (hi - lo) as i32));
-                });
-                new_sink.for_active_regions(|lo, hi| {
-                    new_regions.push((lo as i32, (hi - lo) as i32));
-                });
+                if self.sparse {
+                    let mut old_regions = Vec::new();
+                    let mut new_regions = Vec::new();
+                    self.sink.for_active_regions(|lo, hi| {
+                        old_regions.push((lo as i32, (hi - lo) as i32));
+                    });
+                    new_sink.for_active_regions(|lo, hi| {
+                        new_regions.push((lo as i32, (hi - lo) as i32));
+                    });
 
-                if old_regions != new_regions {
-                    let region = runtime.wayland.compositor.create_region(&runtime.wayland.queue).unwrap();
-                    let yoff = if self.anchor_top {
-                        0
-                    } else {
-                        surface_data.height().saturating_sub(self.click_size) as i32
-                    };
-                    for (lo, len) in new_regions {
-                        region.add(lo, yoff, len, self.click_size as i32);
+                    if old_regions != new_regions {
+                        let region = ctx.runtime.wayland.compositor.create_region(&ctx.runtime.wayland.queue).unwrap();
+                        let yoff = if self.anchor_top {
+                            0
+                        } else {
+                            surface_data.height().saturating_sub(self.click_size) as i32
+                        };
+                        for (lo, len) in new_regions {
+                            region.add(lo, yoff, len, self.click_size as i32);
+                        }
+                        surf.set_input_region(Some(&region));
+                        region.destroy()
                     }
-                    surf.set_input_region(Some(&region));
-                    region.destroy()
                 }
-            }
-            self.sink = new_sink;
+                self.sink = new_sink;
+            });
 
-            std::mem::swap(&mut self.item, runtime.items.get_mut("bar").unwrap());
-
-            surf.frame(&runtime.wayland.queue, surf.clone()).unwrap();
-            surf.commit();
         }
         if let Some(popup) = &mut self.popup {
             if popup.vanish.map_or(false, |vanish| vanish < Instant::now()) {
                 self.popup = None;
-                return;
             }
+        }
+        let mut scale = 1;
+        let popup = self.popup.as_mut().and_then(|popup| {
             let surface_data = SurfaceData::from_wl(&popup.wl.surf);
-            if !surface_data.start_render() {
-                return;
+            if surface_data.start_render() {
+                scale = surface_data.scale_factor();
+                Some(popup)
+            } else {
+                None
             }
-            let scale = surface_data.scale_factor();
-            let pixel_size = popup.wl.pixel_size();
+        });
 
-            let (canvas, finalize) = renderer.render_be_rgba(&mut runtime.wayland, &popup.wl.surf);
-            if let Some(mut canvas) = tiny_skia::PixmapMut::from_bytes(canvas, pixel_size.0 as u32, pixel_size.1 as u32) {
-                canvas.fill(tiny_skia::Color::TRANSPARENT);
-                let new_size = popup.desc.render_popup(runtime, &mut canvas, scale);
-                finalize(canvas.data_mut());
-                popup.wl.surf.frame(&runtime.wayland.queue, popup.wl.surf.clone()).unwrap();
-                popup.wl.surf.commit();
-                if new_size.0 > popup.wl.req_size.0 || new_size.1 > popup.wl.req_size.1 {
+        if let Some(popup) = popup {
+            if let Some(new_size) = renderer.render(runtime, &popup.wl.surf, |ctx| {
+                popup.desc.render_popup(ctx)
+            }) {
+                if new_size.0 > popup.wl.req_size.0 || new_size.1 > popup.wl.req_size.1 ||
+                    new_size.0 + 10 < popup.wl.req_size.0 || new_size.1 + 10 < popup.wl.req_size.1
+                {
                     match self.ls.kind() {
                         smithay_client_toolkit::shell::layer::SurfaceKind::Wlr(ls) => {
                             popup.wl.resize(&mut runtime.wayland, &ls, new_size, scale);
@@ -231,8 +204,11 @@ impl SurfaceEvents for Bar {
             }
             let surf_data = SurfaceData::from_wl(self.ls.wl_surface());
             let anchor = (min_x as i32, 0, (max_x - min_x) as i32, surf_data.height() as i32);
-            let mut canvas = tiny_skia::Pixmap::new(1, 1).unwrap();
-            let size = desc.render_popup(runtime, &mut canvas.as_mut(), 1);
+
+            runtime.items.insert("bar".into(), self.item.clone());
+            let size = Renderer::render_dummy(runtime, |ctx| {
+                desc.render_popup(ctx)
+            });
             if size.0 <= 0 || size.1 <= 0 {
                 return;
             }
