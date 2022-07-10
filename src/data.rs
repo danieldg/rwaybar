@@ -379,6 +379,15 @@ pub enum Module {
         zone: Box<str>,
         monday: bool,
     },
+    Calendar2 {
+        day_fmt: Box<str>,
+        today_fmt: Box<str>,
+        other_fmt: Box<str>,
+        zone: Box<str>,
+        past: u8,
+        future: u8,
+        monday: bool,
+    },
     Clipboard {
         state: Rc<ClipboardData>,
     },
@@ -553,11 +562,28 @@ impl Module {
                     .get("start")
                     .and_then(|v| v.as_str())
                     .map_or(false, |v| v.eq_ignore_ascii_case("monday"));
-                Module::Calendar {
+                let past = match toml_to_f64(value.get("before")) {
+                    None => {
+                        return Module::Calendar {
+                            day_fmt,
+                            today_fmt,
+                            other_fmt,
+                            zone,
+                            monday,
+                        }
+                    }
+                    Some(past) => past as u8,
+                };
+                let future = toml_to_f64(value.get("after"))
+                    .map(|f| f as u8)
+                    .unwrap_or(past);
+                Module::Calendar2 {
                     day_fmt,
                     today_fmt,
                     other_fmt,
                     zone,
+                    past,
+                    future,
                     monday,
                 }
             }
@@ -1185,6 +1211,48 @@ impl Module {
                 let mut date = day1 - Duration::days(pre_offset);
                 let mut rv = String::with_capacity(3 * 7 * 6 + 6);
                 for _week in 0..6 {
+                    for _day in 0..7 {
+                        if date.month() != now.month() {
+                            write!(rv, "{}", date.format(&other_fmt)).unwrap();
+                        } else if date.day() != now.day() {
+                            write!(rv, "{}", date.format(&day_fmt)).unwrap();
+                        } else {
+                            write!(rv, "{}", date.format(&today_fmt)).unwrap();
+                        }
+                        date = date + Duration::days(1);
+                    }
+                    rv.push('\n');
+                }
+                rv.pop();
+                f(Value::Owned(rv))
+            }
+            Module::Calendar2 {
+                day_fmt,
+                today_fmt,
+                other_fmt,
+                zone,
+                past,
+                future,
+                monday,
+            } => {
+                use chrono::Datelike;
+                use chrono::Duration;
+                use std::fmt::Write;
+                let real_zone = rt.format_or(&zone, &name).into_text();
+                let now = match real_zone.parse::<chrono_tz::Tz>() {
+                    Ok(tz) => chrono::Utc::now().with_timezone(&tz).date_naive(),
+                    Err(_) => chrono::Local::now().date_naive(),
+                };
+                let day1 = now - Duration::days(*past as i64 * 7);
+                let pre_offset = if *monday {
+                    day1.weekday().num_days_from_monday()
+                } else {
+                    day1.weekday().num_days_from_sunday()
+                } as i64;
+                let mut date = day1 - Duration::days(pre_offset);
+                let mut rv = String::with_capacity(3 * 7 * 6 + 6);
+                let weeks = past + future;
+                for _week in 0..=weeks {
                     for _day in 0..7 {
                         if date.month() != now.month() {
                             write!(rv, "{}", date.format(&other_fmt)).unwrap();
