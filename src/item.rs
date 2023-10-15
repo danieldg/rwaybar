@@ -570,10 +570,10 @@ impl Item {
                 table.insert("padding".into(), "2".into());
             }
         } else {
-            tooltips.cfg = Some(toml::toml! {
+            tooltips.cfg = Some(toml::Value::Table(toml::toml! {
                 bg = "black"
                 padding = "2"
-            });
+            }));
         }
 
         Item {
