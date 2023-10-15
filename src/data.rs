@@ -1399,6 +1399,17 @@ impl Module {
                             )),
                         }
                     }
+                    fn are_builtin_functions_disabled(&self) -> bool {
+                        false
+                    }
+                    fn set_builtin_functions_disabled(
+                        &mut self,
+                        _: bool,
+                    ) -> evalexpr::EvalexprResult<()> {
+                        Err(evalexpr::error::EvalexprError::CustomMessage(
+                            "Not supported".into(),
+                        ))
+                    }
                 }
                 let ctx = Context {
                     vars: vars

@@ -54,7 +54,7 @@ wayland-protocols-wlr = { version = "0.2" }
 # Module specific
 chrono = { version = "*", default-features = false, features = ['clock'] }
 chrono-tz = "*"
-evalexpr = "7"
+evalexpr = "11"
 libpulse-binding = { version = "*", features = ['pa_v14'], optional = true }
 regex = "1.5"
 zbus = { version = "=2.2", default-features = false, features = ['tokio'] }
