@@ -22,43 +22,41 @@ pulse = ['libpulse-binding']
 [dependencies]
 # Basic runtime
 bytes = "*"
-async-once-cell = "0.4"
-env_logger = "0.9"
+async-once-cell = "0.5"
+env_logger = "0.10"
 futures-channel = { version = "*" }
 futures-util = { version = "*", features = ['channel'] }
 json = "*"
 libc = "*"
 log = "*"
-memmap2 = "0.5"
+memmap2 = "0.9"
 once_cell = "*"
 serde = "1"
 strfmt = "=0.1.6"
 tokio = { version = "1", features = ['rt', 'net', 'signal', 'sync', 'io-util', 'time'] }
-toml = "*"
+toml = "0.5"
 xdg = "*"
 xml-rs = "*"
 
 # GUI
 png = "0.17"
-resvg = { version = "*", default-features = false }
-#smithay-client-toolkit = { version = "*", default-features = false, git = "https://github.com/Smithay/client-toolkit.git", rev = "refs/heads/rework-wayland-rs-0.30" }
-smithay-client-toolkit = { version = "*", default-features = false, path = "../smithay-client-toolkit" }
-tiny-skia = "*"
+resvg = { version = "0.22", default-features = false }
+smithay-client-toolkit = { version = "0.18", default-features = false }
+#smithay-client-toolkit = { version = "*", default-features = false, path = "../smithay-client-toolkit" }
+tiny-skia = "0.6"
 ttf-parser = "*"
-usvg = { version = "*", default-features = false }
-wayland-client = { version = "0.30.0-beta.1" }
-wayland-cursor = { version = "0.30.0-beta.1" }
-wayland-protocols = { version = "0.30.0-beta.1", features = ['unstable', 'server'] }
-wayland-protocols-wlr = { version = "0.1.0-beta.1" }
-#wayland-client = { version = "0.30.0-alpha", path = "../smithay-wayland-rs/wayland-client" }
-#wayland-cursor = { version = "0.30.0-alpha", path = "../smithay-wayland-rs/wayland-cursor" }
-#wayland-protocols = { version = "0.30.0-alpha", features = ['unstable', 'server'], path = "../smithay-wayland-rs/wayland-protocols" }
-#wayland-protocols-wlr = { version = "0.1.0-dev", path = "../smithay-wayland-rs/wayland-protocols-wlr" }
+usvg = { version = "0.22", default-features = false }
+wayland-client = { version = "0.31" }
+wayland-cursor = { version = "0.31" }
+wayland-protocols = { version = "0.31", features = ['unstable', 'server'] }
+wayland-protocols-wlr = { version = "0.2" }
 
 # Module specific
 chrono = { version = "*", default-features = false, features = ['clock'] }
 chrono-tz = "*"
-evalexpr = "*"
+evalexpr = "7"
 libpulse-binding = { version = "*", features = ['pa_v14'], optional = true }
 regex = "1.5"
-zbus = { version = "2.1", default-features = false, features = ['tokio'] }
+zbus = { version = "=2.2", default-features = false, features = ['tokio'] }
+# XXX v3.15.0 of zvariant is broken
+zvariant = { version = "=3.2", default-features = false }

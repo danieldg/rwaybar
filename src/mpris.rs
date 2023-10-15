@@ -1,19 +1,19 @@
+use crate::data::{IterationItem, Value};
 use crate::dbus::DBus;
-use crate::data::{IterationItem,Value};
-use crate::state::{Runtime,NotifierList};
-use crate::util::{self,Cell};
+use crate::state::{NotifierList, Runtime};
+use crate::util::{self, Cell};
+use log::{debug, error, warn};
 use once_cell::unsync::OnceCell;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::error::Error;
 use std::rc::Rc;
-use log::{debug,warn,error};
-use zbus::zvariant;
-use zvariant::Value as Variant;
-use zvariant::{Dict,OwnedValue};
 use zbus::dbus_proxy;
 use zbus::fdo::DBusProxy;
 use zbus::names::BusName;
+use zbus::zvariant;
+use zvariant::Value as Variant;
+use zvariant::{Dict, OwnedValue};
 
 #[dbus_proxy(interface = "org.mpris.MediaPlayer2")]
 trait MediaPlayer2 {
@@ -51,7 +51,7 @@ trait MediaPlayer2 {
 // TODO need nonblocking caching
 #[dbus_proxy(
     interface = "org.mpris.MediaPlayer2.Player",
-    default_path = "/org/mpris/MediaPlayer2",
+    default_path = "/org/mpris/MediaPlayer2"
 )]
 trait Player {
     /// Next method
@@ -73,11 +73,7 @@ trait Player {
     fn seek(&self, offset: i64) -> zbus::Result<()>;
 
     /// SetPosition method
-    fn set_position(
-        &self,
-        trackid: &zvariant::ObjectPath<'_>,
-        position: i64,
-    ) -> zbus::Result<()>;
+    fn set_position(&self, trackid: &zvariant::ObjectPath<'_>, position: i64) -> zbus::Result<()>;
 
     /// Stop method
     fn stop(&self) -> zbus::Result<()>;
@@ -112,9 +108,7 @@ trait Player {
 
     /// Metadata property
     #[dbus_proxy(property)]
-    fn metadata(
-        &self,
-    ) -> zbus::Result<Dict<'static, 'static>>;
+    fn metadata(&self) -> zbus::Result<Dict<'static, 'static>>;
 
     /// PlaybackStatus property
     #[dbus_proxy(property)]
@@ -131,7 +125,7 @@ trait Player {
     fn set_volume(&self, value: f64) -> zbus::Result<()>;
 }
 
-#[derive(Debug,Eq,PartialEq,Copy,Clone)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
 enum PlayState {
     Playing,
     Paused,
@@ -139,7 +133,7 @@ enum PlayState {
 }
 
 impl PlayState {
-    fn parse(s : &str) -> Option<Self> {
+    fn parse(s: &str) -> Option<Self> {
         match s {
             "Playing" => Some(Self::Playing),
             "Paused" => Some(Self::Paused),
@@ -151,33 +145,38 @@ impl PlayState {
 
 #[derive(Debug)]
 struct Player {
-    name_tail : Rc<str>,
-    proxy : PlayerProxy<'static>,
-    playing : Option<PlayState>,
-    meta : Dict<'static, 'static>,
+    name_tail: Rc<str>,
+    proxy: PlayerProxy<'static>,
+    playing: Option<PlayState>,
+    meta: Dict<'static, 'static>,
 }
 
-#[derive(Debug,Default)]
+#[derive(Debug, Default)]
 struct MediaPlayer2 {
-    players : Cell<Vec<Player>>,
-    interested : Cell<NotifierList>,
+    players: Cell<Vec<Player>>,
+    interested: Cell<NotifierList>,
 }
 
-async fn initial_query(target : Rc<MediaPlayer2>, bus_name : BusName<'static>) -> Result<(), Box<dyn Error>> {
+async fn initial_query(
+    target: Rc<MediaPlayer2>,
+    bus_name: BusName<'static>,
+) -> Result<(), Box<dyn Error>> {
     let skip = "org.mpris.MediaPlayer2.".len();
     let name_tail = bus_name[skip..].into();
     let dbus = DBus::get_session();
     let zbus = dbus.connection().await;
     let owner = DBusProxy::builder(&zbus)
         .cache_properties(zbus::CacheProperties::No)
-        .build().await?
+        .build()
+        .await?
         .get_name_owner(bus_name)
         .await?
         .into_inner();
 
     let proxy = PlayerProxy::builder(&zbus)
         .destination(owner)?
-        .build().await?;
+        .build()
+        .await?;
 
     let playing = PlayState::parse(&proxy.playback_status().await?);
     let meta = proxy.metadata().await?;
@@ -230,15 +229,20 @@ impl MediaPlayer2 {
                     });
                 }
                 if !new.is_empty() && name.starts_with("org.mpris.MediaPlayer2.") {
-                    util::spawn("MPRIS state query", initial_query(this.clone(), name.to_owned()));
+                    util::spawn(
+                        "MPRIS state query",
+                        initial_query(this.clone(), name.to_owned()),
+                    );
                 }
             });
 
             let zbus = dbus.connection().await;
             let names = DBusProxy::builder(&zbus)
                 .cache_properties(zbus::CacheProperties::No)
-                .build().await?
-                .list_names().await?;
+                .build()
+                .await?
+                .list_names()
+                .await?;
             for name in names {
                 if !name.starts_with("org.mpris.MediaPlayer2.") {
                     continue;
@@ -255,7 +259,12 @@ impl MediaPlayer2 {
         rv
     }
 
-    fn handle_mpris_update(&self, hdr : &zbus::MessageHeader, iface : &str, changed : &HashMap<&str, OwnedValue>) -> zbus::Result<()> {
+    fn handle_mpris_update(
+        &self,
+        hdr: &zbus::MessageHeader,
+        iface: &str,
+        changed: &HashMap<&str, OwnedValue>,
+    ) -> zbus::Result<()> {
         if hdr.path()?.map(|p| p.as_str()) != Some("/org/mpris/MediaPlayer2") {
             return Ok(());
         }
@@ -284,7 +293,7 @@ impl MediaPlayer2 {
                             player.meta = meta.clone();
                         }
                     }
-                    _ => ()
+                    _ => (),
                 }
             }
             self.interested.take().notify_data("mpris:props");
@@ -293,7 +302,13 @@ impl MediaPlayer2 {
     }
 }
 
-pub fn read_in<F : FnOnce(Value) -> R, R>(_name : &str, target : &str, key : &str, rt : &Runtime, f : F) -> R {
+pub fn read_in<F: FnOnce(Value) -> R, R>(
+    _name: &str,
+    target: &str,
+    key: &str,
+    rt: &Runtime,
+    f: F,
+) -> R {
     DATA.with(|cell| {
         let state = cell.get_or_init(MediaPlayer2::new);
         state.interested.take_in(|i| i.add(rt));
@@ -313,8 +328,14 @@ pub fn read_in<F : FnOnce(Value) -> R, R>(_name : &str, target : &str, key : &st
                 field = key;
                 // Prefer playing players, then paused, then any
                 //
-                player = players.iter().filter(|p| p.playing == Some(PlayState::Playing))
-                    .chain(players.iter().filter(|p| p.playing == Some(PlayState::Paused)))
+                player = players
+                    .iter()
+                    .filter(|p| p.playing == Some(PlayState::Playing))
+                    .chain(
+                        players
+                            .iter()
+                            .filter(|p| p.playing == Some(PlayState::Paused)),
+                    )
                     .chain(players.iter())
                     .next();
             }
@@ -330,23 +351,18 @@ pub fn read_in<F : FnOnce(Value) -> R, R>(_name : &str, target : &str, key : &st
 
             if let Some(player) = player {
                 match field {
-                    "player.name" => {
-                        f(Value::Borrow(&player.name_tail))
-                    }
-                    "length" => {
-                        match player.meta.get::<_,u64>("mpris:length") {
-                            Ok(Some(len)) => f(Value::Float(*len as f64 / 1_000_000.0)),
-                            _ => f(Value::Null),
-                        }
-                    }
+                    "player.name" => f(Value::Borrow(&player.name_tail)),
+                    "length" => match player.meta.get::<_, u64>("mpris:length") {
+                        Ok(Some(len)) => f(Value::Float(*len as f64 / 1_000_000.0)),
+                        _ => f(Value::Null),
+                    },
                     _ if field.contains('.') => {
                         let real_field = field.replace('.', ":");
-                        let qf = player.meta.get::<str,str>(&field);
-                        let rf = player.meta.get::<str,str>(&real_field);
+                        let qf = player.meta.get::<str, str>(&field);
+                        let rf = player.meta.get::<str, str>(&real_field);
 
                         match (qf, rf) {
-                            (Ok(Some(v)), _) |
-                            (_, Ok(Some(v))) => f(Value::Borrow(v)),
+                            (Ok(Some(v)), _) | (_, Ok(Some(v))) => f(Value::Borrow(v)),
                             _ => f(Value::Null),
                         }
                     }
@@ -354,7 +370,7 @@ pub fn read_in<F : FnOnce(Value) -> R, R>(_name : &str, target : &str, key : &st
                     // a list of valid names
                     _ => {
                         let xeasm = format!("xesam:{}", field);
-                        let value = player.meta.get::<str,Variant>(&xeasm).ok().flatten();
+                        let value = player.meta.get::<str, Variant>(&xeasm).ok().flatten();
                         match value {
                             Some(Variant::Str(v)) => f(Value::Borrow(v.as_str())),
                             Some(Variant::Array(a)) => {
@@ -365,10 +381,11 @@ pub fn read_in<F : FnOnce(Value) -> R, R>(_name : &str, target : &str, key : &st
                                         tmp.push_str(", ");
                                     }
                                 }
-                                tmp.pop(); tmp.pop();
+                                tmp.pop();
+                                tmp.pop();
                                 f(Value::Owned(tmp))
                             }
-                            _ => f(Value::Null)
+                            _ => f(Value::Null),
                         }
                     }
                 }
@@ -380,21 +397,24 @@ pub fn read_in<F : FnOnce(Value) -> R, R>(_name : &str, target : &str, key : &st
     })
 }
 
-pub fn read_focus_list<F : FnMut(bool, IterationItem)>(rt : &Runtime, mut f : F) {
-    let players : Vec<_> = DATA.with(|cell| {
+pub fn read_focus_list<F: FnMut(bool, IterationItem)>(rt: &Runtime, mut f: F) {
+    let players: Vec<_> = DATA.with(|cell| {
         let state = cell.get_or_init(MediaPlayer2::new);
         state.interested.take_in(|i| i.add(rt));
         state.players.take_in(|players| {
-            players.iter().map(|p| (p.name_tail.clone(), p.playing == Some(PlayState::Playing))).collect()
+            players
+                .iter()
+                .map(|p| (p.name_tail.clone(), p.playing == Some(PlayState::Playing)))
+                .collect()
         })
     });
 
     for (player, playing) in players {
-        f(playing, IterationItem::MediaPlayer2 { target : player });
+        f(playing, IterationItem::MediaPlayer2 { target: player });
     }
 }
 
-pub fn write(_name : &str, target : &str, key : &str, command : Value, _rt : &Runtime) {
+pub fn write(_name: &str, target: &str, key: &str, command: Value, _rt: &Runtime) {
     DATA.with(|cell| {
         let state = cell.get_or_init(MediaPlayer2::new);
         state.players.take_in(|players| {
@@ -406,15 +426,24 @@ pub fn write(_name : &str, target : &str, key : &str, command : Value, _rt : &Ru
                 player = players.iter().find(|p| &*p.name_tail == key);
             } else {
                 // Prefer playing players, then paused, then any
-                player = players.iter().filter(|p| p.playing == Some(PlayState::Playing))
-                    .chain(players.iter().filter(|p| p.playing == Some(PlayState::Paused)))
+                player = players
+                    .iter()
+                    .filter(|p| p.playing == Some(PlayState::Playing))
+                    .chain(
+                        players
+                            .iter()
+                            .filter(|p| p.playing == Some(PlayState::Paused)),
+                    )
                     .chain(players.iter())
                     .next();
             }
 
             let player = match player {
                 Some(p) => p,
-                None => { warn!("No player found when sending {}", key); return }
+                None => {
+                    warn!("No player found when sending {}", key);
+                    return;
+                }
             };
 
             // TODO call/nowait
@@ -422,25 +451,31 @@ pub fn write(_name : &str, target : &str, key : &str, command : Value, _rt : &Ru
             let command = command.into_text();
             match &*command {
                 "Next" | "Previous" | "Pause" | "PlayPause" | "Stop" | "Play" => {
-                    dbus.send(zbus::Message::method(
-                        None::<&str>,
-                        Some(player.proxy.destination().clone()),
-                        "/org/mpris/MediaPlayer2",
-                        Some("org.mpris.MediaPlayer2.Player"),
-                        &*command,
-                        &()
-                    ).unwrap());
+                    dbus.send(
+                        zbus::Message::method(
+                            None::<&str>,
+                            Some(player.proxy.destination().clone()),
+                            "/org/mpris/MediaPlayer2",
+                            Some("org.mpris.MediaPlayer2.Player"),
+                            &*command,
+                            &(),
+                        )
+                        .unwrap(),
+                    );
                 }
                 // TODO seek, volume?
                 "Raise" | "Quit" => {
-                    dbus.send(zbus::Message::method(
-                        None::<&str>,
-                        Some(player.proxy.destination().clone()),
-                        "/org/mpris/MediaPlayer2",
-                        Some("org.mpris.MediaPlayer2"),
-                        &*command,
-                        &()
-                    ).unwrap());
+                    dbus.send(
+                        zbus::Message::method(
+                            None::<&str>,
+                            Some(player.proxy.destination().clone()),
+                            "/org/mpris/MediaPlayer2",
+                            Some("org.mpris.MediaPlayer2"),
+                            &*command,
+                            &(),
+                        )
+                        .unwrap(),
+                    );
                 }
                 _ => {
                     error!("Unknown command {}", command);

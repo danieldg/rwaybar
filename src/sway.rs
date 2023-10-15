@@ -1,12 +1,12 @@
-use bytes::{Buf,BytesMut};
+use crate::data::{IterationItem, Value};
 use crate::event::EventSink;
 use crate::item::Item;
-use crate::data::{IterationItem,Value};
 use crate::render::Render;
-use crate::state::Runtime;
 use crate::state::NotifierList;
-use crate::util::{Cell,spawn_noerr};
-use log::{warn,error};
+use crate::state::Runtime;
+use crate::util::{spawn_noerr, Cell};
+use bytes::{Buf, BytesMut};
+use log::{error, warn};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::convert::TryInto;
@@ -18,18 +18,18 @@ thread_local! {
     static SOCK : RefCell<Option<SwaySocket>> = RefCell::new(None);
 }
 
-#[derive(Default,Debug)]
+#[derive(Default, Debug)]
 struct ListenerResult {
-    consumed : bool,
-    remove_callback : bool,
+    consumed: bool,
+    remove_callback: bool,
 }
 
 struct SwaySocket {
-    wbuf : Vec<u8>,
-    notify : Rc<Notify>,
+    wbuf: Vec<u8>,
+    notify: Rc<Notify>,
 
-    subscribed : Vec<&'static str>,
-    listeners : Vec<(u32, Box<dyn FnMut(&[u8]) -> ListenerResult>)>,
+    subscribed: Vec<&'static str>,
+    listeners: Vec<(u32, Box<dyn FnMut(&[u8]) -> ListenerResult>)>,
 }
 
 impl SwaySocket {
@@ -76,8 +76,8 @@ impl SwaySocket {
             });
 
             let mut rbuf = BytesMut::with_capacity(1000);
-            let hdr_len = 6+4+4;
-            'read : loop {
+            let hdr_len = 6 + 4 + 4;
+            'read: loop {
                 match tokio::io::AsyncReadExt::read_buf(&mut rh, &mut rbuf).await {
                     Ok(0) => {
                         error!("End of file when reading from SWAYSOCK");
@@ -117,28 +117,35 @@ impl SwaySocket {
         });
 
         Self {
-            wbuf : Vec::with_capacity(100),
+            wbuf: Vec::with_capacity(100),
             notify,
-            subscribed : Vec::new(),
-            listeners : Vec::new(),
+            subscribed: Vec::new(),
+            listeners: Vec::new(),
         }
     }
 
-    fn do_send_msg<F : FnMut(&[u8]) + 'static>(&mut self, id : u32, msg : &[u8], mut on_reply : F) {
+    fn do_send_msg<F: FnMut(&[u8]) + 'static>(&mut self, id: u32, msg: &[u8], mut on_reply: F) {
         self.wbuf.extend_from_slice(b"i3-ipc");
-        self.wbuf.extend_from_slice(&(msg.len() as u32).to_ne_bytes());
+        self.wbuf
+            .extend_from_slice(&(msg.len() as u32).to_ne_bytes());
         self.wbuf.extend_from_slice(&id.to_ne_bytes());
         self.wbuf.extend_from_slice(&msg);
 
-        self.listeners.push((id, Box::new(move |buf| {
-            on_reply(buf);
-            ListenerResult { consumed : true, remove_callback : true }
-        })));
+        self.listeners.push((
+            id,
+            Box::new(move |buf| {
+                on_reply(buf);
+                ListenerResult {
+                    consumed: true,
+                    remove_callback: true,
+                }
+            }),
+        ));
 
         self.notify.notify_one();
     }
 
-    fn on_read(&mut self, ptype : u32, msg : &[u8]) {
+    fn on_read(&mut self, ptype: u32, msg: &[u8]) {
         // Note: drain_filter would be nice here
         let mut i = 0;
         while i < self.listeners.len() {
@@ -158,7 +165,7 @@ impl SwaySocket {
         }
     }
 
-    pub fn send<F : FnMut(&[u8]) + 'static>(id : u32, msg : &[u8], callback : F) {
+    pub fn send<F: FnMut(&[u8]) + 'static>(id: u32, msg: &[u8], callback: F) {
         SOCK.with(|cell| {
             let mut borrow = cell.borrow_mut();
             let sock = borrow.get_or_insert_with(SwaySocket::init);
@@ -166,29 +173,31 @@ impl SwaySocket {
         })
     }
 
-    pub fn subscribe(name : &'static str, id : u32, callback : Box<dyn FnMut(&[u8]) -> ListenerResult>) {
+    pub fn subscribe(
+        name: &'static str,
+        id: u32,
+        callback: Box<dyn FnMut(&[u8]) -> ListenerResult>,
+    ) {
         SOCK.with(|cell| {
             let mut borrow = cell.borrow_mut();
             let sock = borrow.get_or_insert_with(SwaySocket::init);
             if sock.subscribed.iter().find(|e| **e == name).is_none() {
-                sock.do_send_msg(2,
-                    format!(r#"[ "{}" ]"#, name).as_bytes(),
-                    move |buf| {
-                        match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
-                            Ok(Ok(value)) if value["success"].as_bool() == Some(true) => {
-                                // great
-                            }
-                            Ok(Ok(value)) => {
-                                error!("Could not subscribe to {}: {}", name, value);
-                            }
-                            Ok(Err(e)) => {
-                                error!("Could not subscribe to {}: {}", name, e);
-                            }
-                            Err(e) => {
-                                error!("Could not subscribe to {}: {}", name, e);
-                            }
+                sock.do_send_msg(2, format!(r#"[ "{}" ]"#, name).as_bytes(), move |buf| {
+                    match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
+                        Ok(Ok(value)) if value["success"].as_bool() == Some(true) => {
+                            // great
                         }
-                    });
+                        Ok(Ok(value)) => {
+                            error!("Could not subscribe to {}: {}", name, value);
+                        }
+                        Ok(Err(e)) => {
+                            error!("Could not subscribe to {}: {}", name, e);
+                        }
+                        Err(e) => {
+                            error!("Could not subscribe to {}: {}", name, e);
+                        }
+                    }
+                });
                 sock.subscribed.push(name);
             }
             sock.listeners.push((id, callback));
@@ -196,106 +205,120 @@ impl SwaySocket {
     }
 }
 
-#[derive(Debug,Default)]
+#[derive(Debug, Default)]
 pub struct Mode {
-    value : Rc<ModeInner>,
+    value: Rc<ModeInner>,
 }
 
-#[derive(Debug,Default)]
+#[derive(Debug, Default)]
 struct ModeInner {
-    mode : Cell<String>,
-    running : Cell<bool>,
-    interested : Cell<NotifierList>,
+    mode: Cell<String>,
+    running: Cell<bool>,
+    interested: Cell<NotifierList>,
 }
 
 impl Mode {
-    pub fn from_toml(_config : &toml::Value) -> Self {
+    pub fn from_toml(_config: &toml::Value) -> Self {
         Mode::default()
     }
 
-    fn interest(&self, rt : &Runtime) {
+    fn interest(&self, rt: &Runtime) {
         self.value.interested.take_in(|i| i.add(rt));
         if self.value.running.replace(true) {
             return;
         }
 
         let weak = Rc::downgrade(&self.value);
-        SwaySocket::subscribe("mode", 0x80000002, Box::new(move |buf| {
-            let remove_callback;
-            if let Some(mi) = weak.upgrade() {
-                match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
-                    Ok(Ok(msg)) => {
-                        msg["change"].as_str().map(|mode| mi.mode.set(mode.to_owned()));
-                        mi.interested.take().notify_data("sway:mode");
+        SwaySocket::subscribe(
+            "mode",
+            0x80000002,
+            Box::new(move |buf| {
+                let remove_callback;
+                if let Some(mi) = weak.upgrade() {
+                    match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
+                        Ok(Ok(msg)) => {
+                            msg["change"]
+                                .as_str()
+                                .map(|mode| mi.mode.set(mode.to_owned()));
+                            mi.interested.take().notify_data("sway:mode");
+                        }
+                        _ => warn!("Ignoring invalid mode change message"),
                     }
-                    _ => warn!("Ignoring invalid mode change message")
+                    remove_callback = false;
+                } else {
+                    remove_callback = true;
                 }
-                remove_callback = false;
-            } else {
-                remove_callback = true;
-            }
-            ListenerResult {
-                remove_callback,
-                consumed : false,
-            }
-        }));
+                ListenerResult {
+                    remove_callback,
+                    consumed: false,
+                }
+            }),
+        );
         let value = self.value.clone();
         SwaySocket::send(12, b"", move |buf| {
             match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                 Ok(Ok(msg)) => {
-                    msg["name"].as_str().map(|mode| value.mode.set(mode.to_owned()));
+                    msg["name"]
+                        .as_str()
+                        .map(|mode| value.mode.set(mode.to_owned()));
                     value.interested.take().notify_data("sway:mode");
                 }
-                _ => warn!("Ignoring invalid get_binding_state reply")
+                _ => warn!("Ignoring invalid get_binding_state reply"),
             }
         });
     }
 
-    pub fn read_in<F : FnOnce(Value) -> R,R>(&self, _name : &str, key : &str, rt : &Runtime, f : F) -> R {
+    pub fn read_in<F: FnOnce(Value) -> R, R>(
+        &self,
+        _name: &str,
+        key: &str,
+        rt: &Runtime,
+        f: F,
+    ) -> R {
         self.interest(rt);
-        self.value.mode.take_in(|s| {
-            match key {
-                "" | "text" if s == "default" => f(Value::Null),
-                "" | "text" => f(Value::Borrow(s)),
-                "raw" => f(Value::Borrow(s)),
-                "tooltip" => f(Value::Null),
-                _ => {
-                    warn!("Unknown key in sway-mode");
-                    f(Value::Borrow(s))
-                }
+        self.value.mode.take_in(|s| match key {
+            "" | "text" if s == "default" => f(Value::Null),
+            "" | "text" => f(Value::Borrow(s)),
+            "raw" => f(Value::Borrow(s)),
+            "tooltip" => f(Value::Null),
+            _ => {
+                warn!("Unknown key in sway-mode");
+                f(Value::Borrow(s))
             }
         })
     }
 }
 
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub struct WorkspaceData {
-    name : String,
-    output : String,
-    repr : String,
+    name: String,
+    output: String,
+    repr: String,
 }
 
 impl WorkspaceData {
-    pub fn read_in<F : FnOnce(Value) -> R,R>(&self, key : &str, _rt : &Runtime, f : F) -> R {
+    pub fn read_in<F: FnOnce(Value) -> R, R>(&self, key: &str, _rt: &Runtime, f: F) -> R {
         match key {
-            "name" | "text" | "" => {
-                f(Value::Borrow(&self.name))
-            }
-            "output" | "tooltip" => {
-                f(Value::Borrow(&self.output))
-            }
-            "repr" => {
-                f(Value::Borrow(&self.repr))
-            }
-            _ => f(Value::Null)
+            "name" | "text" | "" => f(Value::Borrow(&self.name)),
+            "output" | "tooltip" => f(Value::Borrow(&self.output)),
+            "repr" => f(Value::Borrow(&self.repr)),
+            _ => f(Value::Null),
         }
     }
 
-    pub fn write(&self, key : &str, value : Value, _rt : &Runtime) {
+    pub fn write(&self, key: &str, value: Value, _rt: &Runtime) {
         match key {
-            "switch" => SwaySocket::send(0, format!(r#"workspace --no-auto-back-and-forth "{}""#, value).as_bytes(), |_| ()),
+            "switch" => SwaySocket::send(
+                0,
+                format!(r#"workspace --no-auto-back-and-forth "{}""#, value).as_bytes(),
+                |_| (),
+            ),
             "" if value.into_text() == "switch" => {
-                SwaySocket::send(0, format!(r#"workspace --no-auto-back-and-forth "{}""#, self.name).as_bytes(), |_| ());
+                SwaySocket::send(
+                    0,
+                    format!(r#"workspace --no-auto-back-and-forth "{}""#, self.name).as_bytes(),
+                    |_| (),
+                );
             }
             _ => {
                 error!("Ignoring write to item.{}", key);
@@ -304,17 +327,17 @@ impl WorkspaceData {
     }
 }
 
-fn sway_sort_fn(a : &Rc<WorkspaceData>, b : &Rc<WorkspaceData>) -> Ordering {
+fn sway_sort_fn(a: &Rc<WorkspaceData>, b: &Rc<WorkspaceData>) -> Ordering {
     let mut a = a.name.as_str();
     let mut b = b.name.as_str();
     let a1 = a.chars().next().as_ref().map(char::is_ascii_digit);
     let b1 = b.chars().next().as_ref().map(char::is_ascii_digit);
     match (a1, b1) {
         (Some(true), Some(true)) => {
-            if let Some(p) = a.find(|c : char| !c.is_ascii_digit()) {
+            if let Some(p) = a.find(|c: char| !c.is_ascii_digit()) {
                 a = &a[..p];
             }
-            if let Some(p) = b.find(|c : char| !c.is_ascii_digit()) {
+            if let Some(p) = b.find(|c: char| !c.is_ascii_digit()) {
                 b = &b[..p];
             }
             let ai = a.parse::<u64>().ok();
@@ -327,22 +350,22 @@ fn sway_sort_fn(a : &Rc<WorkspaceData>, b : &Rc<WorkspaceData>) -> Ordering {
     }
 }
 
-#[derive(Debug,Default)]
+#[derive(Debug, Default)]
 struct WorkspacesData {
-    focus : Cell<String>,
-    list : Cell<Vec<Rc<WorkspaceData>>>,
-    running : Cell<bool>,
-    interested : Cell<NotifierList>,
+    focus: Cell<String>,
+    list: Cell<Vec<Rc<WorkspaceData>>>,
+    running: Cell<bool>,
+    interested: Cell<NotifierList>,
 }
 
 #[derive(Debug)]
 pub struct Workspace {
-    output : Option<Box<str>>,
-    value : Rc<WorkspacesData>,
+    output: Option<Box<str>>,
+    value: Rc<WorkspacesData>,
 }
 
 impl WorkspacesData {
-    fn parse_update(&self, msg : json::JsonValue) {
+    fn parse_update(&self, msg: json::JsonValue) {
         match msg["change"].as_str() {
             Some("focus") => {
                 if let Some(name) = msg["current"]["name"].as_str() {
@@ -363,12 +386,15 @@ impl WorkspacesData {
             }
             Some("init") => {
                 let new = WorkspaceData {
-                    name : match msg["current"]["name"].as_str() {
+                    name: match msg["current"]["name"].as_str() {
                         Some(n) => n.to_owned(),
                         None => return,
                     },
-                    output : msg["current"]["output"].as_str().unwrap_or("").to_owned(),
-                    repr : msg["current"]["representation"].as_str().unwrap_or("").to_owned(),
+                    output: msg["current"]["output"].as_str().unwrap_or("").to_owned(),
+                    repr: msg["current"]["representation"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned(),
                 };
                 // Note: sway will sometimes send duplicate "init" messages
                 self.list.take_in(|list| {
@@ -384,13 +410,14 @@ impl WorkspacesData {
             }
             Some("empty") => {
                 msg["current"]["name"].as_str().map(|gone| {
-                    self.list.take_in(|list| list.retain(|wks| wks.name != gone))
+                    self.list
+                        .take_in(|list| list.retain(|wks| wks.name != gone))
                 });
             }
             Some("rename") => {
                 let old = msg["old"]["name"].as_str();
                 let new = msg["current"]["name"].as_str();
-                if let (Some(old), Some(new)) = (old,new) {
+                if let (Some(old), Some(new)) = (old, new) {
                     self.list.take_in(|list| {
                         for wks in &mut *list {
                             if wks.name == old {
@@ -407,7 +434,7 @@ impl WorkspacesData {
             Some("move") => {
                 let name = msg["current"]["name"].as_str();
                 let output = msg["current"]["output"].as_str();
-                if let (Some(name), Some(output)) = (name,output) {
+                if let (Some(name), Some(output)) = (name, output) {
                     self.list.take_in(|list| {
                         for wks in list {
                             if wks.name == name {
@@ -426,40 +453,47 @@ impl WorkspacesData {
 }
 
 impl Workspace {
-    pub fn from_toml(config : &toml::Value) -> Self {
-        let output = config.get("output").and_then(|v| v.as_str()).map(Into::into);
+    pub fn from_toml(config: &toml::Value) -> Self {
+        let output = config
+            .get("output")
+            .and_then(|v| v.as_str())
+            .map(Into::into);
         Workspace {
             output,
-            value : Default::default(),
+            value: Default::default(),
         }
     }
 
-    fn interest(&self, rt : &Runtime) {
+    fn interest(&self, rt: &Runtime) {
         self.value.interested.take_in(|i| i.add(rt));
         if self.value.running.replace(true) {
             return;
         }
 
         let weak = Rc::downgrade(&self.value);
-        SwaySocket::subscribe("workspace", 0x80000000, Box::new(move |buf| {
-            let remove_callback;
-            if let Some(value) = weak.upgrade() {
-                match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
-                    Ok(Ok(msg)) => {
-                        value.parse_update(msg);
-                        value.interested.take().notify_data("sway:workspace");
+        SwaySocket::subscribe(
+            "workspace",
+            0x80000000,
+            Box::new(move |buf| {
+                let remove_callback;
+                if let Some(value) = weak.upgrade() {
+                    match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
+                        Ok(Ok(msg)) => {
+                            value.parse_update(msg);
+                            value.interested.take().notify_data("sway:workspace");
+                        }
+                        _ => warn!("Ignoring invalid workspace change message"),
                     }
-                    _ => warn!("Ignoring invalid workspace change message")
+                    remove_callback = false;
+                } else {
+                    remove_callback = true;
                 }
-                remove_callback = false;
-            } else {
-                remove_callback = true;
-            }
-            ListenerResult {
-                remove_callback,
-                consumed : false,
-            }
-        }));
+                ListenerResult {
+                    remove_callback,
+                    consumed: false,
+                }
+            }),
+        );
 
         let value = self.value.clone();
         SwaySocket::send(1, b"", move |buf| {
@@ -468,9 +502,12 @@ impl Workspace {
                     let mut list = Vec::new();
                     for workspace in msg.members() {
                         let new = WorkspaceData {
-                            name : workspace["name"].as_str().unwrap_or("").to_owned(),
-                            output : workspace["output"].as_str().unwrap_or("").to_owned(),
-                            repr : workspace["representation"].as_str().unwrap_or("").to_owned(),
+                            name: workspace["name"].as_str().unwrap_or("").to_owned(),
+                            output: workspace["output"].as_str().unwrap_or("").to_owned(),
+                            repr: workspace["representation"]
+                                .as_str()
+                                .unwrap_or("")
+                                .to_owned(),
                         };
                         if workspace["focused"].as_bool() == Some(true) {
                             value.focus.set(new.name.clone());
@@ -481,12 +518,18 @@ impl Workspace {
                     value.list.set(list);
                     value.interested.take().notify_data("sway:workspace");
                 }
-                _ => warn!("Ignoring invalid get_workspaces reply")
+                _ => warn!("Ignoring invalid get_workspaces reply"),
             }
         });
     }
 
-    pub fn read_in<F : FnOnce(Value) -> R,R>(&self, _name : &str, key : &str, rt : &Runtime, f : F) -> R {
+    pub fn read_in<F: FnOnce(Value) -> R, R>(
+        &self,
+        _name: &str,
+        key: &str,
+        rt: &Runtime,
+        f: F,
+    ) -> R {
         self.interest(rt);
         match key {
             "text" | "focus" => self.value.focus.take_in(|focus| f(Value::Borrow(&focus))),
@@ -498,9 +541,11 @@ impl Workspace {
         }
     }
 
-    pub fn read_focus_list<F : FnMut(bool, IterationItem)>(&self, rt : &Runtime, mut f : F) {
+    pub fn read_focus_list<F: FnMut(bool, IterationItem)>(&self, rt: &Runtime, mut f: F) {
         self.interest(rt);
-        let output = self.output.as_ref()
+        let output = self
+            .output
+            .as_ref()
             .map(|v| rt.format_or(&v, "sway-workspace").into_text())
             .unwrap_or_default();
         let focus = self.value.focus.take_in(|f| f.clone());
@@ -515,9 +560,13 @@ impl Workspace {
         });
     }
 
-    pub fn write(&self, name : &str, key : &str, value : Value, _rt : &Runtime) {
+    pub fn write(&self, name: &str, key: &str, value: Value, _rt: &Runtime) {
         match key {
-            "switch" => SwaySocket::send(0, format!(r#"workspace --no-auto-back-and-forth "{}""#, value).as_bytes(), |_| ()),
+            "switch" => SwaySocket::send(
+                0,
+                format!(r#"workspace --no-auto-back-and-forth "{}""#, value).as_bytes(),
+                |_| (),
+            ),
             _ => {
                 error!("Ignoring write to {}.{}", name, key);
             }
@@ -525,7 +574,7 @@ impl Workspace {
     }
 }
 
-#[derive(Debug,Copy,Clone)]
+#[derive(Debug, Copy, Clone)]
 enum Layout {
     Horiz,
     Vert,
@@ -536,25 +585,25 @@ enum Layout {
 #[derive(Debug)]
 enum NodeType {
     Container {
-        layout : Layout,
-        children : Vec<Rc<Node>>,
+        layout: Layout,
+        children: Vec<Rc<Node>>,
     },
     Window {
-        title : Cell<Box<str>>,
-        appid : Box<str>, // or Class if null
+        title: Cell<Box<str>>,
+        appid: Box<str>, // or Class if null
     },
 }
 
 #[derive(Debug)]
 pub struct Node {
-    id : u32,
-    focus : bool,
-    marks : String, // "" or "1" or "mark-name, another-mark"
-    contents : NodeType,
+    id: u32,
+    focus: bool,
+    marks: String, // "" or "1" or "mark-name, another-mark"
+    contents: NodeType,
 }
 
 impl Node {
-    fn parse(value : &mut json::JsonValue) -> Node {
+    fn parse(value: &mut json::JsonValue) -> Node {
         let mut marks = String::new();
         for (i, mark) in value["marks"].members().enumerate() {
             if i != 0 {
@@ -571,27 +620,33 @@ impl Node {
                 Some("stacked") => Layout::Stacked,
                 _ => {
                     break NodeType::Window {
-                        title : Cell::new(value["name"].take_string().unwrap_or_default().into()),
-                        appid : value["app_id"].take_string()
+                        title: Cell::new(value["name"].take_string().unwrap_or_default().into()),
+                        appid: value["app_id"]
+                            .take_string()
                             .or_else(|| value["window_properties"]["class"].take_string())
-                            .unwrap_or_default().into(),
+                            .unwrap_or_default()
+                            .into(),
                     };
                 }
             };
             break NodeType::Container {
                 layout,
-                children : value["nodes"].members_mut().map(Node::parse).map(Rc::new).collect(),
+                children: value["nodes"]
+                    .members_mut()
+                    .map(Node::parse)
+                    .map(Rc::new)
+                    .collect(),
             };
         };
         Node {
-            id : value["id"].as_u32().unwrap_or(!0),
-            focus : value["focused"].as_bool().unwrap_or(false),
+            id: value["id"].as_u32().unwrap_or(!0),
+            focus: value["focused"].as_bool().unwrap_or(false),
             marks,
             contents,
         }
     }
 
-    fn render(self : &Rc<Self>, items : &TreeItems, ctx : &mut Render, ev : &mut EventSink) {
+    fn render(self: &Rc<Self>, items: &TreeItems, ctx: &mut Render, ev: &mut EventSink) {
         let ii = Rc::new(IterationItem::SwayTreeItem(self.clone()));
         match &self.contents {
             NodeType::Container { children, .. } => {
@@ -613,20 +668,12 @@ impl Node {
         }
     }
 
-    pub fn read_in<F : FnOnce(Value) -> R,R>(&self, key : &str, _rt : &Runtime, f : F) -> R {
+    pub fn read_in<F: FnOnce(Value) -> R, R>(&self, key: &str, _rt: &Runtime, f: F) -> R {
         match (key, &self.contents) {
-            ("id", _) => {
-                f(Value::Float(self.id as f64))
-            }
-            ("marks", _) => {
-                f(Value::Borrow(&self.marks))
-            }
-            ("focus", _) => {
-                f(Value::Bool(self.focus))
-            }
-            ("appid", NodeType::Window { appid, .. }) => {
-                f(Value::Borrow(appid))
-            }
+            ("id", _) => f(Value::Float(self.id as f64)),
+            ("marks", _) => f(Value::Borrow(&self.marks)),
+            ("focus", _) => f(Value::Bool(self.focus)),
+            ("appid", NodeType::Window { appid, .. }) => f(Value::Borrow(appid)),
             ("icon", NodeType::Window { appid, .. }) => {
                 if appid.starts_with("org.kde.") {
                     f(Value::Borrow(&appid[8..]))
@@ -637,23 +684,26 @@ impl Node {
             ("title", NodeType::Window { title, .. }) => {
                 f(Value::Owned(title.take_in(|t| String::from(&**t))))
             }
-            ("layout", NodeType::Container { layout, ..}) => {
-                f(match layout {
-                    Layout::Horiz => "H",
-                    Layout::Vert => "V",
-                    Layout::Tabbed => "T",
-                    Layout::Stacked => "S",
-                }.into())
+            ("layout", NodeType::Container { layout, .. }) => f(match layout {
+                Layout::Horiz => "H",
+                Layout::Vert => "V",
+                Layout::Tabbed => "T",
+                Layout::Stacked => "S",
             }
-            _ => f(Value::Null)
+            .into()),
+            _ => f(Value::Null),
         }
     }
 
-    pub fn write(&self, _key : &str, value : Value, _rt : &Runtime) {
-        SwaySocket::send(0, format!("[con_id={}] {}", self.id, value).as_bytes(), |_| ());
+    pub fn write(&self, _key: &str, value: Value, _rt: &Runtime) {
+        SwaySocket::send(
+            0,
+            format!("[con_id={}] {}", self.id, value).as_bytes(),
+            |_| (),
+        );
     }
 
-    pub fn find_node<'a>(self : &'a Rc<Self>, id : u32) -> Option<&'a Rc<Self>> {
+    pub fn find_node<'a>(self: &'a Rc<Self>, id: u32) -> Option<&'a Rc<Self>> {
         if self.id == id {
             return Some(self);
         }
@@ -672,26 +722,30 @@ impl Node {
     }
 }
 
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 struct WorkspaceNode {
-    name : String,
-    output : String,
-    repr : Rc<Node>,
-    floating : Vec<Rc<Node>>,
+    name: String,
+    output: String,
+    repr: Rc<Node>,
+    floating: Vec<Rc<Node>>,
 }
 
 impl WorkspaceNode {
-    fn parse_tree(mut value : json::JsonValue) -> Vec<WorkspaceNode> {
+    fn parse_tree(mut value: json::JsonValue) -> Vec<WorkspaceNode> {
         let mut rv = Vec::new();
         for output in value["nodes"].members_mut() {
             let output_name = output["name"].as_str().unwrap_or_default().to_owned();
             for workspace in output["nodes"].members_mut() {
                 let repr = Rc::new(Node::parse(workspace));
                 rv.push(WorkspaceNode {
-                    output : output_name.clone(),
-                    name : workspace["name"].take_string().unwrap_or_default(),
+                    output: output_name.clone(),
+                    name: workspace["name"].take_string().unwrap_or_default(),
                     repr,
-                    floating : workspace["floating_nodes"].members_mut().map(Node::parse).map(Rc::new).collect(),
+                    floating: workspace["floating_nodes"]
+                        .members_mut()
+                        .map(Node::parse)
+                        .map(Rc::new)
+                        .collect(),
                 });
             }
         }
@@ -701,140 +755,182 @@ impl WorkspaceNode {
 
 #[derive(Debug)]
 pub struct Tree {
-    value : Rc<TreeInner>,
-    items : Box<TreeItems>,
-    output : Option<Box<str>>,
-    workspace : Option<Box<str>>,
+    value: Rc<TreeInner>,
+    items: Box<TreeItems>,
+    output: Option<Box<str>>,
+    workspace: Option<Box<str>>,
 }
 
 #[derive(Debug)]
 struct TreeItems {
-    pre_workspace : Option<Rc<Item>>,
-    pre_node : Option<Rc<Item>>,
-    window : Option<Rc<Item>>,
-    post_node : Option<Rc<Item>>,
-    pre_floats : Option<Rc<Item>>,
-    pre_float : Option<Rc<Item>>,
-    post_float : Option<Rc<Item>>,
-    post_workspace : Option<Rc<Item>>,
+    pre_workspace: Option<Rc<Item>>,
+    pre_node: Option<Rc<Item>>,
+    window: Option<Rc<Item>>,
+    post_node: Option<Rc<Item>>,
+    pre_floats: Option<Rc<Item>>,
+    pre_float: Option<Rc<Item>>,
+    post_float: Option<Rc<Item>>,
+    post_workspace: Option<Rc<Item>>,
 }
 
-#[derive(Debug,Default)]
+#[derive(Debug, Default)]
 struct TreeInner {
-    workspaces : Cell<Option<Vec<WorkspaceNode>>>,
-    running : Cell<bool>,
-    interested : Cell<NotifierList>,
+    workspaces: Cell<Option<Vec<WorkspaceNode>>>,
+    running: Cell<bool>,
+    interested: Cell<NotifierList>,
 }
 
 impl TreeInner {
-    fn refresh(value : Rc<Self>) {
+    fn refresh(value: Rc<Self>) {
         SwaySocket::send(4, b"", move |buf| {
             match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                 Ok(Ok(msg)) => {
                     value.workspaces.set(Some(WorkspaceNode::parse_tree(msg)));
                     value.interested.take().notify_data("sway:tree");
                 }
-                _ => warn!("Ignoring invalid get_binding_state reply")
+                _ => warn!("Ignoring invalid get_binding_state reply"),
             }
         });
     }
 
-    fn find_node(&self, id : u32) -> Option<Rc<Node>> {
-        self.workspaces.take_in_some(|ws| {
-            for wks in ws {
-                match wks.repr.find_node(id) {
-                    rv @ Some(_) => return rv.cloned(),
-                    None => {}
-                }
-                for node in &wks.floating {
-                    match node.find_node(id) {
+    fn find_node(&self, id: u32) -> Option<Rc<Node>> {
+        self.workspaces
+            .take_in_some(|ws| {
+                for wks in ws {
+                    match wks.repr.find_node(id) {
                         rv @ Some(_) => return rv.cloned(),
                         None => {}
                     }
+                    for node in &wks.floating {
+                        match node.find_node(id) {
+                            rv @ Some(_) => return rv.cloned(),
+                            None => {}
+                        }
+                    }
                 }
-            }
-            None
-        }).flatten()
+                None
+            })
+            .flatten()
     }
 }
 
 impl Tree {
-    pub fn from_toml(config : &toml::Value) -> Self {
+    pub fn from_toml(config: &toml::Value) -> Self {
         let items = TreeItems {
-            pre_workspace : config.get("pre-workspace").map(Item::from_toml_ref).map(Rc::new),
-            pre_node : config.get("pre-node").map(Item::from_toml_ref).map(Rc::new),
-            window : config.get("window").map(Item::from_toml_ref).map(Rc::new),
-            post_node : config.get("post-node").map(Item::from_toml_ref).map(Rc::new),
-            pre_floats : config.get("pre-floats").map(Item::from_toml_ref).map(Rc::new),
-            pre_float : config.get("pre-float").map(Item::from_toml_ref).map(Rc::new),
-            post_float : config.get("post-float").map(Item::from_toml_ref).map(Rc::new),
-            post_workspace : config.get("post-workspace").map(Item::from_toml_ref).map(Rc::new),
+            pre_workspace: config
+                .get("pre-workspace")
+                .map(Item::from_toml_ref)
+                .map(Rc::new),
+            pre_node: config.get("pre-node").map(Item::from_toml_ref).map(Rc::new),
+            window: config.get("window").map(Item::from_toml_ref).map(Rc::new),
+            post_node: config
+                .get("post-node")
+                .map(Item::from_toml_ref)
+                .map(Rc::new),
+            pre_floats: config
+                .get("pre-floats")
+                .map(Item::from_toml_ref)
+                .map(Rc::new),
+            pre_float: config
+                .get("pre-float")
+                .map(Item::from_toml_ref)
+                .map(Rc::new),
+            post_float: config
+                .get("post-float")
+                .map(Item::from_toml_ref)
+                .map(Rc::new),
+            post_workspace: config
+                .get("post-workspace")
+                .map(Item::from_toml_ref)
+                .map(Rc::new),
         };
-        let output = config.get("output").and_then(|v| v.as_str()).map(Into::into);
-        let workspace = config.get("workspace").and_then(|v| v.as_str()).map(Into::into);
+        let output = config
+            .get("output")
+            .and_then(|v| v.as_str())
+            .map(Into::into);
+        let workspace = config
+            .get("workspace")
+            .and_then(|v| v.as_str())
+            .map(Into::into);
         Tree {
-            value : Default::default(),
-            items : Box::new(items),
+            value: Default::default(),
+            items: Box::new(items),
             output,
             workspace,
         }
     }
 
-    fn interest(&self, rt : &Runtime) {
+    fn interest(&self, rt: &Runtime) {
         self.value.interested.take_in(|i| i.add(rt));
         if self.value.running.replace(true) {
             return;
         }
 
         let weak = Rc::downgrade(&self.value);
-        SwaySocket::subscribe("window", 0x80000003, Box::new(move |buf| {
-            let remove_callback;
-            if let Some(mi) = weak.upgrade() {
-                match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
-                    Ok(Ok(msg)) => {
-                        if msg["change"].as_str() == Some("title") {
-                            mi.interested.take().notify_data("sway:title");
-                            let id = msg["container"]["id"].as_u32().unwrap_or(!0);
-                            if let Some(new_title) = msg["container"]["name"].as_str() {
-                                if let Some(Node { contents : NodeType::Window { title, .. }, .. }) =
-                                    mi.find_node(id).as_deref()
-                                {
-                                    title.set(new_title.into());
+        SwaySocket::subscribe(
+            "window",
+            0x80000003,
+            Box::new(move |buf| {
+                let remove_callback;
+                if let Some(mi) = weak.upgrade() {
+                    match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
+                        Ok(Ok(msg)) => {
+                            if msg["change"].as_str() == Some("title") {
+                                mi.interested.take().notify_data("sway:title");
+                                let id = msg["container"]["id"].as_u32().unwrap_or(!0);
+                                if let Some(new_title) = msg["container"]["name"].as_str() {
+                                    if let Some(Node {
+                                        contents: NodeType::Window { title, .. },
+                                        ..
+                                    }) = mi.find_node(id).as_deref()
+                                    {
+                                        title.set(new_title.into());
+                                    }
                                 }
+                            } else {
+                                // Other update messages don't have enough information to determine the
+                                // new layout, so we need to rerun get_tree.  This needs to be done
+                                // outside the callback to avoid a RefCell reborrow.
+                                spawn_noerr(async move {
+                                    TreeInner::refresh(mi);
+                                });
                             }
-                        } else {
-                            // Other update messages don't have enough information to determine the
-                            // new layout, so we need to rerun get_tree.  This needs to be done
-                            // outside the callback to avoid a RefCell reborrow.
-                            spawn_noerr(async move {
-                                TreeInner::refresh(mi);
-                            });
                         }
+                        _ => warn!("Ignoring invalid window change message"),
                     }
-                    _ => warn!("Ignoring invalid window change message")
+                    remove_callback = false;
+                } else {
+                    remove_callback = true;
                 }
-                remove_callback = false;
-            } else {
-                remove_callback = true;
-            }
-            ListenerResult {
-                remove_callback,
-                consumed : false,
-            }
-        }));
+                ListenerResult {
+                    remove_callback,
+                    consumed: false,
+                }
+            }),
+        );
         TreeInner::refresh(self.value.clone());
     }
 
-    pub fn read_in<F : FnOnce(Value) -> R,R>(&self, _name : &str, _key : &str, _rt : &Runtime, f : F) -> R {
+    pub fn read_in<F: FnOnce(Value) -> R, R>(
+        &self,
+        _name: &str,
+        _key: &str,
+        _rt: &Runtime,
+        f: F,
+    ) -> R {
         f(Value::Null)
     }
 
-    pub fn render(&self, ctx : &mut Render, ev : &mut EventSink) {
+    pub fn render(&self, ctx: &mut Render, ev: &mut EventSink) {
         let items = &self.items;
-        let output = self.output.as_ref()
+        let output = self
+            .output
+            .as_ref()
             .map(|v| ctx.runtime.format_or(&v, ctx.err_name).into_text())
             .unwrap_or_default();
-        let name_filter = self.workspace.as_ref()
+        let name_filter = self
+            .workspace
+            .as_ref()
             .map(|v| ctx.runtime.format_or(&v, ctx.err_name).into_text())
             .unwrap_or_default();
         self.interest(ctx.runtime);
@@ -847,9 +943,9 @@ impl Tree {
                     continue;
                 }
                 let ii = IterationItem::SwayWorkspace(Rc::new(WorkspaceData {
-                    name : workspace.name.clone(),
-                    output : workspace.output.clone(),
-                    repr : String::new(), // TODO
+                    name: workspace.name.clone(),
+                    output: workspace.output.clone(),
+                    repr: String::new(), // TODO
                 }));
                 if let Some(item) = &items.pre_workspace {
                     item.render_clamped_item(ctx, ev, &ii);
@@ -877,6 +973,6 @@ impl Tree {
     }
 }
 
-pub fn write(value : Value, _rt : &Runtime) {
+pub fn write(value: Value, _rt: &Runtime) {
     SwaySocket::send(0, format!("{}", value).as_bytes(), |_| ());
 }

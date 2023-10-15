@@ -1,25 +1,25 @@
 use crate::icon::OwnedImage;
 use crate::item::Formatting;
-use crate::state::Runtime;
 use crate::render::Render;
+use crate::state::Runtime;
 use crate::util::UID;
 use log::info;
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
 use std::time::Instant;
-use tiny_skia::{Color,Point,Transform};
-use ttf_parser::{Face,GlyphId};
+use tiny_skia::{Color, Point, Transform};
+use ttf_parser::{Face, GlyphId};
 
 #[derive(Debug)]
 pub struct FontMapped {
     // Note: lifetime is actually tied to mmap, not 'static
-    parsed : Face<'static>,
+    parsed: Face<'static>,
     // this field must follow parsed for safety (drop order)
     #[allow(unused)]
-    mmap : memmap2::Mmap,
-    pub file : PathBuf,
-    pub name : String,
+    mmap: memmap2::Mmap,
+    pub file: PathBuf,
+    pub name: String,
     pub uid: UID,
 }
 
@@ -31,39 +31,44 @@ impl FontMapped {
         let mmap = unsafe { memmap2::Mmap::map(&file)? };
         // forge a static lifetime, safe if accessed via public API
         let buf = unsafe { &*(mmap.as_ref() as *const [u8]) };
-        let parsed = Face::from_slice(&buf, 0)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let parsed =
+            Face::parse(&buf, 0).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let uid = UID::new();
-        Ok(FontMapped { parsed, mmap, file : path, name, uid })
+        Ok(FontMapped {
+            parsed,
+            mmap,
+            file: path,
+            name,
+            uid,
+        })
     }
 
     pub fn as_ref<'a>(&'a self) -> &'a Face<'a> {
         &self.parsed
     }
 
-    pub fn scale_from_pt(&self, pt : f32) -> f32 {
+    pub fn scale_from_pt(&self, pt: f32) -> f32 {
         pt * 1.33333333 / self.as_ref().units_per_em() as f32
     }
 }
 
-#[derive(Debug,Copy,Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct CGlyph<'a> {
     pub id: GlyphId,
-    pub scale : f32,
-    pub position : (f32, f32),
-    pub font : &'a FontMapped,
-    pub color : Color,
+    pub scale: f32,
+    pub position: (f32, f32),
+    pub font: &'a FontMapped,
+    pub color: Color,
 }
 
 pub fn layout_font<'a>(
     font: &'a FontMapped,
     size_pt: f32,
-    runtime : &'a Runtime,
-    rgba : Color,
-    text : &str,
-    markup: bool)
-    -> (Vec<CGlyph<'a>>, (f32, f32))
-{
+    runtime: &'a Runtime,
+    rgba: Color,
+    text: &str,
+    markup: bool,
+) -> (Vec<CGlyph<'a>>, (f32, f32)) {
     let scale = font.scale_from_pt(size_pt);
     let mut xpos = 0.0f32;
     let mut xmax = 0.0f32;
@@ -76,9 +81,9 @@ pub fn layout_font<'a>(
         stack.push((font, rgba));
     }
 
-    let to_draw : Vec<_> =
-        text.char_indices()
-        .filter_map(|(i,c)| {
+    let to_draw: Vec<_> = text
+        .char_indices()
+        .filter_map(|(i, c)| {
             if c == '\n' {
                 xmax = xmax.max(xpos);
                 xpos = 0.0;
@@ -96,12 +101,13 @@ pub fn layout_font<'a>(
                     } else {
                         let mut color = color;
                         for kv in tag.split(' ') {
-                            if kv.starts_with("color='") || kv.starts_with("color=\""){
+                            if kv.starts_with("color='") || kv.starts_with("color=\"") {
                                 let v = kv[7..].get(..kv.len() - 8);
                                 color = Formatting::parse_rgba(v, None).unwrap_or(color);
                             } else if kv.starts_with("color=") {
-                                color = Formatting::parse_rgba(Some(&kv[6..]), None).unwrap_or(color);
-                            } else if kv.starts_with("font='") || kv.starts_with("font=\""){
+                                color =
+                                    Formatting::parse_rgba(Some(&kv[6..]), None).unwrap_or(color);
+                            } else if kv.starts_with("font='") || kv.starts_with("font=\"") {
                                 let v = kv[6..].get(..kv.len() - 7);
                                 for font in &runtime.fonts {
                                     if v == Some(font.name.as_str()) {
@@ -122,8 +128,10 @@ pub fn layout_font<'a>(
             if id.0 != 0 {
                 let kern = ttf_parser::Tag::from_bytes(b"kern");
                 if let Some(prev) = prev {
-                    xpos += fid.as_ref()
-                        .table_data(kern)
+                    xpos += fid
+                        .as_ref()
+                        .raw_face()
+                        .table(kern)
                         .and_then(ttf_parser::kern::Table::parse)
                         .map(|t| t.subtables)
                         .into_iter()
@@ -131,7 +139,8 @@ pub fn layout_font<'a>(
                         .filter(|st| st.horizontal && !st.variable)
                         .filter_map(|st| st.glyphs_kerning(prev, id))
                         .next()
-                        .unwrap_or(0) as f32 * scale;
+                        .unwrap_or(0) as f32
+                        * scale;
                 }
                 prev = Some(id);
             } else {
@@ -156,26 +165,41 @@ pub fn layout_font<'a>(
             let scale = fid.scale_from_pt(size_pt);
             let w = fid.as_ref().glyph_hor_advance(id).unwrap_or(0);
             xpos += w as f32 * scale;
-            Some(CGlyph { id, position, scale, font : fid, color })
+            Some(CGlyph {
+                id,
+                position,
+                scale,
+                font: fid,
+                color,
+            })
         })
         .collect();
-
 
     let width = xpos.max(xmax) as f32;
     let height = ypos - scale * font.as_ref().descender() as f32;
     (to_draw, (width, height))
 }
 
-pub fn draw_font_with<T>(target : &mut T, xform: Transform, to_draw : &[CGlyph],
+pub fn draw_font_with<T>(
+    target: &mut T,
+    xform: Transform,
+    to_draw: &[CGlyph],
     mut draw: impl FnMut(&mut T, &tiny_skia::Path, Color),
     mut draw_img: impl FnMut(&mut T, Transform, OwnedImage),
 ) {
-    for &CGlyph { id, scale, position, font, color } in to_draw {
+    for &CGlyph {
+        id,
+        scale,
+        position,
+        font,
+        color,
+    } in to_draw
+    {
         struct Draw(tiny_skia::PathBuilder);
         let mut path = Draw(tiny_skia::PathBuilder::new());
         impl ttf_parser::OutlineBuilder for Draw {
             fn move_to(&mut self, x: f32, y: f32) {
-                self.0.move_to(x,-y);
+                self.0.move_to(x, -y);
             }
             fn line_to(&mut self, x: f32, y: f32) {
                 self.0.line_to(x, -y);
@@ -213,7 +237,7 @@ pub fn draw_font_with<T>(target : &mut T, xform: Transform, to_draw : &[CGlyph],
             }
         }
         if let Some(svg) = font.as_ref().glyph_svg_image(id) {
-            if let Some(img) = OwnedImage::from_svg(svg, target_h as u32) {
+            if let Some(img) = OwnedImage::from_svg(svg.data, target_h as u32) {
                 let ypos = position.1 - font.as_ref().ascender() as f32 * scale;
                 let xform = xform.pre_translate(position.0, ypos);
                 draw_img(target, xform, img);
@@ -231,41 +255,57 @@ static HQ_PIXMAP_PAINT: tiny_skia::PixmapPaint = tiny_skia::PixmapPaint {
 };
 
 pub fn render_font(ctx: &mut Render, text: &str, markup: bool) -> (f32, f32) {
-    let (mut to_draw, size) = layout_font(ctx.font, ctx.font_size, ctx.runtime, ctx.font_color, text, markup);
+    let (mut to_draw, size) = layout_font(
+        ctx.font,
+        ctx.font_size,
+        ctx.runtime,
+        ctx.font_color,
+        text,
+        markup,
+    );
     let clip_w = ctx.render_extents.1.x - ctx.render_pos.x;
     if size.1 > clip_w {
         to_draw.retain(|glyph| glyph.position.0 < clip_w);
     }
-    let xform = ctx.render_xform.pre_translate(ctx.render_pos.x, ctx.render_pos.y);
-    draw_font_with(ctx.canvas, xform, &to_draw, |canvas,path,color| {
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(color),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
-        canvas.fill_path(&path, &paint, tiny_skia::FillRule::EvenOdd, Transform::identity(), None);
-    }, |canvas,xform,img| {
-        canvas.draw_pixmap(
-            0, 0,
-            img.0.as_ref(),
-            &HQ_PIXMAP_PAINT,
-            xform,
-            None);
-    });
+    let xform = ctx
+        .render_xform
+        .pre_translate(ctx.render_pos.x, ctx.render_pos.y);
+    draw_font_with(
+        ctx.canvas,
+        xform,
+        &to_draw,
+        |canvas, path, color| {
+            let paint = tiny_skia::Paint {
+                shader: tiny_skia::Shader::SolidColor(color),
+                anti_alias: true,
+                ..tiny_skia::Paint::default()
+            };
+            canvas.fill_path(
+                &path,
+                &paint,
+                tiny_skia::FillRule::EvenOdd,
+                Transform::identity(),
+                None,
+            );
+        },
+        |canvas, xform, img| {
+            canvas.draw_pixmap(0, 0, img.0.as_ref(), &HQ_PIXMAP_PAINT, xform, None);
+        },
+    );
     size
 }
 
-#[derive(Eq,Hash,PartialEq,Debug)]
+#[derive(Eq, Hash, PartialEq, Debug)]
 pub struct RenderKey {
     x_offset_centipixel: u8,
     y_offset_centipixel: u8,
     scale: u8,
 
-    font : UID,
-    font_size_millipt : u32,
-    font_color : u32,
-    text_stroke : Option<u32>,
-    text_stroke_size_milli : Option<u32>,
+    font: UID,
+    font_size_millipt: u32,
+    font_color: u32,
+    text_stroke: Option<u32>,
+    text_stroke_size_milli: Option<u32>,
 
     text: String,
 }
@@ -273,7 +313,7 @@ pub struct RenderKey {
 /// The margin in pixels that text is allowed to occupy outside its declared borders.  This may
 /// happen due to outlines, accents, or emoji images that extend above or below the intended
 /// borders.
-const PIXMAP_MARGIN : i32 = 5;
+const PIXMAP_MARGIN: i32 = 5;
 
 #[derive(Debug)]
 pub struct TextImage {
@@ -284,6 +324,11 @@ pub struct TextImage {
     pub last_used: Instant,
 }
 
+fn to_color_u32(color: Color) -> u32 {
+    let c = color.to_color_u8();
+    u32::from_ne_bytes([c.red(), c.green(), c.blue(), c.alpha()])
+}
+
 impl RenderKey {
     fn new(ctx: &Render, xform: tiny_skia::Transform, text: &str) -> Option<Self> {
         let xi = (xform.tx * 100.0).round() as u64 % 100;
@@ -292,16 +337,18 @@ impl RenderKey {
         if scale as f32 != xform.sy || xform.sx != xform.sy {
             return None;
         }
-        let text_stroke_size_milli = ctx.text_stroke.and_then(|_| ctx.text_stroke_size.map(|s| (s * 1000.0).round() as u32));
+        let text_stroke_size_milli = ctx
+            .text_stroke
+            .and_then(|_| ctx.text_stroke_size.map(|s| (s * 1000.0).round() as u32));
         Some(RenderKey {
             x_offset_centipixel: xi as u8,
             y_offset_centipixel: yi as u8,
             scale,
             font: ctx.font.uid,
             font_size_millipt: (ctx.font_size * 1000.0).round() as u32,
-            font_color: ctx.font_color.to_color_u8().get(),
+            font_color: to_color_u32(ctx.font_color),
 
-            text_stroke: ctx.text_stroke.map(|c| c.to_color_u8().get()),
+            text_stroke: ctx.text_stroke.map(to_color_u32),
             text_stroke_size_milli,
 
             text: text.into(),
@@ -309,13 +356,15 @@ impl RenderKey {
     }
 }
 
-
 pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
     if text.is_empty() {
         return;
     }
 
-    let Point { x: xstart, y: ystart } = ctx.render_pos;
+    let Point {
+        x: xstart,
+        y: ystart,
+    } = ctx.render_pos;
 
     let mut xform = ctx.render_xform.pre_translate(xstart, ystart);
 
@@ -324,51 +373,66 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
 
     let mut key = RenderKey::new(ctx, xform, text);
 
-    if key.as_ref().and_then(|k| {
-        let mut xform = xform;
-        let mut cache = ctx.cache.text.borrow_mut();
-        let ti = cache.get_mut(k)?;
-        if ti.width > clip_w {
-            return None;
-        }
-        let mut xlate_y = xform.ty;
-        match ctx.align.vert {
-            Some(f) if !ctx.render_flex => {
-                let extra = clip_h - ti.height;
-                if extra >= 0.0 {
-                    xform = xform.pre_translate(0.0, extra * f);
-                    xlate_y = xform.ty;
-                }
+    if key
+        .as_ref()
+        .and_then(|k| {
+            let mut xform = xform;
+            let mut cache = ctx.cache.text.borrow_mut();
+            let ti = cache.get_mut(k)?;
+            if ti.width > clip_w {
+                return None;
             }
-            _ => {}
-        }
-        if ti.y_offset_centipixel as u64 != (xlate_y * 100.0).round() as u64 % 100 {
-            return None;
-        }
+            let mut xlate_y = xform.ty;
+            match ctx.align.vert {
+                Some(f) if !ctx.render_flex => {
+                    let extra = clip_h - ti.height;
+                    if extra >= 0.0 {
+                        xform = xform.pre_translate(0.0, extra * f);
+                        xlate_y = xform.ty;
+                    }
+                }
+                _ => {}
+            }
+            if ti.y_offset_centipixel as u64 != (xlate_y * 100.0).round() as u64 % 100 {
+                return None;
+            }
 
-        let mut origin = [ Point {
-            x: -(k.x_offset_centipixel as f32 / 100.0),
-            y: -(ti.y_offset_centipixel as f32 / 100.0),
-        } ];
-        xform.map_points(&mut origin);
-        let draw_x = origin[0].x.round() as i32 - PIXMAP_MARGIN;
-        let draw_y = origin[0].y.round() as i32 - PIXMAP_MARGIN;
+            let mut origin = [Point {
+                x: -(k.x_offset_centipixel as f32 / 100.0),
+                y: -(ti.y_offset_centipixel as f32 / 100.0),
+            }];
+            xform.map_points(&mut origin);
+            let draw_x = origin[0].x.round() as i32 - PIXMAP_MARGIN;
+            let draw_y = origin[0].y.round() as i32 - PIXMAP_MARGIN;
 
-        ctx.canvas.draw_pixmap(draw_x, draw_y, ti.pixmap.as_ref(),
-            &tiny_skia::PixmapPaint::default(),
-            tiny_skia::Transform::identity(),
-            None)?;
+            ctx.canvas.draw_pixmap(
+                draw_x,
+                draw_y,
+                ti.pixmap.as_ref(),
+                &tiny_skia::PixmapPaint::default(),
+                tiny_skia::Transform::identity(),
+                None,
+            );
 
-        ti.last_used = Instant::now();
+            ti.last_used = Instant::now();
 
-        ctx.render_pos.x += ti.width;
-        ctx.render_pos.y += ti.height;
-        Some(())
-    }).is_some() {
+            ctx.render_pos.x += ti.width;
+            ctx.render_pos.y += ti.height;
+            Some(())
+        })
+        .is_some()
+    {
         return;
     }
 
-    let (mut to_draw, (width, height)) = layout_font(ctx.font, ctx.font_size, &ctx.runtime, ctx.font_color, &text, markup);
+    let (mut to_draw, (width, height)) = layout_font(
+        ctx.font,
+        ctx.font_size,
+        &ctx.runtime,
+        ctx.font_color,
+        &text,
+        markup,
+    );
 
     if width > clip_w {
         to_draw.retain(|glyph| glyph.position.0 < clip_w);
@@ -425,7 +489,10 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
 
     let mut pixmap = match tiny_skia::Pixmap::new(xsize.ceil() as u32, ysize.ceil() as u32) {
         Some(pixmap) => pixmap,
-        None => { log::debug!("Not rendering \"{text}\" ({xsize}, {ysize})"); return }
+        None => {
+            log::debug!("Not rendering \"{text}\" ({xsize}, {ysize})");
+            return;
+        }
     };
 
     if let Some(rgba) = ctx.text_stroke {
@@ -435,56 +502,77 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
             ..tiny_skia::Paint::default()
         };
         let stroke = tiny_skia::Stroke {
-            width : ctx.text_stroke_size.unwrap_or(1.0),
+            width: ctx.text_stroke_size.unwrap_or(1.0),
             ..Default::default()
         };
 
-        draw_font_with(&mut pixmap, render_xform, &to_draw, |canvas, path, color| {
-            canvas.stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), None);
-            let paint = tiny_skia::Paint {
-                shader: tiny_skia::Shader::SolidColor(color),
-                anti_alias: true,
-                ..tiny_skia::Paint::default()
-            };
-            canvas.fill_path(&path, &paint, tiny_skia::FillRule::EvenOdd, Transform::identity(), None);
-        }, |canvas,xform,img| {
-            canvas.draw_pixmap(
-                0, 0,
-                img.0.as_ref(),
-                &HQ_PIXMAP_PAINT,
-                xform,
-                None);
-        });
+        draw_font_with(
+            &mut pixmap,
+            render_xform,
+            &to_draw,
+            |canvas, path, color| {
+                canvas.stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), None);
+                let paint = tiny_skia::Paint {
+                    shader: tiny_skia::Shader::SolidColor(color),
+                    anti_alias: true,
+                    ..tiny_skia::Paint::default()
+                };
+                canvas.fill_path(
+                    &path,
+                    &paint,
+                    tiny_skia::FillRule::EvenOdd,
+                    Transform::identity(),
+                    None,
+                );
+            },
+            |canvas, xform, img| {
+                canvas.draw_pixmap(0, 0, img.0.as_ref(), &HQ_PIXMAP_PAINT, xform, None);
+            },
+        );
     } else {
-        draw_font_with(&mut pixmap, render_xform, &to_draw, |canvas, path, color| {
-            let paint = tiny_skia::Paint {
-                shader: tiny_skia::Shader::SolidColor(color),
-                anti_alias: true,
-                ..tiny_skia::Paint::default()
-            };
-            canvas.fill_path(&path, &paint, tiny_skia::FillRule::EvenOdd, Transform::identity(), None);
-        }, |canvas,xform,img| {
-            canvas.draw_pixmap(
-                0, 0,
-                img.0.as_ref(),
-                &HQ_PIXMAP_PAINT,
-                xform,
-                None);
-        });
+        draw_font_with(
+            &mut pixmap,
+            render_xform,
+            &to_draw,
+            |canvas, path, color| {
+                let paint = tiny_skia::Paint {
+                    shader: tiny_skia::Shader::SolidColor(color),
+                    anti_alias: true,
+                    ..tiny_skia::Paint::default()
+                };
+                canvas.fill_path(
+                    &path,
+                    &paint,
+                    tiny_skia::FillRule::EvenOdd,
+                    Transform::identity(),
+                    None,
+                );
+            },
+            |canvas, xform, img| {
+                canvas.draw_pixmap(0, 0, img.0.as_ref(), &HQ_PIXMAP_PAINT, xform, None);
+            },
+        );
     }
 
-    ctx.canvas.draw_pixmap(draw_x, draw_y, pixmap.as_ref(),
+    ctx.canvas.draw_pixmap(
+        draw_x,
+        draw_y,
+        pixmap.as_ref(),
         &tiny_skia::PixmapPaint::default(),
         tiny_skia::Transform::identity(),
-        None);
+        None,
+    );
 
     if let Some(key) = key {
-        ctx.cache.text.borrow_mut().insert(key, TextImage {
-            width,
-            height,
-            y_offset_centipixel,
-            pixmap,
-            last_used: Instant::now(),
-        });
+        ctx.cache.text.borrow_mut().insert(
+            key,
+            TextImage {
+                width,
+                height,
+                y_offset_centipixel,
+                pixmap,
+                last_used: Instant::now(),
+            },
+        );
     }
 }

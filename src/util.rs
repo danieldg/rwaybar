@@ -1,8 +1,9 @@
-use log::error;
-use futures_util::FutureExt;
 use futures_util::future::RemoteHandle;
-use std::error::Error;
+use futures_util::FutureExt;
+use log::error;
 use std::borrow::Cow;
+use std::convert::Infallible;
+use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::future::Future;
@@ -10,7 +11,7 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::io::RawFd;
 use std::path::PathBuf;
 
-pub fn toml_to_string(value : Option<&toml::Value>) -> Option<String> {
+pub fn toml_to_string(value: Option<&toml::Value>) -> Option<String> {
     value.and_then(|value| {
         if let Some(v) = value.as_str() {
             Some(v.to_owned())
@@ -24,7 +25,7 @@ pub fn toml_to_string(value : Option<&toml::Value>) -> Option<String> {
     })
 }
 
-pub fn toml_to_f64(value : Option<&toml::Value>) -> Option<f64> {
+pub fn toml_to_f64(value: Option<&toml::Value>) -> Option<f64> {
     value.and_then(|value| {
         if let Some(v) = value.as_float() {
             Some(v)
@@ -36,17 +37,17 @@ pub fn toml_to_f64(value : Option<&toml::Value>) -> Option<f64> {
     })
 }
 
-#[derive(Default,Copy,Clone,Eq,PartialEq,Ord,PartialOrd,Hash)]
+#[derive(Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ImplDebug<T>(pub T);
 
 impl<T> fmt::Debug for ImplDebug<T> {
-    fn fmt(&self, fmt : &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         write!(fmt, "{}", std::any::type_name::<T>())
     }
 }
 
 impl<T> From<T> for ImplDebug<T> {
-    fn from(t : T) -> Self {
+    fn from(t: T) -> Self {
         Self(t)
     }
 }
@@ -70,7 +71,7 @@ impl<T> std::ops::DerefMut for ImplDebug<T> {
 pub struct Cell<T>(std::cell::Cell<T>);
 
 impl<T> Cell<T> {
-    pub fn new(t : T) -> Self {
+    pub fn new(t: T) -> Self {
         Cell(std::cell::Cell::new(t))
     }
 
@@ -80,8 +81,8 @@ impl<T> Cell<T> {
     }
 }
 
-impl<T : Default> Cell<T> {
-    pub fn take_in<F : FnOnce(&mut T) -> R, R>(&self, f : F) -> R {
+impl<T: Default> Cell<T> {
+    pub fn take_in<F: FnOnce(&mut T) -> R, R>(&self, f: F) -> R {
         let mut t = self.0.take();
         let rv = f(&mut t);
         self.0.set(t);
@@ -90,7 +91,7 @@ impl<T : Default> Cell<T> {
 }
 
 impl<T> Cell<Option<T>> {
-    pub fn take_in_some<F : FnOnce(&mut T) -> R, R>(&self, f : F) -> Option<R> {
+    pub fn take_in_some<F: FnOnce(&mut T) -> R, R>(&self, f: F) -> Option<R> {
         let mut t = self.0.take();
         let rv = t.as_mut().map(f);
         self.0.set(t);
@@ -106,7 +107,7 @@ impl<T> std::ops::Deref for Cell<T> {
 }
 
 impl<T> fmt::Debug for Cell<T> {
-    fn fmt(&self, fmt : &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         write!(fmt, "Cell")
     }
 }
@@ -114,6 +115,7 @@ impl<T> fmt::Debug for Cell<T> {
 /// A simple wrapper around [RawFd] that implements [AsRawFd].
 ///
 /// Note: it does nothing on drop; the file descriptor lifetime must be managed elsewhere.
+#[derive(Debug)]
 pub struct Fd(pub RawFd);
 impl AsRawFd for Fd {
     fn as_raw_fd(&self) -> RawFd {
@@ -121,11 +123,11 @@ impl AsRawFd for Fd {
     }
 }
 
-pub fn spawn_noerr(fut : impl Future<Output=()> + 'static) {
+pub fn spawn_noerr(fut: impl Future<Output = ()> + 'static) {
     tokio::task::spawn_local(fut);
 }
 
-pub fn spawn(owner : &'static str, fut : impl Future<Output=Result<(), Box<dyn Error>>> + 'static) {
+pub fn spawn(owner: &'static str, fut: impl Future<Output = Result<(), Box<dyn Error>>> + 'static) {
     spawn_noerr(async move {
         match fut.await {
             Ok(()) => {}
@@ -136,9 +138,25 @@ pub fn spawn(owner : &'static str, fut : impl Future<Output=Result<(), Box<dyn E
     });
 }
 
-pub fn spawn_handle(owner : &'static str, fut : impl Future<Output=Result<(), Box<dyn Error>>> + 'static)
-    -> RemoteHandle<()>
-{
+pub fn spawn_critical(
+    owner: &'static str,
+    fut: impl Future<Output = Result<Infallible, Box<dyn Error>>> + 'static,
+) {
+    spawn_noerr(async move {
+        match fut.await {
+            Ok(i) => match i {},
+            Err(e) => {
+                error!("{}: {}", owner, e);
+                std::process::exit(0);
+            }
+        }
+    });
+}
+
+pub fn spawn_handle(
+    owner: &'static str,
+    fut: impl Future<Output = Result<(), Box<dyn Error>>> + 'static,
+) -> RemoteHandle<()> {
     let (task, rh) = async move {
         match fut.await {
             Ok(()) => {}
@@ -146,7 +164,8 @@ pub fn spawn_handle(owner : &'static str, fut : impl Future<Output=Result<(), Bo
                 error!("{}: {}", owner, e);
             }
         }
-    }.remote_handle();
+    }
+    .remote_handle();
     spawn_noerr(task);
     rh
 }
@@ -179,7 +198,8 @@ pub fn glob_expand<'a>(file: impl Into<Cow<'a, str>>) -> Option<(Cow<'a, str>, b
             }
             re.push('$');
             let re = regex::Regex::new(&re).expect("Invalid regex");
-            candidates = candidates.into_iter()
+            candidates = candidates
+                .into_iter()
                 .filter_map(|c| fs::read_dir(c).ok())
                 .flatten()
                 .filter_map(Result::ok)
@@ -195,19 +215,20 @@ pub fn glob_expand<'a>(file: impl Into<Cow<'a, str>>) -> Option<(Cow<'a, str>, b
             }
         }
     }
-    let mut candidates = candidates.into_iter()
+    let mut candidates = candidates
+        .into_iter()
         .filter_map(|p| p.into_os_string().into_string().ok());
 
     let c = candidates.next()?;
     Some((c.into(), candidates.next().is_some()))
 }
 
-#[derive(Copy,Clone,Debug,Eq,PartialEq,Hash,Ord,PartialOrd)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct UID(u64);
 
 impl UID {
     pub fn new() -> Self {
-        use std::sync::atomic::{AtomicU64,Ordering};
+        use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
         Self(N.fetch_add(1, Ordering::Relaxed))
     }

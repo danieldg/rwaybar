@@ -1,17 +1,19 @@
-use crate::data::{IterationItem,Value};
+use crate::data::{IterationItem, Value};
 use crate::pulse_tokio::TokioMain;
 use crate::state::NotifierList;
 use crate::state::Runtime;
-use crate::util::{self,Cell};
+use crate::util::{self, Cell};
 use libpulse_binding::callbacks::ListResult;
-use libpulse_binding::context::introspect::{Introspector,SinkInfo,SourceInfo,ClientInfo,SinkInputInfo,SourceOutputInfo};
-use libpulse_binding::context::subscribe::{Facility,Operation};
-use libpulse_binding::context::{self,Context};
+use libpulse_binding::context::introspect::{
+    ClientInfo, Introspector, SinkInfo, SinkInputInfo, SourceInfo, SourceOutputInfo,
+};
+use libpulse_binding::context::subscribe::{Facility, Operation};
+use libpulse_binding::context::{self, Context};
 use libpulse_binding::def::DevicePortType;
 use libpulse_binding::error::PAErr;
 use libpulse_binding::proplist;
-use libpulse_binding::volume::{ChannelVolumes,Volume};
-use log::{debug,info,warn,error};
+use libpulse_binding::volume::{ChannelVolumes, Volume};
+use log::{debug, error, info, warn};
 use once_cell::unsync::OnceCell;
 use std::rc::Rc;
 
@@ -22,14 +24,14 @@ use std::rc::Rc;
 pub struct Error;
 
 impl From<PAErr> for Error {
-    fn from(e : PAErr) -> Error {
+    fn from(e: PAErr) -> Error {
         error!("{}", e);
         Error
     }
 }
 
 impl From<&str> for Error {
-    fn from(e : &str) -> Error {
+    fn from(e: &str) -> Error {
         error!("{}", e);
         Error
     }
@@ -38,39 +40,39 @@ impl From<&str> for Error {
 /// Information on one audio port (source or sink)
 #[derive(Debug)]
 struct PortInfo {
-    index : u32,
-    name : String,
-    desc : String,
-    port : String,
-    volume : ChannelVolumes,
-    mute : bool,
-    monitor : bool,
-    port_type : Option<DevicePortType>,
+    index: u32,
+    name: String,
+    desc: String,
+    port: String,
+    volume: ChannelVolumes,
+    mute: bool,
+    monitor: bool,
+    port_type: Option<DevicePortType>,
 }
 
 /// Information on one playback or recording stream
 #[derive(Debug)]
 struct WireInfo {
-    index : u32,
-    client : Option<u32>,
-    port : u32,
-    volume : u32,
+    index: u32,
+    client: Option<u32>,
+    port: u32,
+    volume: u32,
     #[allow(unused)] // not currently queried
-    mute : bool,
+    mute: bool,
 }
 
 /// A singleton structure that collects introspection data from the pulse server
-#[derive(Debug,Default)]
+#[derive(Debug, Default)]
 struct PulseData {
-    context : Cell<Option<Context>>,
-    default_sink : Cell<String>,
-    default_source : Cell<String>,
-    sources : Cell<Vec<PortInfo>>,
-    sinks : Cell<Vec<PortInfo>>,
-    clients : Cell<Vec<(u32, String)>>,
-    sink_ins : Cell<Vec<WireInfo>>,
-    src_outs : Cell<Vec<WireInfo>>,
-    interested : Cell<NotifierList>,
+    context: Cell<Option<Context>>,
+    default_sink: Cell<String>,
+    default_source: Cell<String>,
+    sources: Cell<Vec<PortInfo>>,
+    sinks: Cell<Vec<PortInfo>>,
+    clients: Cell<Vec<(u32, String)>>,
+    sink_ins: Cell<Vec<WireInfo>>,
+    src_outs: Cell<Vec<WireInfo>>,
+    interested: Cell<NotifierList>,
 }
 
 thread_local! {
@@ -91,11 +93,13 @@ impl PulseData {
         rv
     }
 
-    async fn mainloop(self : Rc<Self>) -> Result<(), Error> {
+    async fn mainloop(self: Rc<Self>) -> Result<(), Error> {
         let mut main = TokioMain::new();
 
         let mut props = proplist::Proplist::new().ok_or("proplist")?;
-        props.set_str(proplist::properties::APPLICATION_NAME, "rwaybar").unwrap();
+        props
+            .set_str(proplist::properties::APPLICATION_NAME, "rwaybar")
+            .unwrap();
         let mut context = Context::new_with_proplist(&main, "rwaybar", &props).ok_or("context")?;
         context.connect(None, context::FlagSet::NOFAIL, None)?;
 
@@ -165,10 +169,16 @@ impl PulseData {
         Ok(())
     }
 
-    fn subscribe_cb(self : &Rc<Self>, inspect : &Introspector, facility : Option<Facility>, op : Option<Operation>, idx : u32) {
+    fn subscribe_cb(
+        self: &Rc<Self>,
+        inspect: &Introspector,
+        facility: Option<Facility>,
+        op: Option<Operation>,
+        idx: u32,
+    ) {
         match (facility, op) {
-            (Some(Facility::Sink), Some(Operation::New)) |
-            (Some(Facility::Sink), Some(Operation::Changed)) => {
+            (Some(Facility::Sink), Some(Operation::New))
+            | (Some(Facility::Sink), Some(Operation::Changed)) => {
                 let data = self.clone();
                 inspect.get_sink_info_by_index(idx, move |item| {
                     data.add_sink(item);
@@ -180,8 +190,8 @@ impl PulseData {
                 });
                 self.interested.take().notify_data("pulse");
             }
-            (Some(Facility::Source), Some(Operation::New)) |
-            (Some(Facility::Source), Some(Operation::Changed)) => {
+            (Some(Facility::Source), Some(Operation::New))
+            | (Some(Facility::Source), Some(Operation::Changed)) => {
                 let data = self.clone();
                 inspect.get_source_info_by_index(idx, move |item| {
                     data.add_source(item);
@@ -193,8 +203,8 @@ impl PulseData {
                 });
                 self.interested.take().notify_data("pulse");
             }
-            (Some(Facility::Client), Some(Operation::New)) |
-            (Some(Facility::Client), Some(Operation::Changed)) => {
+            (Some(Facility::Client), Some(Operation::New))
+            | (Some(Facility::Client), Some(Operation::Changed)) => {
                 let data = self.clone();
                 inspect.get_client_info(idx, move |item| {
                     data.add_client(item);
@@ -206,8 +216,8 @@ impl PulseData {
                 });
                 self.interested.take().notify_data("pulse");
             }
-            (Some(Facility::SinkInput), Some(Operation::New)) |
-            (Some(Facility::SinkInput), Some(Operation::Changed)) => {
+            (Some(Facility::SinkInput), Some(Operation::New))
+            | (Some(Facility::SinkInput), Some(Operation::Changed)) => {
                 let data = self.clone();
                 inspect.get_sink_input_info(idx, move |item| {
                     data.add_sink_input(item);
@@ -219,8 +229,8 @@ impl PulseData {
                 });
                 self.interested.take().notify_data("pulse");
             }
-            (Some(Facility::SourceOutput), Some(Operation::New)) |
-            (Some(Facility::SourceOutput), Some(Operation::Changed)) => {
+            (Some(Facility::SourceOutput), Some(Operation::New))
+            | (Some(Facility::SourceOutput), Some(Operation::Changed)) => {
                 let data = self.clone();
                 inspect.get_source_output_info(idx, move |item| {
                     data.add_source_output(item);
@@ -232,23 +242,28 @@ impl PulseData {
                 });
                 self.interested.take().notify_data("pulse");
             }
-            _ => { }
+            _ => {}
         }
     }
 
-    fn add_sink(&self, item : ListResult<&SinkInfo>) {
+    fn add_sink(&self, item: ListResult<&SinkInfo>) {
         self.interested.take().notify_data("pulse");
         match item {
             ListResult::Item(info) => {
                 let pi = PortInfo {
                     index: info.index,
-                    name : info.name.as_deref().unwrap_or("").to_owned(),
-                    desc : info.description.as_deref().unwrap_or("").to_owned(),
-                    port : info.active_port.as_ref().and_then(|port| port.description.as_deref()).unwrap_or("").to_owned(),
-                    volume : info.volume,
-                    mute : info.mute,
-                    monitor : false,
-                    port_type : info.active_port.as_ref().map(|port| port.r#type),
+                    name: info.name.as_deref().unwrap_or("").to_owned(),
+                    desc: info.description.as_deref().unwrap_or("").to_owned(),
+                    port: info
+                        .active_port
+                        .as_ref()
+                        .and_then(|port| port.description.as_deref())
+                        .unwrap_or("")
+                        .to_owned(),
+                    volume: info.volume,
+                    mute: info.mute,
+                    monitor: false,
+                    port_type: info.active_port.as_ref().map(|port| port.r#type),
                 };
                 self.sinks.take_in(|sinks| {
                     for info in &mut *sinks {
@@ -265,19 +280,24 @@ impl PulseData {
         }
     }
 
-    fn add_source(&self, item : ListResult<&SourceInfo>) {
+    fn add_source(&self, item: ListResult<&SourceInfo>) {
         self.interested.take().notify_data("pulse");
         match item {
             ListResult::Item(info) => {
                 let pi = PortInfo {
                     index: info.index,
-                    name : info.name.as_deref().unwrap_or("").to_owned(),
-                    desc : info.description.as_deref().unwrap_or("").to_owned(),
-                    port : info.active_port.as_ref().and_then(|port| port.description.as_deref()).unwrap_or("").to_owned(),
-                    volume : info.volume,
-                    mute : info.mute,
-                    monitor : info.monitor_of_sink.is_some(),
-                    port_type : info.active_port.as_ref().map(|port| port.r#type),
+                    name: info.name.as_deref().unwrap_or("").to_owned(),
+                    desc: info.description.as_deref().unwrap_or("").to_owned(),
+                    port: info
+                        .active_port
+                        .as_ref()
+                        .and_then(|port| port.description.as_deref())
+                        .unwrap_or("")
+                        .to_owned(),
+                    volume: info.volume,
+                    mute: info.mute,
+                    monitor: info.monitor_of_sink.is_some(),
+                    port_type: info.active_port.as_ref().map(|port| port.r#type),
                 };
                 self.sources.take_in(|sources| {
                     for info in &mut *sources {
@@ -294,7 +314,7 @@ impl PulseData {
         }
     }
 
-    fn add_client(&self, item : ListResult<&ClientInfo>) {
+    fn add_client(&self, item: ListResult<&ClientInfo>) {
         self.interested.take().notify_data("pulse");
         match item {
             ListResult::Item(info) => {
@@ -314,17 +334,17 @@ impl PulseData {
         }
     }
 
-    fn add_sink_input(&self, item : ListResult<&SinkInputInfo>) {
+    fn add_sink_input(&self, item: ListResult<&SinkInputInfo>) {
         self.interested.take().notify_data("pulse");
         match item {
             ListResult::Item(info) => {
                 self.sink_ins.take_in(|sink_ins| {
                     let new = WireInfo {
-                        index : info.index,
-                        client : info.client,
-                        port : info.sink,
-                        mute : info.mute,
-                        volume : info.volume.avg().0,
+                        index: info.index,
+                        client: info.client,
+                        port: info.sink,
+                        mute: info.mute,
+                        volume: info.volume.avg().0,
                     };
                     for client in &mut *sink_ins {
                         if client.index == info.index {
@@ -340,17 +360,17 @@ impl PulseData {
         }
     }
 
-    fn add_source_output(&self, item : ListResult<&SourceOutputInfo>) {
+    fn add_source_output(&self, item: ListResult<&SourceOutputInfo>) {
         self.interested.take().notify_data("pulse");
         match item {
             ListResult::Item(info) => {
                 self.src_outs.take_in(|src_outs| {
                     let new = WireInfo {
-                        index : info.index,
-                        client : info.client,
-                        port : info.source,
-                        mute : info.mute,
-                        volume : info.volume.avg().0,
+                        index: info.index,
+                        client: info.client,
+                        port: info.source,
+                        mute: info.mute,
+                        volume: info.volume.avg().0,
                     };
                     for client in &mut *src_outs {
                         if client.index == info.index {
@@ -366,8 +386,9 @@ impl PulseData {
         }
     }
 
-    pub fn with_target<F,R>(&self, target : &str, f : F) -> R
-        where F : FnOnce(Option<&mut PortInfo>, bool, &[WireInfo], &[(u32, String)]) -> R
+    pub fn with_target<F, R>(&self, target: &str, f: F) -> R
+    where
+        F: FnOnce(Option<&mut PortInfo>, bool, &[WireInfo], &[(u32, String)]) -> R,
     {
         let name;
         let is_sink;
@@ -400,7 +421,10 @@ impl PulseData {
                 wi_list = &self.src_outs;
             }
             _ => {
-                error!("Invalid target specification '{}' - should be source:<name> or sink:<name>", target);
+                error!(
+                    "Invalid target specification '{}' - should be source:<name> or sink:<name>",
+                    target
+                );
                 name = String::new();
                 is_sink = false;
                 pi_list = &self.sources;
@@ -423,7 +447,7 @@ impl PulseData {
     }
 }
 
-pub fn read_focus_list<F : FnMut(bool, IterationItem)>(rt : &Runtime, target : &str, mut f : F) {
+pub fn read_focus_list<F: FnMut(bool, IterationItem)>(rt: &Runtime, target: &str, mut f: F) {
     let mut items = Vec::new();
     let (do_src, do_sink, do_mon) = match target {
         "sources" => (true, false, false),
@@ -473,7 +497,13 @@ pub fn read_focus_list<F : FnMut(bool, IterationItem)>(rt : &Runtime, target : &
     }
 }
 
-pub fn read_in<F : FnOnce(Value) -> R, R>(cfg_name : &str, target : &str, mut key : &str, rt : &Runtime, f : F) -> R {
+pub fn read_in<F: FnOnce(Value) -> R, R>(
+    cfg_name: &str,
+    target: &str,
+    mut key: &str,
+    rt: &Runtime,
+    f: F,
+) -> R {
     let mut target = target;
     if target.is_empty() {
         if let Some(pos) = key.rfind('.') {
@@ -542,9 +572,7 @@ pub fn read_in<F : FnOnce(Value) -> R, R>(cfg_name : &str, target : &str, mut ke
                         f(Value::Null)
                     }
                 }
-                "mute" => {
-                    f(Value::Bool(port.mute))
-                }
+                "mute" => f(Value::Bool(port.mute)),
                 _ => {
                     info!("Unknown key '{}' in '{}'", key, cfg_name);
                     f(Value::Null)
@@ -554,7 +582,7 @@ pub fn read_in<F : FnOnce(Value) -> R, R>(cfg_name : &str, target : &str, mut ke
     })
 }
 
-pub fn do_write(_name : &str, target : &str, mut key : &str, value : Value, _rt : &Runtime) {
+pub fn do_write(_name: &str, target: &str, mut key: &str, value: Value, _rt: &Runtime) {
     let mut target = target;
     if target.is_empty() {
         if let Some(pos) = key.rfind('.') {
@@ -598,14 +626,28 @@ pub fn do_write(_name : &str, target : &str, mut key : &str, value : Value, _rt 
                         };
                         let value = Volume::NORMAL.0 as f64 * step / 100.0;
                         match dir {
-                            Some('+') => { port.volume.increase(Volume(value as u32)); }
-                            Some('-') => { port.volume.decrease(Volume(value as u32)); }
-                            _ => { port.volume.scale(Volume(value as u32)); }
+                            Some('+') => {
+                                port.volume.increase(Volume(value as u32));
+                            }
+                            Some('-') => {
+                                port.volume.decrease(Volume(value as u32));
+                            }
+                            _ => {
+                                port.volume.scale(Volume(value as u32));
+                            }
                         }
                         if is_sink {
-                            ctx.introspect().set_sink_volume_by_index(port.index, &port.volume, None);
+                            ctx.introspect().set_sink_volume_by_index(
+                                port.index,
+                                &port.volume,
+                                None,
+                            );
                         } else {
-                            ctx.introspect().set_source_volume_by_index(port.index, &port.volume, None);
+                            ctx.introspect().set_source_volume_by_index(
+                                port.index,
+                                &port.volume,
+                                None,
+                            );
                         }
                         pulse.interested.take().notify_data("pulse:write-volume");
                     }
@@ -621,16 +663,18 @@ pub fn do_write(_name : &str, target : &str, mut key : &str, value : Value, _rt 
                                     error!("Invalid mute request '{}'", value);
                                     return;
                                 }
-                            }
+                            },
                         };
                         if old == new {
                             return;
                         }
                         port.mute = new;
                         if is_sink {
-                            ctx.introspect().set_sink_mute_by_index(port.index, new, None);
+                            ctx.introspect()
+                                .set_sink_mute_by_index(port.index, new, None);
                         } else {
-                            ctx.introspect().set_source_mute_by_index(port.index, new, None);
+                            ctx.introspect()
+                                .set_source_mute_by_index(port.index, new, None);
                         }
                         pulse.interested.take().notify_data("pulse:write-mute");
                     }

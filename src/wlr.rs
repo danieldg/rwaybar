@@ -1,20 +1,21 @@
 use crate::data::Value;
-use crate::state::{NotifierList,Runtime,State};
-use crate::util::{Cell,spawn};
+use crate::state::{NotifierList, Runtime, State};
+use crate::util::{spawn, Cell};
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::rc::{Rc,Weak};
+use std::rc::{Rc, Weak};
 // TODO use std::sync::Mutex;
-use bytes::{Bytes,BytesMut};
-use wayland_client::Connection;
-use wayland_client::QueueHandle;
-use wayland_client::Proxy;
-use wayland_client::protocol::wl_seat::WlSeat;
-use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_manager_v1::{self,ZwlrDataControlManagerV1};
-use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_offer_v1::{self, ZwlrDataControlOfferV1};
-use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_device_v1;
+use bytes::{Bytes, BytesMut};
 use futures_channel::oneshot;
-use futures_util::future::{Either,select};
+use futures_util::future::{select, Either};
+use wayland_client::protocol::wl_seat::WlSeat;
+use wayland_client::Connection;
+use wayland_client::Proxy;
+use wayland_client::QueueHandle;
+use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_device_v1;
+use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_offer_v1::{
+    self, ZwlrDataControlOfferV1,
+};
 
 #[derive(Debug)]
 enum OfferValue {
@@ -53,22 +54,20 @@ thread_local! {
     static CLIPBOARDS: RefCell<Option<VecDeque<Clipboard>>> = RefCell::new(None);
 }
 
-impl wayland_client::Dispatch<ZwlrDataControlManagerV1, ()> for State {
-    fn event(&mut self, _: &ZwlrDataControlManagerV1, _: zwlr_data_control_manager_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
-    }
-}
-
-impl wayland_client::Dispatch<zwlr_data_control_device_v1::ZwlrDataControlDeviceV1, WlSeat> for State {
-    fn event(&mut self,
+impl wayland_client::Dispatch<zwlr_data_control_device_v1::ZwlrDataControlDeviceV1, WlSeat>
+    for State
+{
+    fn event(
+        _: &mut Self,
         dcd: &zwlr_data_control_device_v1::ZwlrDataControlDeviceV1,
         event: zwlr_data_control_device_v1::Event,
         seat: &WlSeat,
         _: &Connection,
-        _: &QueueHandle<Self>)
-    {
+        _: &QueueHandle<Self>,
+    ) {
         use zwlr_data_control_device_v1::Event;
         match event {
-            Event::DataOffer { .. } => { }
+            Event::DataOffer { .. } => {}
             Event::Selection { id } => {
                 set_seat_offer(seat, id, false);
             }
@@ -92,13 +91,14 @@ impl wayland_client::Dispatch<zwlr_data_control_device_v1::ZwlrDataControlDevice
 }
 
 impl wayland_client::Dispatch<ZwlrDataControlOfferV1, OfferData> for State {
-    fn event(&mut self,
+    fn event(
+        _: &mut Self,
         _: &zwlr_data_control_offer_v1::ZwlrDataControlOfferV1,
         event: zwlr_data_control_offer_v1::Event,
         data: &OfferData,
         _: &Connection,
-        _: &QueueHandle<Self>)
-    {
+        _: &QueueHandle<Self>,
+    ) {
         match event {
             zwlr_data_control_offer_v1::Event::Offer { mime_type } => {
                 data.mimes.borrow_mut().push(OfferType {
@@ -113,29 +113,28 @@ impl wayland_client::Dispatch<ZwlrDataControlOfferV1, OfferData> for State {
 
 fn start_dcm(rt: &Runtime) -> VecDeque<Clipboard> {
     let mut rv = VecDeque::new();
-    if let Some(dcm) = &rt.wayland.wlr_dcm {
-        for seat in rt.wayland.seat.seats() {
-            rv.push_back(Clipboard {
-                seat: seat.clone(),
-                selection: true,
-                contents: None,
-                interested: Vec::new(),
-            });
-            rv.push_back(Clipboard {
-                seat: seat.clone(),
-                selection: false,
-                contents: None,
-                interested: Vec::new(),
-            });
+    match rt.wayland.wlr_dcm.get() {
+        Ok(dcm) => {
+            for seat in rt.wayland.seat.seats() {
+                rv.push_back(Clipboard {
+                    seat: seat.clone(),
+                    selection: true,
+                    contents: None,
+                    interested: Vec::new(),
+                });
+                rv.push_back(Clipboard {
+                    seat: seat.clone(),
+                    selection: false,
+                    contents: None,
+                    interested: Vec::new(),
+                });
 
-            dcm.get_data_device(
-                &seat,
-                &rt.wayland.queue,
-                seat.clone())
-                .unwrap();
+                dcm.get_data_device(&seat, &rt.wayland.queue, seat.clone());
+            }
         }
-    } else {
-        log::error!("Clipboard not available, no zwp_primary_selection_device_manager_v1 found");
+        Err(e) => {
+            log::error!("Clipboard not available: {e:?}");
+        }
     }
     rv
 }
@@ -189,7 +188,13 @@ impl ClipboardData {
     fn find_best_mime(&self, data: &OfferData) -> Option<usize> {
         let offered = data.mimes.borrow();
         if self.mime_list.is_empty() {
-            for &mime in &["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT"] {
+            for &mime in &[
+                "text/plain;charset=utf-8",
+                "text/plain",
+                "UTF8_STRING",
+                "STRING",
+                "TEXT",
+            ] {
                 if let Some(i) = offered.iter().position(|t| &*t.mime == mime) {
                     return Some(i);
                 }
@@ -215,8 +220,8 @@ impl ClipboardData {
                         return;
                     }
                 };
-                use std::os::unix::io::AsRawFd;
-                contents.receive(String::from(&*offer.mime), tx.as_raw_fd());
+                use std::os::fd::AsFd;
+                contents.receive(String::from(&*offer.mime), tx.as_fd());
 
                 let interested = Rc::new(Cell::new(self.interested.take_in(|i| i.clone())));
                 offer.value = OfferValue::Running {
@@ -247,7 +252,8 @@ impl ClipboardData {
                 });
             }
             OfferValue::Running { data, interested } => {
-                self.interested.take_in(|i| interested.take_in(|t| t.merge(i)));
+                self.interested
+                    .take_in(|i| interested.take_in(|t| t.merge(i)));
                 match data.try_recv() {
                     Ok(Some(v)) => {
                         offer.value = OfferValue::Finished(v);
@@ -263,7 +269,13 @@ impl ClipboardData {
         }
     }
 
-    pub fn read_in<F : FnOnce(Value) -> R, R>(self: &Rc<Self>, _name : &str, key : &str, rt : &Runtime, f : F) -> R {
+    pub fn read_in<F: FnOnce(Value) -> R, R>(
+        self: &Rc<Self>,
+        _name: &str,
+        key: &str,
+        rt: &Runtime,
+        f: F,
+    ) -> R {
         self.interested.take_in(|i| i.add(rt));
         CLIPBOARDS.with(|clips| {
             let mut clips = clips.borrow_mut();
@@ -273,14 +285,22 @@ impl ClipboardData {
                     continue;
                 }
                 if let Some(seat) = &self.seat {
-                    if rt.wayland.seat.info(&clip.seat).map(|data| {
-                        data.name.as_deref() == Some(&**seat)
-                    }) != Some(true) {
+                    if rt
+                        .wayland
+                        .seat
+                        .info(&clip.seat)
+                        .map(|data| data.name.as_deref() == Some(&**seat))
+                        != Some(true)
+                    {
                         continue;
                     }
                 }
 
-                if clip.interested.iter().all(|e| e.as_ptr() != Rc::as_ptr(self)) {
+                if clip
+                    .interested
+                    .iter()
+                    .all(|e| e.as_ptr() != Rc::as_ptr(self))
+                {
                     clip.interested.push(Rc::downgrade(self));
                 }
 

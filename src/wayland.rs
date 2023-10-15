@@ -1,34 +1,38 @@
 use log::debug;
+use smithay_client_toolkit::compositor::CompositorState;
+use smithay_client_toolkit::output::OutputState;
+use smithay_client_toolkit::registry::{RegistryState, SimpleGlobal};
+use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
+use smithay_client_toolkit::seat::{self, SeatState};
+use smithay_client_toolkit::shell::wlr_layer::{self as sctk_layer, LayerShell};
+use smithay_client_toolkit::shell::xdg::window as xdg_window;
+use smithay_client_toolkit::shell::xdg::{popup, XdgPositioner, XdgShell};
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shm::Shm;
 use std::cell::RefCell;
 use std::convert::Infallible;
 use std::error::Error;
 use std::io;
 use std::rc::Rc;
-use std::sync::{Mutex, atomic::{AtomicU8,AtomicU32,Ordering}};
-use std::task;
-use smithay_client_toolkit::compositor::CompositorState;
-use smithay_client_toolkit::registry::RegistryState;
-use smithay_client_toolkit::seat::{SeatState, self};
-use smithay_client_toolkit::output::OutputState;
-use smithay_client_toolkit::seat::pointer::{PointerHandler, PointerEvent, PointerEventKind};
-use smithay_client_toolkit::shell::layer::{LayerSurface, LayerState, self as sctk_layer};
-use smithay_client_toolkit::shell::xdg::XdgShellState;
-use smithay_client_toolkit::shell::xdg::popup;
-use smithay_client_toolkit::shm::ShmState;
+use std::sync::{
+    atomic::{AtomicU32, AtomicU8, Ordering},
+    Arc, Mutex,
+};
 use tokio::io::unix::AsyncFd;
-use wayland_client::{Connection,QueueHandle,Proxy};
+use tokio::sync::Notify;
 use wayland_client::backend::WaylandError;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::protocol::wl_touch::WlTouch;
-use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
-use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
+use wayland_client::{Connection, Proxy, QueueHandle};
 use wayland_protocols::xdg::shell::client::xdg_popup;
 use wayland_protocols::xdg::shell::client::xdg_positioner;
+use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
+use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
-use crate::state::{State,Runtime};
+use crate::state::{OutputsReadyCallback, Runtime, State};
 use crate::util;
 
 #[repr(u32)]
@@ -55,50 +59,40 @@ pub struct WaylandClient {
     pub registry: RegistryState,
 
     pub compositor: CompositorState,
-    pub layer: LayerState,
+    pub layer: LayerShell,
     pub output: OutputState,
     pub seat: SeatState,
-    pub shm: ShmState,
-    pub xdg: XdgShellState,
-    pub wlr_dcm: Option<ZwlrDataControlManagerV1>,
+    pub shm: Shm,
+    pub wlr_dcm: SimpleGlobal<ZwlrDataControlManagerV1, 1>,
+    pub xdg: XdgShell,
 
     taps: Vec<TapState>,
 
-    flush : Option<task::Waker>,
-    need_flush : bool,
+    io: Arc<WaylandIO>,
 }
 
 #[derive(Debug)]
-struct OtherRegistries;
-
-impl smithay_client_toolkit::registry::RegistryHandler<State> for OtherRegistries {
-    fn ready(
-        data: &mut State,
-        conn: &Connection,
-        qh: &QueueHandle<State>,
-    ) {
-        data.runtime.wayland.wlr_dcm = data.runtime.wayland.registry.bind_one(qh, 1..=2, ()).ok();
-        debug!("Done enumerating globals; starting round-trip for initial events.");
-        conn.display().sync(
-            &qh,
-            crate::state::Callbacks::Init2,
-        ).unwrap();
-        data.runtime.wayland.flush();
-    }
+struct WaylandIO {
+    conn: wayland_client::Connection,
+    flush: Notify,
+    fd: AsyncFd<util::Fd>,
 }
 
-wayland_client::delegate_dispatch!(State: [ WlSurface: SurfaceData, ] => CompositorState);
-wayland_client::delegate_dispatch!(State: [ WlPointer: PointerData, ] => SeatState);
 smithay_client_toolkit::delegate_compositor!(State);
-smithay_client_toolkit::delegate_pointer!(State);
+wayland_client::delegate_dispatch!(State: [WlSurface: SurfaceData] => CompositorState);
 smithay_client_toolkit::delegate_layer!(State);
 smithay_client_toolkit::delegate_output!(State);
+
+// This does not work as of 0.31.0:
+// smithay_client_toolkit::delegate_pointer!(State, pointer: [PointerData]);
+wayland_client::delegate_dispatch!(State: [WlPointer: PointerData] => SeatState);
 smithay_client_toolkit::delegate_registry!(State);
 smithay_client_toolkit::delegate_seat!(State);
 smithay_client_toolkit::delegate_shm!(State);
+smithay_client_toolkit::delegate_simple!(State, ZwlrDataControlManagerV1, 1);
 smithay_client_toolkit::delegate_touch!(State);
-smithay_client_toolkit::delegate_xdg_shell!(State);
 smithay_client_toolkit::delegate_xdg_popup!(State);
+smithay_client_toolkit::delegate_xdg_shell!(State);
 
 #[derive(Default, Debug, Clone)]
 struct PointerState {
@@ -121,15 +115,13 @@ impl smithay_client_toolkit::registry::ProvidesRegistryState for State {
         &mut self.runtime.wayland.registry
     }
 
-    smithay_client_toolkit::registry_handlers![
-        CompositorState,
-        LayerState,
-        OutputState,
-        SeatState,
-        ShmState,
-        XdgShellState,
-        OtherRegistries,
-    ];
+    smithay_client_toolkit::registry_handlers![SeatState, OutputState,];
+}
+
+impl AsMut<SimpleGlobal<ZwlrDataControlManagerV1, 1>> for State {
+    fn as_mut(&mut self) -> &mut SimpleGlobal<ZwlrDataControlManagerV1, 1> {
+        &mut self.runtime.wayland.wlr_dcm
+    }
 }
 
 #[derive(Debug)]
@@ -164,7 +156,14 @@ impl SurfaceData {
     }
 
     pub fn start_render(&self) -> bool {
-        self.state.compare_exchange(SurfaceData::NEED_RENDER, SurfaceData::POST_RENDER, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+        self.state
+            .compare_exchange(
+                SurfaceData::NEED_RENDER,
+                SurfaceData::POST_RENDER,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_ok()
     }
 
     /// Returns true if a render should be requested now
@@ -183,11 +182,11 @@ impl SurfaceData {
     }
 
     pub fn height(&self) -> u32 {
-        self.height.load(Ordering::Relaxed) 
+        self.height.load(Ordering::Relaxed)
     }
 
     pub fn width(&self) -> u32 {
-        self.width.load(Ordering::Relaxed) 
+        self.width.load(Ordering::Relaxed)
     }
 
     pub fn pixel_width(&self) -> i32 {
@@ -200,16 +199,12 @@ impl SurfaceData {
 }
 
 impl smithay_client_toolkit::compositor::CompositorHandler for State {
-    fn compositor_state(&mut self) -> &mut CompositorState {
-        &mut self.runtime.wayland.compositor
-    }
-
     fn scale_factor_changed(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
         surf: &WlSurface,
-        new_factor: i32
+        new_factor: i32,
     ) {
         if let Some(data) = SurfaceData::try_from_wl(surf) {
             surf.set_buffer_scale(new_factor);
@@ -218,31 +213,27 @@ impl smithay_client_toolkit::compositor::CompositorHandler for State {
             }
         }
     }
-    fn frame(
+    fn transform_changed(
         &mut self,
-        _: &Connection,
+        _: &wayland_client::Connection,
         _: &QueueHandle<Self>,
-        surf: &WlSurface,
-        _time: u32
+        _: &WlSurface,
+        _: wayland_client::protocol::wl_output::Transform,
     ) {
+    }
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, surf: &WlSurface, _time: u32) {
         let data = SurfaceData::from_wl(surf);
-        let prev = data.state.fetch_and(!SurfaceData::THROTTLED, Ordering::Relaxed);
+        let prev = data
+            .state
+            .fetch_and(!SurfaceData::THROTTLED, Ordering::Relaxed);
         if prev & SurfaceData::THROTTLED != 0 {
             self.request_draw();
         }
     }
 }
 
-impl smithay_client_toolkit::shell::layer::LayerHandler for State {
-    fn layer_state(&mut self) -> &mut LayerState {
-        &mut self.runtime.wayland.layer
-    }
-    fn closed(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        ls: &sctk_layer::LayerSurface,
-    ) {
+impl smithay_client_toolkit::shell::wlr_layer::LayerShellHandler for State {
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, ls: &sctk_layer::LayerSurface) {
         self.bars.retain(|bar| bar.ls != *ls);
     }
 
@@ -252,13 +243,41 @@ impl smithay_client_toolkit::shell::layer::LayerHandler for State {
         _: &QueueHandle<Self>,
         ls: &sctk_layer::LayerSurface,
         config: sctk_layer::LayerSurfaceConfigure,
-        _serial: u32
+        _serial: u32,
     ) {
         let data = SurfaceData::from_wl(ls.wl_surface());
         data.width.store(config.new_size.0, Ordering::Relaxed);
         data.height.store(config.new_size.1, Ordering::Relaxed);
-        data.state.fetch_or(SurfaceData::CONFIGURED | SurfaceData::DAMAGED, Ordering::Relaxed);
+        data.state.fetch_or(
+            SurfaceData::CONFIGURED | SurfaceData::DAMAGED,
+            Ordering::Relaxed,
+        );
         self.request_draw();
+    }
+}
+
+impl smithay_client_toolkit::shm::ShmHandler for State {
+    fn shm_state(&mut self) -> &mut Shm {
+        &mut self.runtime.wayland.shm
+    }
+}
+
+impl smithay_client_toolkit::shell::xdg::window::WindowHandler for State {
+    fn request_close(
+        &mut self,
+        _: &wayland_client::Connection,
+        _: &QueueHandle<Self>,
+        _: &xdg_window::Window,
+    ) {
+    }
+    fn configure(
+        &mut self,
+        _: &wayland_client::Connection,
+        _: &QueueHandle<Self>,
+        _: &xdg_window::Window,
+        _: xdg_window::WindowConfigure,
+        _: u32,
+    ) {
     }
 }
 
@@ -267,36 +286,30 @@ impl smithay_client_toolkit::output::OutputHandler for State {
         &mut self.runtime.wayland.output
     }
 
-    fn new_output(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        output: WlOutput
-    ) {
+    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: WlOutput) {
         self.output_ready(&output);
     }
-    fn update_output(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: WlOutput
-    ) {
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {
         // anything we care about will get applied via configure requests on our surface
     }
-    fn output_destroyed(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: WlOutput
-    ) {
+    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {
         // do nothing and rely on the Closed event for destroy
     }
 }
 
-#[derive(Default,Debug)]
+#[derive(Debug)]
 pub struct PointerData {
     pdata: smithay_client_toolkit::seat::pointer::PointerData,
     state: Mutex<PointerState>,
+}
+
+impl PointerData {
+    fn new(seat: WlSeat) -> Self {
+        Self {
+            pdata: smithay_client_toolkit::seat::pointer::PointerData::new(seat),
+            state: Default::default(),
+        }
+    }
 }
 
 impl smithay_client_toolkit::seat::pointer::PointerDataExt for PointerData {
@@ -317,7 +330,8 @@ impl PointerHandler for State {
         for event in events {
             match event.kind {
                 Enter { serial } => {
-                    self.renderer.set_cursor(&self.runtime.wayland, &pointer, serial);
+                    self.renderer
+                        .set_cursor(&self.runtime.wayland, &pointer, serial);
 
                     self.dispatch_surface_event(&event.surface, |surf, rt| {
                         surf.hover(event.position, rt);
@@ -335,10 +349,10 @@ impl PointerHandler for State {
                 }
                 Press { button, .. } => {
                     let button_id = match button {
-                        0x110 => Button::Left, // BTN_LEFT
-                        0x111 => Button::Right, // BTN_RIGHT
-                        0x112 => Button::Middle, // BTN_MIDDLE
-                        0x113 => Button::Back, // BTN_SIDE or "back"
+                        0x110 => Button::Left,    // BTN_LEFT
+                        0x111 => Button::Right,   // BTN_RIGHT
+                        0x112 => Button::Middle,  // BTN_MIDDLE
+                        0x113 => Button::Back,    // BTN_SIDE or "back"
                         0x114 => Button::Forward, // BTN_EXTRA or "forward"
                         _ => {
                             debug!("You can add events for this button ({})", button);
@@ -348,7 +362,12 @@ impl PointerHandler for State {
                     self.dispatch_pointer_button(&event.surface, event.position, button_id);
                 }
                 Release { .. } => {}
-                Axis { time, horizontal, vertical, .. } => {
+                Axis {
+                    time,
+                    horizontal,
+                    vertical,
+                    ..
+                } => {
                     let mut p = pointer.data::<PointerData>().unwrap().state.lock().unwrap();
 
                     let decay = time.wrapping_sub(p.axis_ts);
@@ -367,34 +386,66 @@ impl PointerHandler for State {
 
                     if vertical.discrete < 0 {
                         p.axis_v = 0.0;
-                        self.dispatch_pointer_button(&event.surface, event.position, Button::ScrollUp);
+                        self.dispatch_pointer_button(
+                            &event.surface,
+                            event.position,
+                            Button::ScrollUp,
+                        );
                     } else if vertical.discrete > 0 {
                         p.axis_v = 0.0;
-                        self.dispatch_pointer_button(&event.surface, event.position, Button::ScrollDown);
+                        self.dispatch_pointer_button(
+                            &event.surface,
+                            event.position,
+                            Button::ScrollDown,
+                        );
                     } else {
                         p.axis_v += vertical.absolute;
                         if p.axis_v >= 10.0 {
-                            self.dispatch_pointer_button(&event.surface, event.position, Button::ScrollDown);
+                            self.dispatch_pointer_button(
+                                &event.surface,
+                                event.position,
+                                Button::ScrollDown,
+                            );
                             p.axis_v = 0.0;
                         } else if p.axis_v <= -10.0 {
-                            self.dispatch_pointer_button(&event.surface, event.position, Button::ScrollUp);
+                            self.dispatch_pointer_button(
+                                &event.surface,
+                                event.position,
+                                Button::ScrollUp,
+                            );
                             p.axis_v = 0.0;
                         }
                     }
 
                     if horizontal.discrete < 0 {
                         p.axis_h = 0.0;
-                        self.dispatch_pointer_button(&event.surface, event.position, Button::ScrollLeft);
+                        self.dispatch_pointer_button(
+                            &event.surface,
+                            event.position,
+                            Button::ScrollLeft,
+                        );
                     } else if horizontal.discrete > 0 {
                         p.axis_h = 0.0;
-                        self.dispatch_pointer_button(&event.surface, event.position, Button::ScrollRight);
+                        self.dispatch_pointer_button(
+                            &event.surface,
+                            event.position,
+                            Button::ScrollRight,
+                        );
                     } else {
                         p.axis_h += horizontal.absolute;
                         if p.axis_h >= 10.0 {
-                            self.dispatch_pointer_button(&event.surface, event.position, Button::ScrollRight);
+                            self.dispatch_pointer_button(
+                                &event.surface,
+                                event.position,
+                                Button::ScrollRight,
+                            );
                             p.axis_h = 0.0;
                         } else if p.axis_h <= -10.0 {
-                            self.dispatch_pointer_button(&event.surface, event.position, Button::ScrollLeft);
+                            self.dispatch_pointer_button(
+                                &event.surface,
+                                event.position,
+                                Button::ScrollLeft,
+                            );
                             p.axis_h = 0.0;
                         }
                     }
@@ -414,7 +465,7 @@ impl smithay_client_toolkit::seat::touch::TouchHandler for State {
         _time: u32,
         surface: WlSurface,
         id: i32,
-        (x, y): (f64, f64)
+        (x, y): (f64, f64),
     ) {
         self.dispatch_surface_event(&surface, |surf, rt| {
             surf.hover((x, y), rt);
@@ -422,7 +473,9 @@ impl smithay_client_toolkit::seat::touch::TouchHandler for State {
         self.runtime.wayland.taps.push(TapState {
             touch: touch.clone(),
             surface,
-            id, x, y,
+            id,
+            x,
+            y,
         });
     }
 
@@ -433,12 +486,16 @@ impl smithay_client_toolkit::seat::touch::TouchHandler for State {
         touch: &WlTouch,
         _serial: u32,
         _time: u32,
-        id: i32
+        id: i32,
     ) {
         // drain_filter would be nice
-        if let Some(i) = self.runtime.wayland.taps.iter().position(|tap| {
-            tap.touch == *touch && tap.id == id
-        }) {
+        if let Some(i) = self
+            .runtime
+            .wayland
+            .taps
+            .iter()
+            .position(|tap| tap.touch == *touch && tap.id == id)
+        {
             let tap = self.runtime.wayland.taps.remove(i);
             self.dispatch_surface_event(&tap.surface, |surf, rt| {
                 surf.no_hover(rt);
@@ -454,7 +511,7 @@ impl smithay_client_toolkit::seat::touch::TouchHandler for State {
         touch: &WlTouch,
         _time: u32,
         id: i32,
-        (x, y): (f64, f64)
+        (x, y): (f64, f64),
     ) {
         let mut surf = None;
         for tap in &mut self.runtime.wayland.taps {
@@ -478,22 +535,19 @@ impl smithay_client_toolkit::seat::touch::TouchHandler for State {
         _touch: &WlTouch,
         _id: i32,
         _major: f64,
-        _minor: f64
-    ) {}
+        _minor: f64,
+    ) {
+    }
     fn orientation(
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _touch: &WlTouch,
         _id: i32,
-        _orientation: f64
-    ) {}
-    fn cancel(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        touch: &WlTouch
+        _orientation: f64,
     ) {
+    }
+    fn cancel(&mut self, _: &Connection, _: &QueueHandle<Self>, touch: &WlTouch) {
         let mut surfaces = Vec::new();
         // drain_filter would be nice
         self.runtime.wayland.taps.retain(|tap| {
@@ -517,23 +571,22 @@ impl smithay_client_toolkit::seat::SeatHandler for State {
         &mut self.runtime.wayland.seat
     }
 
-    fn new_seat(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: WlSeat
-    ) {}
+    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
 
     fn new_capability(
         &mut self,
         _: &Connection,
         qh: &QueueHandle<Self>,
         seat: WlSeat,
-        capability: seat::Capability
+        capability: seat::Capability,
     ) {
         match capability {
             seat::Capability::Pointer => {
-                self.runtime.wayland.seat.get_pointer_with_data(qh, &seat, PointerData::default()).unwrap();
+                self.runtime
+                    .wayland
+                    .seat
+                    .get_pointer_with_data(qh, &seat, PointerData::new(seat.clone()))
+                    .unwrap();
             }
             seat::Capability::Touch => {
                 self.runtime.wayland.seat.get_touch(qh, &seat).unwrap();
@@ -546,34 +599,25 @@ impl smithay_client_toolkit::seat::SeatHandler for State {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: WlSeat,
-        _: seat::Capability
-    ) {}
-    fn remove_seat(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: WlSeat
-    ) {}
-}
-
-impl smithay_client_toolkit::shm::ShmHandler for State {
-    fn shm_state(&mut self) -> &mut ShmState {
-        &mut self.runtime.wayland.shm
+        _: seat::Capability,
+    ) {
     }
-}
-
-impl smithay_client_toolkit::shell::xdg::XdgShellHandler for State {
-    fn xdg_shell_state(&mut self) -> &mut XdgShellState {
-        &mut self.runtime.wayland.xdg
-    }
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
 }
 
 impl smithay_client_toolkit::shell::xdg::popup::PopupHandler for State {
-    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, popup: &popup::Popup, config: popup::PopupConfigure) {
+    fn configure(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        popup: &popup::Popup,
+        config: popup::PopupConfigure,
+    ) {
         let data = SurfaceData::from_wl(popup.wl_surface());
         data.width.store(config.width as u32, Ordering::Relaxed);
         data.height.store(config.height as u32, Ordering::Relaxed);
-        data.state.fetch_or(SurfaceData::CONFIGURED, Ordering::Relaxed);
+        data.state
+            .fetch_or(SurfaceData::CONFIGURED, Ordering::Relaxed);
         if data.damage_full() {
             self.request_draw();
         }
@@ -581,7 +625,11 @@ impl smithay_client_toolkit::shell::xdg::popup::PopupHandler for State {
 
     fn done(&mut self, _: &Connection, _: &QueueHandle<Self>, sctk: &popup::Popup) {
         for bar in &mut self.bars {
-            if bar.popup.as_ref().map_or(false, |popup| popup.wl.sctk == *sctk) {
+            if bar
+                .popup
+                .as_ref()
+                .map_or(false, |popup| popup.wl.sctk == *sctk)
+            {
                 bar.popup = None;
             }
         }
@@ -595,63 +643,113 @@ pub trait SurfaceEvents {
     fn no_hover(&mut self, rt: &mut Runtime) {
         let _ = rt;
     }
-    fn button(&mut self, pos: (f64, f64), button : Button, runtime : &mut Runtime);
+    fn button(&mut self, pos: (f64, f64), button: Button, runtime: &mut Runtime);
 }
 
 impl WaylandClient {
     pub fn new() -> Result<(Self, wayland_client::EventQueue<State>), Box<dyn Error>> {
+        use std::os::fd::AsRawFd;
         let conn = wayland_client::Connection::connect_to_env()?;
 
-        let wl_queue = conn.new_event_queue();
+        let (globals, wl_queue) = wayland_client::globals::registry_queue_init::<State>(&conn)?;
         let queue = wl_queue.handle();
 
-        let registry = RegistryState::new(&conn, &queue);
+        let registry = RegistryState::new(&globals);
+        let fd = conn.prepare_read().unwrap().connection_fd().as_raw_fd();
+        let io = Arc::new(WaylandIO {
+            conn: conn.clone(),
+            flush: Notify::new(),
+            fd: AsyncFd::new(util::Fd(fd))?,
+        });
+
+        util::spawn_critical("wayland read", io.clone().read_task());
+        util::spawn_critical("wayland write", io.clone().write_task());
 
         let client = WaylandClient {
             conn,
-            queue,
             registry,
+            io,
 
-            compositor: CompositorState::new(),
-            layer: LayerState::new(),
-            output: OutputState::new(),
-            seat: SeatState::new(),
-            shm: ShmState::new(),
-            xdg: XdgShellState::new(),
-            wlr_dcm: None,
+            compositor: CompositorState::bind(&globals, &queue)?,
+            output: OutputState::new(&globals, &queue),
+            seat: SeatState::new(&globals, &queue),
+            shm: Shm::bind(&globals, &queue)?,
+            layer: LayerShell::bind(&globals, &queue)?,
+            wlr_dcm: SimpleGlobal::bind(&globals, &queue)?,
+            xdg: XdgShell::bind(&globals, &queue)?,
 
             taps: Default::default(),
-
-            flush : None,
-            need_flush : true,
+            queue,
         };
+
+        client
+            .conn
+            .display()
+            .sync(&client.queue, OutputsReadyCallback);
 
         Ok((client, wl_queue))
     }
 
     pub fn flush(&mut self) {
-        self.need_flush = true;
-        self.flush.take().map(|f| f.wake());
+        self.io.flush.notify_one()
     }
 
     pub fn create_surface(&self, scale: i32) -> WlSurface {
         let sd = SurfaceData {
-            sctk: smithay_client_toolkit::compositor::SurfaceData::with_initial_scale(scale),
+            sctk: smithay_client_toolkit::compositor::SurfaceData::new(None, scale),
             height: AtomicU32::new(0),
             width: AtomicU32::new(0),
             state: AtomicU8::new(SurfaceData::NEW),
         };
-        self.compositor.create_surface_with_data(&self.queue, sd).unwrap()
+        self.compositor.create_surface_with_data(&self.queue, sd)
+    }
+}
+
+impl WaylandIO {
+    async fn read_task(self: Arc<Self>) -> Result<Infallible, Box<dyn Error>> {
+        loop {
+            let reader = self.conn.prepare_read().unwrap();
+            let mut rg = self.fd.readable().await?;
+            match reader.read() {
+                Ok(_) => {
+                    // events will be dispatched by the run_queue task
+                    rg.retain_ready();
+                }
+                Err(WaylandError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => {
+                    rg.clear_ready();
+                }
+                Err(e) => Err(e)?,
+            }
+        }
     }
 
-    pub fn create_layer_surface(&mut self, builder: sctk_layer::LayerSurfaceBuilder, layer: sctk_layer::Layer, scale: i32) -> LayerSurface {
-        let surf = self.create_surface(scale);
-        builder.map(&self.queue,
-            &mut self.layer,
-            surf,
-            layer,
-        ).unwrap()
+    async fn write_task(self: Arc<Self>) -> Result<Infallible, Box<dyn Error>> {
+        loop {
+            let mut wg = self.fd.writable().await?;
+            match self.conn.flush() {
+                Ok(()) => {
+                    // outgoing buffer is empty; wait for the next flush request
+                    self.flush.notified().await;
+                }
+                Err(WaylandError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => {
+                    wg.clear_ready();
+                }
+                Err(e) => Err(e)?,
+            }
+        }
     }
+}
+
+pub async fn run_queue(
+    mut wl_queue: wayland_client::EventQueue<State>,
+    state: Rc<RefCell<State>>,
+) -> Result<Infallible, Box<dyn Error>> {
+    futures_util::future::poll_fn(|cx| {
+        let mut lock = state.borrow_mut();
+        wl_queue.poll_dispatch_pending(cx, &mut *lock)
+    })
+    .await
+    .map_err(Into::into)
 }
 
 impl State {
@@ -668,7 +766,11 @@ impl State {
         }
     }
 
-    fn dispatch_surface_event(&mut self, surf: &WlSurface, mut f: impl FnMut(&mut dyn SurfaceEvents, &mut Runtime)) {
+    fn dispatch_surface_event(
+        &mut self,
+        surf: &WlSurface,
+        mut f: impl FnMut(&mut dyn SurfaceEvents, &mut Runtime),
+    ) {
         for bar in &mut self.bars {
             if surf == bar.ls.wl_surface() {
                 f(bar, &mut self.runtime);
@@ -682,102 +784,50 @@ impl State {
     }
 }
 
-pub async fn run_queue(mut wl_queue : wayland_client::EventQueue<State>, state : Rc<RefCell<State>>) -> Result<Infallible, Box<dyn Error>> {
-    let reader = wl_queue.prepare_read()?;
-    let fd = AsyncFd::new(util::Fd(reader.connection_fd()))?;
-    let mut reader = Some(reader);
-    let mut rg = None;
-    let mut wg = None;
-
-    loop {
-        if reader.is_none() {
-            reader = Some(wl_queue.prepare_read()?);
-        }
-
-        futures_util::future::poll_fn(|ctx| {
-            let mut state = state.borrow_mut();
-            match &state.runtime.wayland.flush {
-                Some(w) if w.will_wake(ctx.waker()) => (),
-                _ => state.runtime.wayland.flush = Some(ctx.waker().clone()),
-            }
-
-            rg = match fd.poll_read_ready(ctx) {
-                task::Poll::Ready(g) => Some(g?),
-                task::Poll::Pending => None,
-            };
-
-            wg = match fd.poll_write_ready(ctx) {
-                task::Poll::Ready(g) => Some(g?),
-                task::Poll::Pending => None,
-            };
-
-            if state.runtime.wayland.need_flush && wg.is_some() {
-                task::Poll::Ready(Ok(()))
-            } else if rg.is_some() {
-                task::Poll::Ready(Ok(()))
-            } else {
-                task::Poll::Pending::<io::Result<()>>
-            }
-        }).await?;
-
-        if let Some(g) = &mut wg {
-            match wl_queue.flush() {
-                Ok(()) => {
-                    state.borrow_mut().runtime.wayland.need_flush = false;
-                }
-                Err(WaylandError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => {
-                    g.clear_ready();
-                }
-                Err(e) => Err(e)?,
-            }
-        }
-
-        if let Some(g) = &mut rg {
-            match reader.take().map(|g| g.read()) {
-                None |
-                Some(Ok(_)) => {
-                    // dispatch events and continue
-                }
-                Some(Err(WaylandError::Io(e))) if e.kind() == io::ErrorKind::WouldBlock => {
-                    g.clear_ready();
-                }
-                Some(Err(e)) => Err(e)?,
-            }
-        }
-
-        let mut lock = state.borrow_mut();
-        wl_queue.dispatch_pending(&mut *lock)?;
-    }
-}
-
 /// An [xdg_popup::XdgPopup] with associated information
 #[derive(Debug)]
 pub struct Popup {
     pub queue: QueueHandle<State>,
-    pub surf : WlSurface,
+    pub surf: WlSurface,
     pub sctk: popup::Popup,
-    pub anchor : (i32, i32, i32, i32),
-    pub req_size : (i32, i32), // requested logical size; may be rejected by compositor
-    pub prefer_top : bool,
+    pub anchor: (i32, i32, i32, i32),
+    pub req_size: (i32, i32), // requested logical size; may be rejected by compositor
+    pub prefer_top: bool,
 }
 
 impl Popup {
-    pub fn on_bar(wayland : &mut WaylandClient, bar : &crate::bar::Bar, anchor : (i32, i32, i32, i32), size : (i32, i32)) -> Popup {
+    pub fn on_bar(
+        wayland: &mut WaylandClient,
+        bar: &crate::bar::Bar,
+        anchor: (i32, i32, i32, i32),
+        size: (i32, i32),
+    ) -> Popup {
         match bar.ls.kind() {
-            smithay_client_toolkit::shell::layer::SurfaceKind::Wlr(ls) => {
-                let scale = bar.ls.wl_surface().data::<SurfaceData>().map_or(1, |d| d.scale_factor());
+            smithay_client_toolkit::shell::wlr_layer::SurfaceKind::Wlr(ls) => {
+                let scale = bar
+                    .ls
+                    .wl_surface()
+                    .data::<SurfaceData>()
+                    .map_or(1, |d| d.scale_factor());
                 Self::new(wayland, &ls, !bar.anchor_top, anchor, size, scale)
             }
             _ => unreachable!(),
         }
     }
 
-    pub fn new(wayland : &mut WaylandClient, parent: &ZwlrLayerSurfaceV1, prefer_top : bool, anchor : (i32, i32, i32, i32), size : (i32, i32), scale : i32) -> Self {
-        use xdg_positioner::{Anchor,Gravity};
+    pub fn new(
+        wayland: &mut WaylandClient,
+        parent: &ZwlrLayerSurfaceV1,
+        prefer_top: bool,
+        anchor: (i32, i32, i32, i32),
+        size: (i32, i32),
+        scale: i32,
+    ) -> Self {
+        use xdg_positioner::{Anchor, Gravity};
 
         let surf = wayland.create_surface(scale);
 
-        let pos = wayland.xdg.create_positioner().unwrap();
+        let pos = XdgPositioner::new(&wayland.xdg).unwrap();
 
         pos.set_size(size.0, size.1);
         pos.set_anchor_rect(anchor.0, anchor.1, anchor.2, anchor.3);
@@ -791,7 +841,9 @@ impl Popup {
         }
         pos.set_constraint_adjustment(0xF); // allow moving but not resizing
 
-        let sctk = popup::Popup::from_surface(None, &pos, &wayland.queue, surf.clone(), &wayland.xdg).unwrap();
+        let sctk =
+            popup::Popup::from_surface(None, &pos, &wayland.queue, surf.clone(), &wayland.xdg)
+                .unwrap();
 
         parent.get_popup(sctk.xdg_popup());
         sctk.xdg_surface().set_window_geometry(0, 0, size.0, size.1);
@@ -808,11 +860,19 @@ impl Popup {
         }
     }
 
-    pub fn resize(&mut self, wayland : &mut WaylandClient, ls_surf : &ZwlrLayerSurfaceV1, size : (i32, i32), scale : i32) {
+    pub fn resize(
+        &mut self,
+        wayland: &mut WaylandClient,
+        ls_surf: &ZwlrLayerSurfaceV1,
+        size: (i32, i32),
+        scale: i32,
+    ) {
         if self.sctk.xdg_popup().version() >= xdg_popup::REQ_REPOSITION_SINCE {
-            use xdg_positioner::{Anchor,Gravity};
-            self.sctk.xdg_surface().set_window_geometry(0, 0, size.0, size.1);
-            let pos = wayland.xdg.create_positioner().unwrap();
+            use xdg_positioner::{Anchor, Gravity};
+            self.sctk
+                .xdg_surface()
+                .set_window_geometry(0, 0, size.0, size.1);
+            let pos = XdgPositioner::new(&wayland.xdg).unwrap();
 
             pos.set_size(size.0, size.1);
             pos.set_anchor_rect(self.anchor.0, self.anchor.1, self.anchor.2, self.anchor.3);

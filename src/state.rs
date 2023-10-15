@@ -1,29 +1,30 @@
-use log::{debug,info,warn,error};
 use futures_util::future::poll_fn;
+use log::{debug, error, info, warn};
+use smithay_client_toolkit::shell::WaylandSurface;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
-use std::time::Instant;
-use std::rc::{self,Rc};
+use std::rc::{self, Rc};
 use std::task;
-use wayland_client::Connection;
-use wayland_client::protocol::wl_output::WlOutput;
+use std::time::Instant;
 use wayland_client::protocol::wl_callback;
+use wayland_client::protocol::wl_output::WlOutput;
+use wayland_client::Connection;
 
 use crate::bar::Bar;
-use crate::data::{Module,IterationItem,Value};
+use crate::data::{IterationItem, Module, Value};
 use crate::font::FontMapped;
 use crate::item::*;
-use crate::render::{Renderer,RenderCache};
-use crate::util::{Cell,spawn,spawn_noerr};
-use crate::wayland::{SurfaceData,WaylandClient};
+use crate::render::{RenderCache, Renderer};
+use crate::util::{spawn, spawn_noerr, Cell};
+use crate::wayland::{SurfaceData, WaylandClient};
 
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 struct Notifier {
-    inner : Rc<NotifierInner>,
+    inner: Rc<NotifierInner>,
 }
 
-#[derive(Debug,Copy,Clone,PartialEq,Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum NotifyState {
     Idle,
     DrawOnly,
@@ -32,13 +33,13 @@ enum NotifyState {
 
 #[derive(Debug)]
 struct NotifierInner {
-    waker : Cell<Option<task::Waker>>,
-    state : Cell<NotifyState>,
-    data_update_seq : Cell<u64>,
+    waker: Cell<Option<task::Waker>>,
+    state: Cell<NotifyState>,
+    data_update_seq: Cell<u64>,
 }
 
 impl Notifier {
-    pub fn notify_data(&self, who : &str) {
+    pub fn notify_data(&self, who: &str) {
         debug!("{} triggered refresh", who);
         self.inner.state.set(NotifyState::NewData);
         self.inner.waker.take().map(|w| w.wake());
@@ -52,23 +53,30 @@ impl Notifier {
     }
 }
 
-#[derive(Debug,Default,Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct NotifierList(Option<Notifier>);
 
 impl NotifierList {
-    pub fn active(rt : &Runtime) -> Self {
-        NotifierList(Some(Notifier { inner : rt.notify.inner.clone() }))
+    pub fn active(rt: &Runtime) -> Self {
+        NotifierList(Some(Notifier {
+            inner: rt.notify.inner.clone(),
+        }))
     }
 
     pub fn data_update_seq(&self) -> u64 {
-        self.0.as_ref().map(|n| n.inner.data_update_seq.get()).unwrap_or_default()
+        self.0
+            .as_ref()
+            .map(|n| n.inner.data_update_seq.get())
+            .unwrap_or_default()
     }
 
     /// Add the currently-rendering bar to this list
     ///
     /// The next call to notify_data will redraw the bar that was rendering when this was called.
-    pub fn add(&mut self, rt : &Runtime) {
-        self.0 = Some(Notifier { inner : rt.notify.inner.clone() });
+    pub fn add(&mut self, rt: &Runtime) {
+        self.0 = Some(Notifier {
+            inner: rt.notify.inner.clone(),
+        });
     }
 
     pub fn merge(&mut self, other: &Self) {
@@ -79,7 +87,7 @@ impl NotifierList {
 
     /// Notify the bars in the list, and then remove them until they  Future calls to notify_data
     /// will do nothing until you add() bars again.
-    pub fn notify_data(&mut self, who : &str) {
+    pub fn notify_data(&mut self, who: &str) {
         self.0.take().map(|n| n.notify_data(who));
     }
 }
@@ -87,14 +95,14 @@ impl NotifierList {
 /// Common state available during rendering operations
 #[derive(Debug)]
 pub struct Runtime {
-    pub xdg : xdg::BaseDirectories,
-    pub fonts : Vec<FontMapped>,
-    pub items : HashMap<String, Rc<Item>>,
+    pub xdg: xdg::BaseDirectories,
+    pub fonts: Vec<FontMapped>,
+    pub items: HashMap<String, Rc<Item>>,
     pub cache: RenderCache,
-    pub wayland : WaylandClient,
-    item_var : Rc<Item>,
-    notify : Notifier,
-    read_depth : Cell<u8>,
+    pub wayland: WaylandClient,
+    item_var: Rc<Item>,
+    notify: Notifier,
+    read_depth: Cell<u8>,
 }
 
 impl Runtime {
@@ -114,11 +122,14 @@ impl Runtime {
         }
     }
 
-    pub fn format<'a>(&'a self, fmt : &'a str) -> Result<Value<'a>, strfmt::FmtError> {
+    pub fn format<'a>(&'a self, fmt: &'a str) -> Result<Value<'a>, strfmt::FmtError> {
         if !fmt.contains("{") {
             return Ok(Value::Borrow(fmt));
         }
-        if fmt.starts_with("{") && fmt.ends_with("}") && !fmt[1..fmt.len() - 1].contains(&['{', ':'] as &[char]) {
+        if fmt.starts_with("{")
+            && fmt.ends_with("}")
+            && !fmt[1..fmt.len() - 1].contains(&['{', ':'] as &[char])
+        {
             let q = &fmt[1..fmt.len() - 1];
             let (name, key) = match q.find('.') {
                 Some(p) => (&q[..p], &q[p + 1..]),
@@ -136,22 +147,21 @@ impl Runtime {
                 None => (&q.key[..], ""),
             };
             match self.items.get(name) {
-                Some(item) => {
-                    item.data.read_in(name, key, self, |s| match s {
-                        Value::Borrow(s) => q.str(s),
-                        Value::Owned(s) => q.str(&s),
-                        Value::Float(f) => q.f64(f),
-                        Value::Bool(true) => q.str("1"),
-                        Value::Bool(false) => q.str("0"),
-                        Value::Null => q.str(""),
-                    })
-                }
-                None => Err(strfmt::FmtError::KeyError(name.to_string()))
+                Some(item) => item.data.read_in(name, key, self, |s| match s {
+                    Value::Borrow(s) => q.str(s),
+                    Value::Owned(s) => q.str(&s),
+                    Value::Float(f) => q.f64(f),
+                    Value::Bool(true) => q.str("1"),
+                    Value::Bool(false) => q.str("0"),
+                    Value::Null => q.str(""),
+                }),
+                None => Err(strfmt::FmtError::KeyError(name.to_string())),
             }
-        }).map(Value::Owned)
+        })
+        .map(Value::Owned)
     }
 
-    pub fn format_or<'a>(&'a self, fmt : &'a str, context : &str) -> Value<'a> {
+    pub fn format_or<'a>(&'a self, fmt: &'a str, context: &str) -> Value<'a> {
         match self.format(fmt) {
             Ok(v) => v,
             Err(e) => {
@@ -167,7 +177,10 @@ impl Runtime {
 
     pub fn get_item_var(&self) -> &Cell<Option<IterationItem>> {
         match &*self.item_var {
-            &Item { data : Module::Item { ref value }, .. } => value,
+            &Item {
+                data: Module::Item { ref value },
+                ..
+            } => value,
             _ => {
                 panic!("The 'item' variable was not assignable");
             }
@@ -178,37 +191,39 @@ impl Runtime {
 /// The singleton global state object
 #[derive(Debug)]
 pub struct State {
-    pub bars : Vec<Bar>,
-    bar_config : Vec<toml::Value>,
-    pub renderer : Renderer,
-    pub runtime : Runtime,
-    this : rc::Weak<RefCell<State>>,
+    pub bars: Vec<Bar>,
+    bar_config: Vec<toml::Value>,
+    pub renderer: Renderer,
+    pub runtime: Runtime,
+    this: rc::Weak<RefCell<State>>,
 }
 
 impl State {
-    pub fn new(wayland : WaylandClient) -> Result<Rc<RefCell<Self>>, Box<dyn Error>> {
+    pub fn new(wayland: WaylandClient) -> Result<Rc<RefCell<Self>>, Box<dyn Error>> {
         let notify_inner = Rc::new(NotifierInner {
-            waker : Cell::new(None),
-            state : Cell::new(NotifyState::NewData),
-            data_update_seq : Cell::new(1),
+            waker: Cell::new(None),
+            state: Cell::new(NotifyState::NewData),
+            data_update_seq: Cell::new(1),
         });
         log::debug!("State::new");
 
         let mut state = Self {
-            bars : Vec::new(),
-            bar_config : Vec::new(),
+            bars: Vec::new(),
+            bar_config: Vec::new(),
             renderer: Renderer::new(),
-            runtime : Runtime {
-                xdg : xdg::BaseDirectories::new()?,
-                fonts : Vec::new(),
+            runtime: Runtime {
+                xdg: xdg::BaseDirectories::new()?,
+                fonts: Vec::new(),
                 cache: RenderCache::new(),
-                items : Default::default(),
-                item_var : Rc::new(Module::new_current_item().into()),
-                notify : Notifier { inner : notify_inner.clone() },
-                read_depth : Cell::new(0),
+                items: Default::default(),
+                item_var: Rc::new(Module::new_current_item().into()),
+                notify: Notifier {
+                    inner: notify_inner.clone(),
+                },
+                read_depth: Cell::new(0),
                 wayland,
             },
-            this : rc::Weak::new(),
+            this: rc::Weak::new(),
         };
 
         state.load_config(false)?;
@@ -225,7 +240,8 @@ impl State {
                         NotifyState::Idle => task::Poll::Pending,
                         _ => task::Poll::Ready(()),
                     }
-                }).await;
+                })
+                .await;
                 let mut state = state.borrow_mut();
                 state.draw_now();
             }
@@ -247,20 +263,24 @@ impl State {
     }
 
     /// Note: always call from a task, not drectly from dispatch
-    fn load_config(&mut self, reload : bool) -> Result<(), Box<dyn Error>> {
+    fn load_config(&mut self, reload: bool) -> Result<(), Box<dyn Error>> {
         let mut bar_config = Vec::new();
         let mut font_list = Vec::new();
 
-        let config_path = self.runtime.xdg.find_config_file("rwaybar.toml")
+        let config_path = self
+            .runtime
+            .xdg
+            .find_config_file("rwaybar.toml")
             .ok_or("Could not find configuration: create ~/.config/rwaybar.toml")?;
 
         let cfg = std::fs::read_to_string(config_path)?;
-        let config : toml::Value = toml::from_str(&cfg)?;
+        let config: toml::Value = toml::from_str(&cfg)?;
 
         let cfg = config.as_table().unwrap();
 
-        let new_items = cfg.iter().filter_map(|(key, value)| {
-            match key.as_str() {
+        let new_items = cfg
+            .iter()
+            .filter_map(|(key, value)| match key.as_str() {
                 "bar" => {
                     if let Some(bars) = value.as_array() {
                         bar_config.extend(bars.iter().cloned());
@@ -280,8 +300,8 @@ impl State {
                     let value = Rc::new(Item::from_item_list(&key, value));
                     Some((key, value))
                 }
-            }
-        }).collect();
+            })
+            .collect();
 
         if bar_config.is_empty() {
             Err("At least one [[bar]] section is required")?;
@@ -307,9 +327,11 @@ impl State {
         self.bar_config = bar_config;
         self.runtime.fonts = fonts;
 
-        self.runtime.items.insert("item".into(), self.runtime.item_var.clone());
+        self.runtime
+            .items
+            .insert("item".into(), self.runtime.item_var.clone());
 
-        for (k,v) in &self.runtime.items {
+        for (k, v) in &self.runtime.items {
             if let Some(item) = old_items.remove(k) {
                 v.data.init(k, &self.runtime, Some(&item.data));
             } else {
@@ -327,10 +349,13 @@ impl State {
                 error!("No bars matched this outptut configuration.  Available outputs:");
                 for output in self.runtime.wayland.output.outputs() {
                     if let Some(oi) = self.runtime.wayland.output.info(&output) {
-                        error!(" name='{}' description='{}' make='{}' model='{}'",
+                        error!(
+                            " name='{}' description='{}' make='{}' model='{}'",
                             oi.name.as_deref().unwrap_or_default(),
                             oi.description.as_deref().unwrap_or_default(),
-                            oi.make, oi.model);
+                            oi.make,
+                            oi.model
+                        );
                     }
                 }
             }
@@ -376,18 +401,25 @@ impl State {
         self.runtime.cache.prune(begin);
         self.runtime.wayland.flush();
         let render_time = begin.elapsed().as_nanos();
-        log::debug!("Frame took {}.{:06} ms", render_time / 1_000_000, render_time % 1_000_000);
+        log::debug!(
+            "Frame took {}.{:06} ms",
+            render_time / 1_000_000,
+            render_time % 1_000_000
+        );
     }
 
-    pub fn output_ready(&mut self, output : &WlOutput) {
+    pub fn output_ready(&mut self, output: &WlOutput) {
         let data = match self.runtime.wayland.output.info(&output) {
             Some(info) => info,
             None => return,
         };
-        info!("Output name='{}' description='{}' make='{}' model='{}'",
+        info!(
+            "Output name='{}' description='{}' make='{}' model='{}'",
             data.name.as_deref().unwrap_or_default(),
             data.description.as_deref().unwrap_or_default(),
-            data.make, data.model);
+            data.make,
+            data.model
+        );
         for (i, cfg) in self.bar_config.iter().enumerate() {
             if let Some(name) = cfg.get("name").and_then(|v| v.as_str()) {
                 if Some(name) != data.name.as_deref() {
@@ -432,9 +464,8 @@ impl State {
             }
             let mut cfg = cfg.clone();
             let name = data.name.clone().unwrap_or_default();
-            self.bars.retain(|bar| {
-                bar.cfg_index != i || &*bar.name != name
-            });
+            self.bars
+                .retain(|bar| bar.cfg_index != i || &*bar.name != name);
             if let Some(table) = cfg.as_table_mut() {
                 table.insert("name".into(), name.into());
             }
@@ -446,28 +477,29 @@ impl State {
     }
 }
 
-#[derive(Copy,Clone,Eq,PartialEq,Debug)]
-pub enum Callbacks {
-    Init2,
-}
+pub struct OutputsReadyCallback;
 
-impl wayland_client::Dispatch<wl_callback::WlCallback, Callbacks> for State {
-    fn event(&mut self, _: &wl_callback::WlCallback, _: wl_callback::Event, why: &Callbacks,
-        _: &Connection, _: &wayland_client::QueueHandle<Self>)
-    {
-        match why {
-            Callbacks::Init2 => {
-                debug!("Done with initial events; checking if config is empty.");
-                if self.bars.is_empty() {
-                    error!("No bars matched this outptut configuration.  Available outputs:");
-                    for output in self.runtime.wayland.output.outputs() {
-                        if let Some(oi) = self.runtime.wayland.output.info(&output) {
-                            error!(" name='{}' description='{}' make='{}' model='{}'",
-                                oi.name.as_deref().unwrap_or_default(),
-                                oi.description.as_deref().unwrap_or_default(),
-                                oi.make, oi.model);
-                        }
-                    }
+impl wayland_client::Dispatch<wl_callback::WlCallback, OutputsReadyCallback> for State {
+    fn event(
+        state: &mut State,
+        _: &wl_callback::WlCallback,
+        _: wl_callback::Event,
+        _: &OutputsReadyCallback,
+        _: &Connection,
+        _: &wayland_client::QueueHandle<Self>,
+    ) {
+        debug!("Done with initial events; checking if config is empty.");
+        if state.bars.is_empty() {
+            error!("No bars matched this outptut configuration.  Available outputs:");
+            for output in state.runtime.wayland.output.outputs() {
+                if let Some(oi) = state.runtime.wayland.output.info(&output) {
+                    error!(
+                        " name='{}' description='{}' make='{}' model='{}'",
+                        oi.name.as_deref().unwrap_or_default(),
+                        oi.description.as_deref().unwrap_or_default(),
+                        oi.make,
+                        oi.model
+                    );
                 }
             }
         }

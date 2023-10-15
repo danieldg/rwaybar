@@ -2,32 +2,32 @@
 use crate::data::IterationItem;
 use crate::item::PopupDesc;
 use crate::state::Runtime;
-use crate::wayland::Button;
-#[cfg(feature="dbus")]
+#[cfg(feature = "dbus")]
 use crate::tray;
-use log::{info,error};
-use std::rc::Rc;
+use crate::wayland::Button;
+use log::{error, info};
 use std::process::Command;
+use std::rc::Rc;
 
 /// A single click action associated with the area that activates it
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 struct EventListener {
-    x_min : f32,
-    x_max : f32,
-    buttons : u32,
-    item : Option<IterationItem>,
-    target : Action,
+    x_min: f32,
+    x_max: f32,
+    buttons: u32,
+    item: Option<IterationItem>,
+    target: Action,
 }
 
 /// A list of [EventListener]s
-#[derive(Debug,Default,Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct EventSink {
-    handlers : Vec<EventListener>,
-    hovers : Vec<(f32, f32, PopupDesc)>,
+    handlers: Vec<EventListener>,
+    hovers: Vec<(f32, f32, PopupDesc)>,
 }
 
 impl EventSink {
-    pub fn from_toml(value : &toml::Value) -> Self {
+    pub fn from_toml(value: &toml::Value) -> Self {
         let mut sink = EventSink::default();
         sink.add_click(value.get("on-click"), 1 << 0 | 1 << 9);
         sink.add_click(value.get("on-click-left"), 1 << 0);
@@ -47,47 +47,47 @@ impl EventSink {
         sink
     }
 
-    fn add_click(&mut self, value : Option<&toml::Value>, buttons : u32) {
+    fn add_click(&mut self, value: Option<&toml::Value>, buttons: u32) {
         if let Some(value) = value {
             self.handlers.push(EventListener {
-                x_min : 0.0,
-                x_max : 1e20,
+                x_min: 0.0,
+                x_max: 1e20,
                 buttons,
-                item : None,
-                target : Action::from_toml(value)
+                item: None,
+                target: Action::from_toml(value),
             })
         }
     }
 
-    #[cfg(feature="dbus")]
+    #[cfg(feature = "dbus")]
     pub fn from_tray(item: Rc<tray::TrayItem>) -> Self {
         let mut sink = EventSink::default();
         sink.handlers.push(EventListener {
-            x_min : -1e20,
-            x_max : 1e20,
-            buttons : 7 | (15 << 5),
-            item : None,
-            target : Action::from_tray(item),
+            x_min: -1e20,
+            x_max: 1e20,
+            buttons: 7 | (15 << 5),
+            item: None,
+            target: Action::from_tray(item),
         });
         sink
     }
 
-    pub fn add_tooltip(&mut self, desc : PopupDesc) {
+    pub fn add_tooltip(&mut self, desc: PopupDesc) {
         self.hovers.push((0.0, 1e20, desc));
     }
 
-    pub fn set_item(&mut self, item : &IterationItem) {
+    pub fn set_item(&mut self, item: &IterationItem) {
         for h in &mut self.handlers {
             h.item.get_or_insert_with(|| item.clone());
         }
     }
 
-    pub fn merge(&mut self, sink : Self) {
+    pub fn merge(&mut self, sink: Self) {
         self.handlers.extend(sink.handlers);
         self.hovers.extend(sink.hovers);
     }
 
-    pub fn offset_clamp(&mut self, offset : f32, min : f32, max : f32) {
+    pub fn offset_clamp(&mut self, offset: f32, min: f32, max: f32) {
         for h in &mut self.handlers {
             h.x_min += offset;
             h.x_max += offset;
@@ -118,7 +118,7 @@ impl EventSink {
         }
     }
 
-    pub fn button(&self, x : f32, y : f32, button: Button, runtime : &mut Runtime) {
+    pub fn button(&self, x: f32, y: f32, button: Button, runtime: &mut Runtime) {
         let button = button as u32;
         let _ = y;
         for h in &self.handlers {
@@ -139,12 +139,12 @@ impl EventSink {
         }
     }
 
-    #[cfg_attr(not(feature="dbus"), allow(unused))]
-    pub fn add_hover(&mut self, min : f32, max : f32, desc : PopupDesc) {
+    #[cfg_attr(not(feature = "dbus"), allow(unused))]
+    pub fn add_hover(&mut self, min: f32, max: f32, desc: PopupDesc) {
         self.hovers.push((min, max, desc));
     }
 
-    pub fn get_hover(&mut self, x : f32, y : f32) -> Option<(f32, f32, &mut PopupDesc)> {
+    pub fn get_hover(&mut self, x: f32, y: f32) -> Option<(f32, f32, &mut PopupDesc)> {
         let _ = y;
         for &mut (min, max, ref mut text) in &mut self.hovers {
             if x >= min && x < max {
@@ -154,7 +154,7 @@ impl EventSink {
         None
     }
 
-    pub fn for_active_regions(&self, mut f : impl FnMut(f32, f32)) {
+    pub fn for_active_regions(&self, mut f: impl FnMut(f32, f32)) {
         let mut ha = self.handlers.iter().peekable();
         let mut ho = self.hovers.iter().peekable();
         loop {
@@ -185,40 +185,55 @@ impl EventSink {
 }
 
 /// Handler invoked by a click or touch event
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub enum Action {
-    Exec { format : String },
-    Write { target : String, format : String },
+    Exec {
+        format: String,
+    },
+    Write {
+        target: String,
+        format: String,
+    },
     List(Vec<Action>),
-    #[cfg(feature="dbus")]
+    #[cfg(feature = "dbus")]
     Tray(Rc<tray::TrayItem>),
     None,
 }
 
 impl Action {
-    pub fn from_toml(value : &toml::Value) -> Self {
+    pub fn from_toml(value: &toml::Value) -> Self {
         if let Some(array) = value.as_array() {
             return Action::List(array.iter().map(Action::from_toml).collect());
         }
-        if let Some(dest) = value.get("write").and_then(|v| v.as_str()).or_else(|| value.get("send").and_then(|v| v.as_str())) {
-            let format = value.get("format").and_then(|v| v.as_str())
+        if let Some(dest) = value
+            .get("write")
+            .and_then(|v| v.as_str())
+            .or_else(|| value.get("send").and_then(|v| v.as_str()))
+        {
+            let format = value
+                .get("format")
+                .and_then(|v| v.as_str())
                 .or_else(|| value.get("msg").and_then(|v| v.as_str()))
-                .unwrap_or("").to_owned();
-            return Action::Write { target : dest.into(), format };
+                .unwrap_or("")
+                .to_owned();
+            return Action::Write {
+                target: dest.into(),
+                format,
+            };
         }
         if let Some(cmd) = value.get("exec").and_then(|v| v.as_str()) {
-            return Action::Exec { format : cmd.into() };
+            return Action::Exec { format: cmd.into() };
         }
         error!("Unknown action: {}", value);
         Action::None
     }
 
-    #[cfg(feature="dbus")]
+    #[cfg(feature = "dbus")]
     pub fn from_tray(item: Rc<tray::TrayItem>) -> Self {
         Action::Tray(item)
     }
 
-    pub fn invoke(&self, runtime : &Runtime, how : u32) {
+    pub fn invoke(&self, runtime: &Runtime, how: u32) {
         match self {
             Action::List(actions) => {
                 for action in actions {
@@ -246,26 +261,26 @@ impl Action {
                     None => error!("Could not find variable {}", target),
                 }
             }
-            Action::Exec { format } => {
-                match runtime.format(&format) {
-                    Ok(cmd) => {
-                        let cmd = cmd.into_text();
-                        info!("Executing '{}'", cmd);
-                        match Command::new("/bin/sh").arg("-c").arg(&cmd[..]).spawn() {
-                            Ok(child) => drop(child),
-                            Err(e) => error!("Could not execute {}: {}", cmd, e),
-                        }
-                    }
-                    Err(e) => {
-                        error!("Error expanding format for command: {}", e);
+            Action::Exec { format } => match runtime.format(&format) {
+                Ok(cmd) => {
+                    let cmd = cmd.into_text();
+                    info!("Executing '{}'", cmd);
+                    match Command::new("/bin/sh").arg("-c").arg(&cmd[..]).spawn() {
+                        Ok(child) => drop(child),
+                        Err(e) => error!("Could not execute {}: {}", cmd, e),
                     }
                 }
-            }
-            #[cfg(feature="dbus")]
+                Err(e) => {
+                    error!("Error expanding format for command: {}", e);
+                }
+            },
+            #[cfg(feature = "dbus")]
             Action::Tray(item) => {
                 tray::do_click(item, how);
             }
-            Action::None => { info!("Invoked a no-op"); }
+            Action::None => {
+                info!("Invoked a no-op");
+            }
         }
     }
 }
