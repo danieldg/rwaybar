@@ -141,7 +141,7 @@ impl Runtime {
                 return Err(strfmt::FmtError::KeyError(name.to_string()));
             }
         }
-        strfmt::strfmt_map(fmt, &|mut q| {
+        strfmt::strfmt_map(fmt, |mut q| {
             let (name, key) = match q.key.find('.') {
                 Some(p) => (&q.key[..p], &q.key[p + 1..]),
                 None => (&q.key[..], ""),

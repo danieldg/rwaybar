@@ -32,7 +32,7 @@ log = "*"
 memmap2 = "0.9"
 once_cell = "*"
 serde = "1"
-strfmt = "=0.1.6"
+strfmt = "=0.2.4"
 tokio = { version = "1", features = ['rt', 'net', 'signal', 'sync', 'io-util', 'time'] }
 toml = "0.8"
 xdg = "*"
