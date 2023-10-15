@@ -92,17 +92,17 @@ impl OwnedImage {
     }
 
     pub fn from_svg(data: &[u8], height: u32) -> Option<Self> {
-        let tree = usvg::Tree::from_data(data, &usvg::Options::default().to_ref()).ok()?;
-        let svg_width = tree.svg_node().size.width();
-        let svg_height = tree.svg_node().size.height();
-        let width = (height as f64 * svg_width / svg_height).ceil() as u32;
+        use usvg::TreeParsing;
+        let tree = usvg::Tree::from_data(data, &usvg::Options::default()).ok()?;
+        let svg_width = tree.size.width();
+        let svg_height = tree.size.height();
+        let scale = height as f32 / svg_height;
+        let width = (svg_width * scale).ceil() as u32;
         let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
-        resvg::render(
-            &tree,
-            usvg::FitTo::Height(height),
-            tiny_skia::Transform::identity(),
-            pixmap.as_mut(),
-        )?;
+        resvg::Tree::from_usvg(&tree).render(
+            tiny_skia::Transform::from_scale(scale, scale),
+            &mut pixmap.as_mut(),
+        );
         Some(Self(pixmap))
     }
 }
