@@ -171,17 +171,11 @@ impl DBus {
                 this.clone().dispatcher((&zbus).into()),
             );
 
-            let rv = zbus
-                .executor()
-                .run(async {
-                    while let Some(msg) = recv.next().await {
-                        zbus.send_message(msg).await?;
-                    }
-                    Ok(())
-                })
-                .await;
+            while let Some(msg) = recv.next().await {
+                zbus.send_message(msg).await?;
+            }
             error!("Unexpected termination of D-Bus output stream");
-            rv
+            Ok(())
         });
 
         tb
@@ -318,9 +312,6 @@ impl zbus::Socket for AsSocket {
     }
     fn close(&self) -> io::Result<()> {
         Ok(())
-    }
-    fn as_raw_fd(&self) -> RawFd {
-        std::os::unix::io::AsRawFd::as_raw_fd(&self.0)
     }
 }
 

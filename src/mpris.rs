@@ -15,7 +15,7 @@ use zbus::zvariant;
 use zvariant::Value as Variant;
 use zvariant::{Dict, OwnedValue};
 
-#[dbus_proxy(interface = "org.mpris.MediaPlayer2")]
+#[dbus_proxy(interface = "org.mpris.MediaPlayer2", assume_defaults = true)]
 trait MediaPlayer2 {
     /// Quit method
     fn quit(&self) -> zbus::Result<()>;

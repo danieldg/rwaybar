@@ -25,7 +25,7 @@ use zbus::zvariant;
 use zvariant::OwnedValue;
 use zvariant::Value as Variant;
 
-#[dbus_proxy(interface = "com.canonical.dbusmenu")]
+#[dbus_proxy(interface = "com.canonical.dbusmenu", assume_defaults = true)]
 trait DBusMenu {
     /*
         <property name="Version" type="u" access="read"/>
@@ -71,7 +71,10 @@ trait DBusMenu {
         -> fdo::Result<()>;
 }
 
-#[dbus_proxy(interface = "org.freedesktop.StatusNotifierItem")]
+#[dbus_proxy(
+    interface = "org.freedesktop.StatusNotifierItem",
+    assume_defaults = true
+)]
 // Note: override interface to org.kde.StatusNotifierItem if needed
 trait StatusNotifierItem {
     /*

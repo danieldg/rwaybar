@@ -57,6 +57,4 @@ chrono-tz = "*"
 evalexpr = "11"
 libpulse-binding = { version = "*", features = ['pa_v14'], optional = true }
 regex = "1.5"
-zbus = { version = "=2.2", default-features = false, features = ['tokio'] }
-# XXX v3.15.0 of zvariant is broken
-zvariant = { version = "=3.2", default-features = false }
+zbus = { version = "3", default-features = false, features = ['tokio'] }
