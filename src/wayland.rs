@@ -63,7 +63,7 @@ pub struct WaylandClient {
     pub output: OutputState,
     pub seat: SeatState,
     pub shm: Shm,
-    pub wlr_dcm: SimpleGlobal<ZwlrDataControlManagerV1, 1>,
+    pub wlr_dcm: SimpleGlobal<ZwlrDataControlManagerV1, 2>,
     pub xdg: XdgShell,
 
     taps: Vec<TapState>,
@@ -115,13 +115,7 @@ impl smithay_client_toolkit::registry::ProvidesRegistryState for State {
         &mut self.runtime.wayland.registry
     }
 
-    smithay_client_toolkit::registry_handlers![SeatState, OutputState,];
-}
-
-impl AsMut<SimpleGlobal<ZwlrDataControlManagerV1, 1>> for State {
-    fn as_mut(&mut self) -> &mut SimpleGlobal<ZwlrDataControlManagerV1, 1> {
-        &mut self.runtime.wayland.wlr_dcm
-    }
+    smithay_client_toolkit::registry_handlers![SeatState, OutputState];
 }
 
 #[derive(Debug)]
@@ -746,6 +740,7 @@ pub async fn run_queue(
 ) -> Result<Infallible, Box<dyn Error>> {
     futures_util::future::poll_fn(|cx| {
         let mut lock = state.borrow_mut();
+        lock.runtime.wayland.flush();
         wl_queue.poll_dispatch_pending(cx, &mut *lock)
     })
     .await

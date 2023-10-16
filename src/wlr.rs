@@ -43,6 +43,7 @@ pub struct OfferData {
 unsafe impl Send for OfferData {}
 unsafe impl Sync for OfferData {}
 
+#[derive(Debug)]
 struct Clipboard {
     seat: WlSeat,
     selection: bool,
