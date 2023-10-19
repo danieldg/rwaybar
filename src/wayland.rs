@@ -1,5 +1,5 @@
 use log::debug;
-use smithay_client_toolkit::compositor::CompositorState;
+use smithay_client_toolkit::compositor::{CompositorState, SurfaceData as SctkSurfaceData};
 use smithay_client_toolkit::output::OutputState;
 use smithay_client_toolkit::registry::{RegistryState, SimpleGlobal};
 use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
@@ -78,14 +78,11 @@ struct WaylandIO {
     fd: AsyncFd<util::Fd>,
 }
 
-smithay_client_toolkit::delegate_compositor!(State);
-wayland_client::delegate_dispatch!(State: [WlSurface: SurfaceData] => CompositorState);
+smithay_client_toolkit::delegate_compositor!(State, surface: [SctkSurfaceData, SurfaceData]);
 smithay_client_toolkit::delegate_layer!(State);
 smithay_client_toolkit::delegate_output!(State);
 
-// This does not work as of 0.31.0:
-// smithay_client_toolkit::delegate_pointer!(State, pointer: [PointerData]);
-wayland_client::delegate_dispatch!(State: [WlPointer: PointerData] => SeatState);
+smithay_client_toolkit::delegate_pointer!(State, pointer: [PointerData]);
 smithay_client_toolkit::delegate_registry!(State);
 smithay_client_toolkit::delegate_seat!(State);
 smithay_client_toolkit::delegate_shm!(State);
@@ -120,7 +117,7 @@ impl smithay_client_toolkit::registry::ProvidesRegistryState for State {
 
 #[derive(Debug)]
 pub struct SurfaceData {
-    sctk: smithay_client_toolkit::compositor::SurfaceData,
+    sctk: SctkSurfaceData,
     width: AtomicU32,
     height: AtomicU32,
 
@@ -128,7 +125,7 @@ pub struct SurfaceData {
 }
 
 impl smithay_client_toolkit::compositor::SurfaceDataExt for SurfaceData {
-    fn surface_data(&self) -> &smithay_client_toolkit::compositor::SurfaceData {
+    fn surface_data(&self) -> &SctkSurfaceData {
         &self.sctk
     }
 }
@@ -690,7 +687,7 @@ impl WaylandClient {
 
     pub fn create_surface(&self, scale: i32) -> WlSurface {
         let sd = SurfaceData {
-            sctk: smithay_client_toolkit::compositor::SurfaceData::new(None, scale),
+            sctk: SctkSurfaceData::new(None, scale),
             height: AtomicU32::new(0),
             width: AtomicU32::new(0),
             state: AtomicU8::new(SurfaceData::NEW),
