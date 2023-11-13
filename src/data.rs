@@ -413,6 +413,12 @@ pub enum Module {
         value: Cell<Option<Rc<(Cell<JsonValue>, Cell<NotifierList>)>>>,
         handle: Cell<Option<RemoteHandle<()>>>,
     },
+    Fade {
+        items: Vec<Rc<Item>>,
+        tooltip: Option<Rc<Item>>,
+        value: Box<Module>,
+        dir: u8,
+    },
     FocusList {
         source: Box<Module>,
         others: Rc<Item>,
@@ -653,40 +659,7 @@ impl Module {
                 );
                 Module::Disk { poll }
             }
-            Some("eval") => {
-                match value
-                    .get("expr")
-                    .and_then(|v| v.as_str())
-                    .map(|expr| evalexpr::build_operator_tree(&expr))
-                {
-                    Some(Ok(expr)) => {
-                        let mut vars = Vec::new();
-                        for ident in expr.iter_variable_identifiers() {
-                            if vars.iter().find(|(k, _)| k as &str == ident).is_some() {
-                                continue;
-                            }
-                            match value.get(ident) {
-                                Some(value) => {
-                                    let value = Module::from_toml_in(value, ModuleContext::Source);
-                                    vars.push((ident.into(), value));
-                                }
-                                None => {
-                                    return Module::parse_error(format!(
-                                        "Undefined variable '{ident}' in expression"
-                                    ));
-                                }
-                            }
-                        }
-                        Module::Eval { expr, vars }
-                    }
-                    Some(Err(e)) => {
-                        return Module::parse_error(format!("Could not parse expression: {e}"));
-                    }
-                    None => {
-                        return Module::parse_error("Eval blocks require an expression");
-                    }
-                }
-            }
+            Some("eval") => Self::new_eval(value),
             Some("exec-json") => {
                 let command = match value.get("command").and_then(|v| v.as_str()) {
                     Some(cmd) => cmd.into(),
@@ -699,6 +672,43 @@ impl Module {
                     stdin: Cell::new(None),
                     value: Cell::new(None),
                     handle: Cell::new(None),
+                }
+            }
+            Some("fade") => {
+                let items = [value.get("item"), value.get("items")]
+                    .iter()
+                    .filter_map(Option::as_deref)
+                    .filter_map(|v| v.as_array())
+                    .flatten()
+                    .map(Item::from_toml_ref)
+                    .map(Rc::new)
+                    .collect::<Vec<_>>();
+                if items.is_empty() {
+                    return Module::parse_error("At least one item is required");
+                }
+                let tooltip = value
+                    .get("tooltip")
+                    .map(Item::from_toml_format)
+                    .map(Rc::new);
+                let dir = match value.get("dir").and_then(toml::Value::as_str) {
+                    None | Some("right") => b'r',
+                    Some("left") => b'l',
+                    Some("up") => b'u',
+                    Some("down") => b'd',
+                    _ => return Module::parse_error("Invalid 'dir'"),
+                };
+                let value = if value.get("expr").is_some() {
+                    Box::new(Self::new_eval(value))
+                } else if let Some(item) = value.get("value") {
+                    Box::new(Self::from_toml_in(item, ModuleContext::Source))
+                } else {
+                    return Module::parse_error("'value' or 'expr' is required");
+                };
+                Module::Fade {
+                    items,
+                    value,
+                    dir,
+                    tooltip,
                 }
             }
             Some("focus-list") => {
@@ -1084,6 +1094,37 @@ impl Module {
         }
     }
 
+    pub fn new_eval(value: &toml::Value) -> Self {
+        match value
+            .get("expr")
+            .and_then(|v| v.as_str())
+            .map(|expr| evalexpr::build_operator_tree(&expr))
+        {
+            Some(Ok(expr)) => {
+                let mut vars = Vec::new();
+                for ident in expr.iter_variable_identifiers() {
+                    if vars.iter().find(|(k, _)| k as &str == ident).is_some() {
+                        continue;
+                    }
+                    match value.get(ident) {
+                        Some(value) => {
+                            let value = Module::from_toml_in(value, ModuleContext::Source);
+                            vars.push((ident.into(), value));
+                        }
+                        None => {
+                            return Module::parse_error(format!(
+                                "Undefined variable '{ident}' in expression"
+                            ));
+                        }
+                    }
+                }
+                Module::Eval { expr, vars }
+            }
+            Some(Err(e)) => Module::parse_error(format!("Could not parse expression: {e}")),
+            None => Module::parse_error("Eval blocks require an expression"),
+        }
+    }
+
     /// One-time setup, if needed
     pub fn init(&self, name: &str, _rt: &Runtime, from: Option<&Self>) {
         match (self, from) {
@@ -1175,7 +1216,10 @@ impl Module {
         };
 
         match self {
-            Module::Group { .. } | Module::FocusList { .. } | Module::Tray { .. } => {
+            Module::Group { .. }
+            | Module::Fade { .. }
+            | Module::FocusList { .. }
+            | Module::Tray { .. } => {
                 error!("Cannot use '{}' in a text expansion", name);
                 f(Value::Null)
             }
@@ -1474,9 +1518,7 @@ impl Module {
                         &mut self,
                         _: bool,
                     ) -> evalexpr::EvalexprResult<()> {
-                        Err(evalexpr::error::EvalexprError::CustomMessage(
-                            "Not supported".into(),
-                        ))
+                        Err(evalexpr::error::EvalexprError::BuiltinFunctionsCannotBeDisabled)
                     }
                 }
                 let ctx = Context {

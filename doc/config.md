@@ -244,8 +244,10 @@ Key | Expanded | Default | Details
 \* | Yes | -- | Variables usable in the expression
 
 Evaluates the given expression.  Basic math and logic operators are supported,
-but not variable assignment, conditionals, looping, or recursion.  All other
-keys in this block are expanded and can be read in the expression.
+but not variable assignment, conditionals, looping, or recursion.  Variables
+referenced in this expression refer to the expanded value of other keys in this
+block.  See [https://docs.rs/evalexpr/#builtin-functions] for a list of
+available functions.
 
 ## exec-json
 
@@ -259,6 +261,31 @@ output for a matching key and return its value.
 
 The command will not be restarted if it exits; use a wrapper script that calls
 it in a loop if you want to do this.
+
+## fade
+
+This module allows combining two items to show a fraction of each.  For
+example, if the two items are "empty battery" and "full battery" icons, this
+would show a part-full battery icon whose fullness is determined by the value.
+
+It is possible to use more than two items - for example, a temperature meter
+might have (empty, full, red), and depending on the temperature, might display
+as half-full or half-full/half-red.
+
+Because it is likely that vaules need to be scaled or offset for this module,
+it is possible to use `expr` as in the `eval` block type instead of setting the
+`value` key directly.
+
+If the two items being displayed are different sizes, the size of the first of
+the two items is used to crop the second.
+
+Key | Expanded | Default | Details
+----|----------|---------|--------
+`items` | N/A | | A list of items
+`dir` | No | `left` | Which direction does the dividing line move when increasing the value?  Valid values are `left`, `right`, `up`, `down`.
+`value` | Yes | | A fraction between 0 and `N - 1` determining which items to display
+`expr` | No | | An expression (as in the expr module) evaluating to the value (used if `value` is not set)
+`tooltip` | Yes | "" | The tooltip to display when hovering over the text
 
 ## focus-list
 

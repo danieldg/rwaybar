@@ -887,6 +887,116 @@ impl Item {
 
                 ctx.render_pos.x = clip.1.x;
             }
+            Module::Fade {
+                items,
+                value,
+                dir,
+                tooltip,
+            } => {
+                let value = value.read_in(ctx.err_name, "", &ctx.runtime, |v| {
+                    v.parse_f32().unwrap_or(0.0)
+                });
+                if let Some(item) = tooltip {
+                    rv.add_tooltip(PopupDesc::RenderItem {
+                        item: item.clone(),
+                        iter: ctx.runtime.copy_item_var(),
+                    });
+                }
+                if value <= 0.0 {
+                    items[0].render(ctx);
+                    return;
+                }
+                let last = items.len() - 1;
+                if value >= last as f32 {
+                    items[last].render(ctx);
+                    return;
+                }
+                let base = value.floor() as usize;
+                if value == base as f32 {
+                    items[base].render(ctx);
+                    return;
+                }
+                let value = value.fract();
+
+                let origin = ctx.render_pos;
+                let xform = ctx.render_xform;
+                items[base].render(ctx);
+                let z_end_x = ctx.render_pos.x;
+
+                let width = z_end_x.ceil() - origin.x.floor();
+                let height = (ctx.render_extents.1.y - ctx.render_extents.0.y).ceil();
+                let mut canvas_size = tiny_skia::Point {
+                    x: width,
+                    y: height,
+                };
+                let render_extents = (Point::zero(), canvas_size);
+                xform.map_points(std::slice::from_mut(&mut canvas_size));
+                let mut canvas = tiny_skia::Pixmap::new(canvas_size.x as u32, canvas_size.y as u32)
+                    .unwrap_or_else(|| tiny_skia::Pixmap::new(1, 1).unwrap());
+                let mut canvas = canvas.as_mut();
+
+                let mut group = Render {
+                    canvas: &mut canvas,
+                    cache: &ctx.cache,
+                    render_extents,
+                    render_xform: ctx.render_xform,
+                    render_pos: Point {
+                        x: origin.x.fract(),
+                        y: origin.y.fract(),
+                    },
+                    render_flex: ctx.render_flex,
+
+                    font: ctx.font,
+                    font_size: ctx.font_size,
+                    font_color: ctx.font_color,
+                    text_stroke: ctx.text_stroke,
+                    text_stroke_size: ctx.text_stroke_size,
+
+                    align: ctx.align,
+                    err_name: ctx.err_name,
+                    runtime: ctx.runtime,
+                };
+                items[base + 1].render(&mut group);
+
+                let hoff = width * value;
+                let voff = height * value;
+                let clear = tiny_skia::Paint {
+                    anti_alias: true,
+                    blend_mode: tiny_skia::BlendMode::Clear,
+                    ..tiny_skia::Paint::default()
+                };
+                let omask = match dir {
+                    b'r' => tiny_skia::Rect::from_xywh(hoff, 0.0, width - hoff, height),
+                    b'l' => tiny_skia::Rect::from_xywh(0.0, 0.0, width - hoff, height),
+                    b'd' => tiny_skia::Rect::from_xywh(0.0, voff, width, height - voff),
+                    b'u' => tiny_skia::Rect::from_xywh(0.0, 0.0, width, height - voff),
+                    _ => None,
+                };
+                let zmask = match dir {
+                    b'r' => tiny_skia::Rect::from_xywh(origin.x, origin.y, hoff, height),
+                    b'l' => {
+                        tiny_skia::Rect::from_xywh(origin.x + width - hoff, origin.y, hoff, height)
+                    }
+                    b'd' => tiny_skia::Rect::from_xywh(origin.x, origin.y, width, voff),
+                    b'u' => {
+                        tiny_skia::Rect::from_xywh(origin.x, origin.y + height - voff, width, voff)
+                    }
+                    _ => None,
+                };
+                group
+                    .canvas
+                    .fill_rect(omask.unwrap(), &clear, ctx.render_xform, None);
+                ctx.canvas
+                    .fill_rect(zmask.unwrap(), &clear, ctx.render_xform, None);
+                ctx.canvas.draw_pixmap(
+                    0,
+                    0,
+                    group.canvas.as_ref(),
+                    &tiny_skia::PixmapPaint::default(),
+                    Transform::from_translate(origin.x.floor() * ctx.render_xform.sx, 0.0),
+                    None,
+                );
+            }
             Module::Icon {
                 name,
                 fallback,
