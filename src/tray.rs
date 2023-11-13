@@ -946,6 +946,7 @@ impl TrayPopup {
             .get()
             .map_or(true, |i| i.elapsed() > Duration::from_secs(60))
             && self.menu.menu_path.take_in_some(|_| ()).is_some()
+            && !self.menu.refresh.take_in_some(|_| ()).is_some()
         {
             // need to kick off the first refresh
             let menu = self.menu.clone();
