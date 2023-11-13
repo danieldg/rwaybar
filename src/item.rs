@@ -1002,6 +1002,13 @@ impl PartialEq for PopupDesc {
 }
 
 impl PopupDesc {
+    pub fn lazy_refresh(&mut self) {
+        #[cfg(feature = "dbus")]
+        if let PopupDesc::Tray(t) = self {
+            t.lazy_refresh();
+        }
+    }
+
     pub fn render_popup(&mut self, ctx: &mut Render) -> (i32, i32) {
         ctx.font_color = tiny_skia::Color::WHITE;
         ctx.render_pos = tiny_skia::Point::zero();

@@ -148,6 +148,7 @@ impl EventSink {
         let _ = y;
         for &mut (min, max, ref mut text) in &mut self.hovers {
             if x >= min && x < max {
+                text.lazy_refresh();
                 return Some((min, max, text));
             }
         }
