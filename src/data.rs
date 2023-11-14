@@ -186,7 +186,7 @@ pub enum ItemReference {
     New(Box<str>),
     Looped,
     Found(Weak<Item>),
-    NotFound,
+    NotFound(Rc<Item>),
 }
 
 impl ItemReference {
@@ -199,13 +199,15 @@ impl ItemReference {
                     f(Some(item))
                 }
                 None => {
-                    error!("Unresolved reference to item {}", name);
-                    me = ItemReference::NotFound;
-                    f(None)
+                    debug!("Unresolved reference to item '{name}', interpreting as text");
+                    let item = Rc::new(Item::from(Module::new_format(name)));
+                    let rv = f(Some(&item));
+                    me = ItemReference::NotFound(item);
+                    rv
                 }
             },
             ItemReference::Found(ref v) => f(v.upgrade().as_ref()),
-            ItemReference::NotFound => f(None),
+            ItemReference::NotFound(ref v) => f(Some(v)),
             ItemReference::Looped => {
                 error!("Loop found when resolving reference");
                 f(None)
@@ -1091,6 +1093,13 @@ impl Module {
         Module::Value {
             value: Cell::new(t.into()),
             interested: Default::default(),
+        }
+    }
+
+    pub fn new_format<T: Into<String>>(t: T) -> Self {
+        Module::Formatted {
+            format: t.into().into(),
+            tooltip: None,
         }
     }
 
