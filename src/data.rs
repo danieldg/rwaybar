@@ -1711,13 +1711,15 @@ impl Module {
                             Ok(v) => value.set(v),
                             _ => {
                                 debug!("Invalid value '{}' read from {}", s, name);
+                                value.set(0);
                             }
                         }
                         Some(name)
                     }
                     Err(e) => {
                         debug!("Could not read {}: {}", name, e);
-                        None
+                        value.set(0);
+                        Some(name)
                     }
                 });
                 let (_, value) = poll.data();
