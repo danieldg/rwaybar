@@ -1037,6 +1037,7 @@ pub fn show(ctx: &mut Render, rv: &mut EventSink, [passive, active, urgent]: [&R
         tray.items
             .take_in(|items| items.iter().cloned().collect::<Vec<_>>())
     });
+    let mut group = ctx.group();
 
     for tray_item in items {
         let render = tray_item.status.take_in(|s| match &**s {
@@ -1049,6 +1050,7 @@ pub fn show(ctx: &mut Render, rv: &mut EventSink, [passive, active, urgent]: [&R
         let x0 = ctx.render_pos.x;
         render.render_clamped_item(ctx, rv, &iter_item);
         let x1 = ctx.render_pos.x;
+        group.next_h(ctx);
         if x0 != x1 {
             if let Some(menu) = tray_item.menu.take_in(|m| m.clone()) {
                 let title = tray_item.title.take_in(|t| t.clone());
@@ -1069,6 +1071,7 @@ pub fn show(ctx: &mut Render, rv: &mut EventSink, [passive, active, urgent]: [&R
             }
         }
     }
+    ctx.render_pos = group.bounds;
 }
 
 pub fn read_in<F: FnOnce(Value) -> R, R>(

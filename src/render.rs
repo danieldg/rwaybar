@@ -241,9 +241,18 @@ pub struct Render<'a, 'c> {
 
     pub cache: &'a RenderCache,
 
+    /// Current transform from graphical (x,y) to pixel (x,y)
+    /// (this is usually just a scale)
     pub render_xform: tiny_skia::Transform,
+
+    /// Bounding box for the current item or group.  This is used to compute percentage-based
+    /// widths, so it is constant for all items in a group.
     pub render_extents: (tiny_skia::Point, tiny_skia::Point),
+
+    /// Position of the pen.  During any render call, this should move from the top-left of an item
+    /// to the bottom-right of an item.
     pub render_pos: tiny_skia::Point,
+
     pub render_flex: bool,
 
     pub font: &'a FontMapped,
@@ -257,7 +266,37 @@ pub struct Render<'a, 'c> {
     pub runtime: &'a Runtime,
 }
 
+#[derive(Debug)]
+pub struct Group {
+    pub origin: tiny_skia::Point,
+    pub bounds: tiny_skia::Point,
+}
+
+impl Group {
+    pub fn next_h(&mut self, ctx: &mut Render) {
+        self.bounds.x = ctx.render_pos.x;
+        if ctx.render_pos.y > self.bounds.y {
+            self.bounds.y = ctx.render_pos.y;
+        }
+        ctx.render_pos.y = self.origin.y;
+    }
+    pub fn next_v(&mut self, ctx: &mut Render) {
+        if ctx.render_pos.x > self.bounds.x {
+            self.bounds.x = ctx.render_pos.x;
+        }
+        ctx.render_pos.x = self.origin.x;
+        self.bounds.y = ctx.render_pos.y;
+    }
+}
+
 impl Render<'_, '_> {
+    pub fn group(&self) -> Group {
+        Group {
+            origin: self.render_pos,
+            bounds: self.render_pos,
+        }
+    }
+
     /// Create a canvas for rendering `(origin.x .. x_max)`, returning the pixmap and the
     /// coordinates (under an identity transform) that should be used for draw_pixmap.
     pub fn with_new_canvas_x<R>(

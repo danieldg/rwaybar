@@ -674,7 +674,6 @@ impl Item {
         let origin = ctx.render_pos;
         let mut rv = self.render(ctx);
         let x1 = ctx.render_pos.x;
-        ctx.render_pos.y = origin.y;
         rv.offset_clamp(0.0, origin.x, x1);
         rv.set_item(item);
         ev.merge(rv);
@@ -719,8 +718,7 @@ impl Item {
                         }
                     }
                 }
-                let origin = ctx.render_pos;
-                let mut bounds = origin;
+                let mut group = ctx.group();
                 let spacing = ctx
                     .runtime
                     .format(spacing)
@@ -731,26 +729,18 @@ impl Item {
                     item.render_clamped(ctx, rv);
 
                     if *vertical {
-                        if ctx.render_pos.x > bounds.x {
-                            bounds.x = ctx.render_pos.x;
-                        }
-                        ctx.render_pos.x = origin.x;
-                        bounds.y = ctx.render_pos.y;
+                        group.next_v(ctx);
                         if spacing > 0.0 {
                             ctx.render_pos.y = (ctx.render_pos.y + spacing).ceil();
                         }
                     } else {
-                        bounds.x = ctx.render_pos.x;
-                        if ctx.render_pos.y > bounds.y {
-                            bounds.y = ctx.render_pos.y;
-                        }
-                        ctx.render_pos.y = origin.y;
+                        group.next_h(ctx);
                         if spacing > 0.0 {
                             ctx.render_pos.x = (ctx.render_pos.x + spacing).ceil();
                         }
                     }
                 }
-                ctx.render_pos = bounds;
+                ctx.render_pos = group.bounds;
                 if let Some(item) = tooltip {
                     rv.add_tooltip(PopupDesc::RenderItem {
                         item: item.clone(),
@@ -771,7 +761,7 @@ impl Item {
                     .and_then(|s| s.parse_f32())
                     .unwrap_or(0.0);
                 let item_var = ctx.runtime.get_item_var();
-                let origin = ctx.render_pos;
+                let mut group = ctx.group();
                 let prev = item_var.replace(None);
                 source.read_focus_list(ctx.runtime, |focus, item| {
                     item_var.set(Some(item.clone()));
@@ -785,11 +775,10 @@ impl Item {
                     ev.offset_clamp(0.0, x0, x1);
                     ev.set_item(&item);
                     rv.merge(ev);
+                    group.next_h(ctx);
                     ctx.render_pos.x += spacing;
-                    ctx.render_pos.y = origin.y;
                 });
-                let xpos = ctx.render_pos.x - spacing;
-                ctx.render_pos.x = ctx.render_pos.x.min(xpos);
+                ctx.render_pos = group.bounds;
                 item_var.set(prev);
             }
             Module::Bar {
@@ -912,11 +901,15 @@ impl Item {
                     });
 
                 let mut bb_l = origin.x;
-                let mut bb_t = ctx.render_extents.0.y;
                 let mut bb_r = ctx.render_pos.x;
-                let mut bb_b = ctx.render_extents.1.y;
                 let hoff = (bb_r - bb_l) * value;
-                let voff = (bb_b - bb_t) * value;
+
+                let rb_t = origin.y;
+                let rb_b = ctx.render_pos.y;
+                let voff = (rb_b - rb_t) * value;
+
+                let mut bb_t = ctx.render_extents.0.y;
+                let mut bb_b = ctx.render_extents.1.y;
 
                 match dir {
                     b'r' => {
@@ -935,11 +928,11 @@ impl Item {
                     }
                     b'd' => {
                         rv.merge(base_ev);
-                        bb_b = bb_t + voff;
+                        bb_b = rb_t + voff;
                     }
                     b'u' => {
                         rv.merge(base_ev);
-                        bb_t = bb_b - voff;
+                        bb_t = rb_b - voff;
                     }
                     _ => unreachable!(),
                 }

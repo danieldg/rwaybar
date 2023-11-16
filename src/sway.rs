@@ -1,7 +1,7 @@
 use crate::data::{IterationItem, Value};
 use crate::event::EventSink;
 use crate::item::Item;
-use crate::render::Render;
+use crate::render::{Group, Render};
 use crate::state::NotifierList;
 use crate::state::Runtime;
 use crate::util::{spawn_noerr, Cell};
@@ -646,23 +646,32 @@ impl Node {
         }
     }
 
-    fn render(self: &Rc<Self>, items: &TreeItems, ctx: &mut Render, ev: &mut EventSink) {
+    fn render(
+        self: &Rc<Self>,
+        items: &TreeItems,
+        ctx: &mut Render,
+        group: &mut Group,
+        ev: &mut EventSink,
+    ) {
         let ii = Rc::new(IterationItem::SwayTreeItem(self.clone()));
         match &self.contents {
             NodeType::Container { children, .. } => {
                 if let Some(item) = &items.pre_node {
                     item.render_clamped_item(ctx, ev, &ii);
+                    group.next_h(ctx);
                 }
                 for child in children {
-                    child.render(items, ctx, ev);
+                    child.render(items, ctx, group, ev);
                 }
                 if let Some(item) = &items.post_node {
                     item.render_clamped_item(ctx, ev, &ii);
+                    group.next_h(ctx);
                 }
             }
             NodeType::Window { .. } => {
                 if let Some(item) = &items.window {
                     item.render_clamped_item(ctx, ev, &ii);
+                    group.next_h(ctx);
                 }
             }
         }
@@ -922,6 +931,7 @@ impl Tree {
     }
 
     pub fn render(&self, ctx: &mut Render, ev: &mut EventSink) {
+        let mut group = ctx.group();
         let items = &self.items;
         let output = self
             .output
@@ -949,27 +959,33 @@ impl Tree {
                 }));
                 if let Some(item) = &items.pre_workspace {
                     item.render_clamped_item(ctx, ev, &ii);
+                    group.next_h(ctx);
                 }
-                workspace.repr.render(items, ctx, ev);
+                workspace.repr.render(items, ctx, &mut group, ev);
                 if !workspace.floating.is_empty() {
                     if let Some(item) = &items.pre_floats {
                         item.render_clamped_item(ctx, ev, &ii);
+                        group.next_h(ctx);
                     }
                 }
                 for float in &workspace.floating {
                     if let Some(item) = &items.pre_float {
                         item.render_clamped_item(ctx, ev, &ii);
+                        group.next_h(ctx);
                     }
-                    float.render(items, ctx, ev);
+                    float.render(items, ctx, &mut group, ev);
                     if let Some(item) = &items.post_float {
                         item.render_clamped_item(ctx, ev, &ii);
+                        group.next_h(ctx);
                     }
                 }
                 if let Some(item) = &items.post_workspace {
                     item.render_clamped_item(ctx, ev, &ii);
+                    group.next_h(ctx);
                 }
             }
         });
+        ctx.render_pos = group.bounds;
     }
 }
 
