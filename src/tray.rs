@@ -875,6 +875,7 @@ impl TrayPopupMenu {
         self.items.set(items);
         self.interested.take().notify_data("tray:menu");
         self.fresh.set(Some(Instant::now()));
+        self.refresh.set(None);
 
         Ok(())
     }
