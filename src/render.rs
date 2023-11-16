@@ -257,6 +257,62 @@ pub struct Render<'a, 'c> {
     pub runtime: &'a Runtime,
 }
 
+impl Render<'_, '_> {
+    /// Create a canvas for rendering `(origin.x .. x_max)`, returning the pixmap and the
+    /// coordinates (under an identity transform) that should be used for draw_pixmap.
+    pub fn with_new_canvas_x<R>(
+        &self,
+        origin: tiny_skia::Point,
+        x_max: f32,
+        f: impl FnOnce(&mut Render) -> R,
+    ) -> (tiny_skia::Pixmap, (f32, f32), R) {
+        // Find an integer bounding box for the new pixmap
+        let sc_x0 = origin.x.floor();
+        let sc_y0 = self.render_extents.0.y.floor();
+        let sc_x1 = x_max.ceil();
+        let sc_y1 = self.render_extents.1.y.ceil();
+
+        let width = sc_x1 - sc_x0;
+        let height = sc_y1 - sc_y0;
+        let render_extents = (
+            tiny_skia::Point::zero(),
+            tiny_skia::Point {
+                x: width,
+                y: height,
+            },
+        );
+        let draw_coords = (sc_x0 * self.render_xform.sx, sc_y0 * self.render_xform.sy);
+        let pixel_width = (width * self.render_xform.sx) as u32;
+        let pixel_height = (height * self.render_xform.sy) as u32;
+        let mut canvas = tiny_skia::Pixmap::new(pixel_width, pixel_height)
+            .unwrap_or_else(|| tiny_skia::Pixmap::new(1, 1).unwrap());
+
+        let rv = f(&mut Render {
+            canvas: &mut canvas.as_mut(),
+            cache: &self.cache,
+            render_extents,
+            render_xform: self.render_xform,
+            render_pos: tiny_skia::Point {
+                x: origin.x.fract(),
+                y: origin.y.fract(),
+            },
+            render_flex: self.render_flex,
+
+            font: self.font,
+            font_size: self.font_size,
+            font_color: self.font_color,
+            text_stroke: self.text_stroke,
+            text_stroke_size: self.text_stroke_size,
+
+            align: self.align,
+            err_name: self.err_name,
+            runtime: self.runtime,
+        });
+
+        (canvas, draw_coords, rv)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Width {
     /// Some fraction (0.0-1.0) of the total width

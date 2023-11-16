@@ -11,7 +11,7 @@ use crate::wayland::Button;
 use log::{debug, error, warn};
 use std::borrow::Cow;
 use std::rc::Rc;
-use tiny_skia::{Color, Point, Transform};
+use tiny_skia::{Color, Point};
 
 /// A visible item in a bar
 #[derive(Debug)]
@@ -799,93 +799,75 @@ impl Item {
                 ..
             } => {
                 let clip = ctx.render_extents;
-                let xform = ctx.render_xform;
                 let width = clip.1.x - ctx.render_pos.x;
-                let height = (clip.1.y - ctx.render_pos.y).ceil();
-                let mut canvas_size = tiny_skia::Point {
-                    x: width,
-                    y: height,
-                };
-                let render_extents = (Point::zero(), canvas_size);
-                xform.map_points(std::slice::from_mut(&mut canvas_size));
-                let mut canvas = tiny_skia::Pixmap::new(canvas_size.x as u32, canvas_size.y as u32)
-                    .unwrap_or_else(|| tiny_skia::Pixmap::new(1, 1).unwrap());
-                let mut canvas = canvas.as_mut();
 
                 let mut left_ev = left.render(ctx);
                 let left_size = ctx.render_pos.x.ceil();
                 left_ev.offset_clamp(0.0, 0.0, left_size);
                 rv.merge(left_ev);
 
-                let mut group = Render {
-                    canvas: &mut canvas,
-                    cache: &ctx.cache,
-                    render_extents,
-                    render_xform: ctx.render_xform,
-                    render_pos: Point::zero(),
-                    render_flex: ctx.render_flex,
+                let (right_canvas, (rx, ry), (mut right_ev, right_size)) =
+                    ctx.with_new_canvas_x(Point::zero(), clip.1.x, |group| {
+                        let ev = right.render(group);
+                        (ev, group.render_pos.x.ceil())
+                    });
 
-                    font: ctx.font,
-                    font_size: ctx.font_size,
-                    font_color: ctx.font_color,
-                    text_stroke: ctx.text_stroke,
-                    text_stroke_size: ctx.text_stroke_size,
+                let right_offset = clip.1.x - right_size;
 
-                    align: ctx.align,
-                    err_name: "bar",
-                    runtime: ctx.runtime,
-                };
-
-                let mut right_ev = right.render(&mut group);
-                let right_width = group.render_pos.x.ceil();
-
-                let right_offset = clip.1.x - right_width;
                 ctx.canvas.draw_pixmap(
-                    0,
-                    0,
-                    group.canvas.as_ref(),
-                    &tiny_skia::PixmapPaint::default(),
-                    Transform::from_translate(right_offset * ctx.render_xform.sx, 0.0),
+                    (rx + right_offset * ctx.render_xform.sx) as i32,
+                    ry as i32,
+                    right_canvas.as_ref(),
+                    &Default::default(),
+                    Default::default(),
                     None,
                 );
+                drop(right_canvas);
 
                 right_ev.offset_clamp(right_offset, right_offset, clip.1.x);
                 rv.merge(right_ev);
 
-                group.canvas.fill(tiny_skia::Color::TRANSPARENT);
-                group.render_pos = Point::zero();
+                let max_center_width = width - left_size - right_size;
+                ctx.render_pos.x = clip.1.x;
 
-                let mut cent_ev = center.render(&mut group);
-                let cent_size = group.render_pos.x.ceil();
+                if max_center_width <= 0.0 {
+                    // don't render the center if there's no room at all
+                    return;
+                }
+
+                let (c_canvas, (cx, cy), (mut cent_ev, cent_size)) =
+                    ctx.with_new_canvas_x(Point::zero(), max_center_width, |group| {
+                        let ev = center.render(group);
+                        (ev, group.render_pos.x.ceil())
+                    });
 
                 let max_side = (width - cent_size) / 2.0;
-                let total_room = width - (left_size + right_width + cent_size);
+                let total_room = width - (left_size + right_size + cent_size);
                 let cent_offset;
                 if total_room < 0.0 {
-                    // TODO maybe we should have cropped it?
-                    return;
+                    // no gaps at all; just put it at the start of the middle region
+                    cent_offset = left_size;
                 } else if left_size > max_side {
                     // left side is too long to properly center; put it just to the right of that
                     cent_offset = left_size;
-                } else if right_width > max_side {
+                } else if right_size > max_side {
                     // right side is too long to properly center; put it just to the left of that
-                    cent_offset = clip.1.x - right_width - cent_size;
+                    cent_offset = clip.1.x - right_size - cent_size;
                 } else {
                     // Actually center the center module
                     cent_offset = max_side;
                 }
+
                 ctx.canvas.draw_pixmap(
-                    0,
-                    0,
-                    group.canvas.as_ref(),
-                    &tiny_skia::PixmapPaint::default(),
-                    Transform::from_translate(cent_offset * ctx.render_xform.sx, 0.0),
+                    (cx + cent_offset * ctx.render_xform.sx) as i32,
+                    cy as i32,
+                    c_canvas.as_ref(),
+                    &Default::default(),
+                    Default::default(),
                     None,
                 );
                 cent_ev.offset_clamp(cent_offset, cent_offset, cent_offset + cent_size);
                 rv.merge(cent_ev);
-
-                ctx.render_pos.x = clip.1.x;
             }
             Module::Fade {
                 items,
@@ -903,97 +885,87 @@ impl Item {
                     });
                 }
                 if value <= 0.0 {
-                    items[0].render(ctx);
+                    let ev = items[0].render(ctx);
+                    rv.merge(ev);
                     return;
                 }
                 let last = items.len() - 1;
                 if value >= last as f32 {
-                    items[last].render(ctx);
+                    let ev = items[last].render(ctx);
+                    rv.merge(ev);
                     return;
                 }
                 let base = value.floor() as usize;
                 if value == base as f32 {
-                    items[base].render(ctx);
+                    let ev = items[base].render(ctx);
+                    rv.merge(ev);
                     return;
                 }
                 let value = value.fract();
 
                 let origin = ctx.render_pos;
-                let xform = ctx.render_xform;
-                items[base].render(ctx);
-                let z_end_x = ctx.render_pos.x;
+                let mut base_ev = items[base].render(ctx);
 
-                let width = z_end_x.ceil() - origin.x.floor();
-                let height = (ctx.render_extents.1.y - ctx.render_extents.0.y).ceil();
-                let mut canvas_size = tiny_skia::Point {
-                    x: width,
-                    y: height,
-                };
-                let render_extents = (Point::zero(), canvas_size);
-                xform.map_points(std::slice::from_mut(&mut canvas_size));
-                let mut canvas = tiny_skia::Pixmap::new(canvas_size.x as u32, canvas_size.y as u32)
-                    .unwrap_or_else(|| tiny_skia::Pixmap::new(1, 1).unwrap());
-                let mut canvas = canvas.as_mut();
+                let (canvas, (draw_x, draw_y), mut over_ev) =
+                    ctx.with_new_canvas_x(origin, ctx.render_pos.x, |group| {
+                        items[base + 1].render(group)
+                    });
 
-                let mut group = Render {
-                    canvas: &mut canvas,
-                    cache: &ctx.cache,
-                    render_extents,
-                    render_xform: ctx.render_xform,
-                    render_pos: Point {
-                        x: origin.x.fract(),
-                        y: origin.y.fract(),
-                    },
-                    render_flex: ctx.render_flex,
+                let mut bb_l = origin.x;
+                let mut bb_t = ctx.render_extents.0.y;
+                let mut bb_r = ctx.render_pos.x;
+                let mut bb_b = ctx.render_extents.1.y;
+                let hoff = (bb_r - bb_l) * value;
+                let voff = (bb_b - bb_t) * value;
 
-                    font: ctx.font,
-                    font_size: ctx.font_size,
-                    font_color: ctx.font_color,
-                    text_stroke: ctx.text_stroke,
-                    text_stroke_size: ctx.text_stroke_size,
-
-                    align: ctx.align,
-                    err_name: ctx.err_name,
-                    runtime: ctx.runtime,
-                };
-                items[base + 1].render(&mut group);
-
-                let hoff = width * value;
-                let voff = height * value;
-                let clear = tiny_skia::Paint {
-                    anti_alias: true,
-                    blend_mode: tiny_skia::BlendMode::Clear,
-                    ..tiny_skia::Paint::default()
-                };
-                let omask = match dir {
-                    b'r' => tiny_skia::Rect::from_xywh(hoff, 0.0, width - hoff, height),
-                    b'l' => tiny_skia::Rect::from_xywh(0.0, 0.0, width - hoff, height),
-                    b'd' => tiny_skia::Rect::from_xywh(0.0, voff, width, height - voff),
-                    b'u' => tiny_skia::Rect::from_xywh(0.0, 0.0, width, height - voff),
-                    _ => None,
-                };
-                let zmask = match dir {
-                    b'r' => tiny_skia::Rect::from_xywh(origin.x, origin.y, hoff, height),
+                match dir {
+                    b'r' => {
+                        over_ev.offset_clamp(0.0, bb_l, bb_l + hoff);
+                        rv.merge(over_ev);
+                        base_ev.offset_clamp(0.0, bb_l + hoff, bb_r);
+                        rv.merge(base_ev);
+                        bb_r = bb_l + hoff;
+                    }
                     b'l' => {
-                        tiny_skia::Rect::from_xywh(origin.x + width - hoff, origin.y, hoff, height)
+                        over_ev.offset_clamp(0.0, bb_r - hoff, bb_r);
+                        rv.merge(over_ev);
+                        base_ev.offset_clamp(0.0, bb_l, bb_r - hoff);
+                        rv.merge(base_ev);
+                        bb_l = bb_r - hoff;
                     }
-                    b'd' => tiny_skia::Rect::from_xywh(origin.x, origin.y, width, voff),
+                    b'd' => {
+                        rv.merge(base_ev);
+                        bb_b = bb_t + voff;
+                    }
                     b'u' => {
-                        tiny_skia::Rect::from_xywh(origin.x, origin.y + height - voff, width, voff)
+                        rv.merge(base_ev);
+                        bb_t = bb_b - voff;
                     }
-                    _ => None,
-                };
-                group
-                    .canvas
-                    .fill_rect(omask.unwrap(), &clear, ctx.render_xform, None);
-                ctx.canvas
-                    .fill_rect(zmask.unwrap(), &clear, ctx.render_xform, None);
-                ctx.canvas.draw_pixmap(
-                    0,
-                    0,
-                    group.canvas.as_ref(),
-                    &tiny_skia::PixmapPaint::default(),
-                    Transform::from_translate(origin.x.floor() * ctx.render_xform.sx, 0.0),
+                    _ => unreachable!(),
+                }
+
+                // If we use ctx.render_xform in fill_rect, we would have to apply the inverse
+                // transform and the translate to the canvas; this ends up doing a bunch of
+                // needless work inside tiny_skia.  Instead, just apply the transform to the rect
+                // and do the whole fill in identity space.
+                let mut p = [Point { x: bb_l, y: bb_t }, Point { x: bb_r, y: bb_b }];
+                ctx.render_xform.map_points(&mut p);
+
+                ctx.canvas.fill_rect(
+                    tiny_skia::Rect::from_ltrb(p[0].x, p[0].y, p[1].x, p[1].y).unwrap(),
+                    &tiny_skia::Paint {
+                        shader: tiny_skia::Pattern::new(
+                            canvas.as_ref(),
+                            tiny_skia::SpreadMode::Pad,
+                            tiny_skia::FilterQuality::Nearest,
+                            1.0,
+                            tiny_skia::Transform::from_translate(draw_x, draw_y),
+                        ),
+                        blend_mode: tiny_skia::BlendMode::Source,
+                        anti_alias: true,
+                        force_hq_pipeline: false,
+                    },
+                    Default::default(),
                     None,
                 );
             }
