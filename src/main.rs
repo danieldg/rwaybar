@@ -12,8 +12,6 @@ mod item;
 mod mpris;
 #[cfg(feature = "pulse")]
 mod pulse;
-#[cfg(feature = "pulse")]
-mod pulse_tokio;
 mod render;
 mod state;
 mod sway;

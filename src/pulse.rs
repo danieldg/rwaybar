@@ -1,5 +1,4 @@
 use crate::data::{IterationItem, Value};
-use crate::pulse_tokio::TokioMain;
 use crate::state::NotifierList;
 use crate::state::Runtime;
 use crate::util::{self, Cell};
@@ -13,6 +12,7 @@ use libpulse_binding::def::DevicePortType;
 use libpulse_binding::error::PAErr;
 use libpulse_binding::proplist;
 use libpulse_binding::volume::{ChannelVolumes, Volume};
+use libpulse_tokio::TokioMain;
 use log::{debug, error, info, warn};
 use once_cell::unsync::OnceCell;
 use std::rc::Rc;

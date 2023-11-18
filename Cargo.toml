@@ -17,7 +17,7 @@ lto = true
 [features]
 default = ['pulse', 'dbus']
 dbus = []
-pulse = ['libpulse-binding']
+pulse = ['libpulse-binding', 'libpulse-tokio']
 
 [dependencies]
 # Basic runtime
@@ -56,5 +56,6 @@ chrono = { version = "*", default-features = false, features = ['clock'] }
 chrono-tz = "*"
 evalexpr = "11"
 libpulse-binding = { version = "*", features = ['pa_v14'], optional = true }
+libpulse-tokio = { version = "0.1", optional = true }
 regex = "1.5"
 zbus = { version = "3", default-features = false, features = ['tokio'] }

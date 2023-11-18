@@ -851,6 +851,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "libpulse-tokio"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25fdd1dcef143d476edde7cac2094a40cecdcd29a96ff0b1e8095f761c81a693"
+dependencies = [
+ "libc",
+ "libpulse-binding",
+ "tokio",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1314,6 +1325,7 @@ dependencies = [
  "json",
  "libc",
  "libpulse-binding",
+ "libpulse-tokio",
  "log",
  "memmap2",
  "once_cell",
