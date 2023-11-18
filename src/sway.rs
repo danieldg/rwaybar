@@ -9,13 +9,60 @@ use bytes::{Buf, BytesMut};
 use log::{error, warn};
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::convert::TryInto;
+use std::collections::HashMap;
+use std::fs;
+use std::io::{BufRead, BufReader};
 use std::rc::Rc;
+use std::sync::OnceLock;
 use tokio::net::UnixStream;
 use tokio::sync::Notify;
 
 thread_local! {
-    static SOCK : RefCell<Option<SwaySocket>> = RefCell::new(None);
+    static SOCK: RefCell<Option<SwaySocket>> = RefCell::new(None);
+}
+
+pub fn appid_to_icon<'a>(rt: &Runtime, appid: &'a str) -> Value<'a> {
+    static APPID_ICON_TABLE: OnceLock<HashMap<Box<str>, Box<str>>> = OnceLock::new();
+    let table = APPID_ICON_TABLE.get_or_init(|| {
+        use std::os::unix::ffi::OsStringExt;
+        let mut map = HashMap::new();
+        for dir in rt.xdg.find_data_files("applications") {
+            for ent in fs::read_dir(dir).into_iter().flatten() {
+                let Ok(ent) = ent else { continue };
+                if !ent.file_name().into_vec().ends_with(b".desktop") {
+                    continue;
+                }
+                let Ok(file) = fs::File::open(ent.path()) else {
+                    continue;
+                };
+                let mut icon = None::<Box<str>>;
+                let mut id = None::<Box<str>>;
+                for line in BufReader::new(file).lines() {
+                    let Ok(line) = line else { continue };
+                    if let Some((name, value)) = line.split_once('=') {
+                        if name.trim() == "Icon" {
+                            icon = Some(value.trim().into());
+                        }
+                        if name.trim() == "StartupWMClass" {
+                            id = Some(value.trim().into());
+                        }
+                    }
+                    if icon.is_some() && id.is_some() {
+                        map.insert(id.take().unwrap(), icon.take().unwrap());
+                    } else if line.trim_start().starts_with('[') {
+                        icon = None;
+                        id = None;
+                    }
+                }
+            }
+        }
+        map
+    });
+    if let Some(icon) = table.get(appid) {
+        Value::Borrow(icon)
+    } else {
+        Value::Borrow(appid)
+    }
 }
 
 #[derive(Default, Debug)]
@@ -677,19 +724,13 @@ impl Node {
         }
     }
 
-    pub fn read_in<F: FnOnce(Value) -> R, R>(&self, key: &str, _rt: &Runtime, f: F) -> R {
+    pub fn read_in<F: FnOnce(Value) -> R, R>(&self, key: &str, rt: &Runtime, f: F) -> R {
         match (key, &self.contents) {
             ("id", _) => f(Value::Float(self.id as f64)),
             ("marks", _) => f(Value::Borrow(&self.marks)),
             ("focus", _) => f(Value::Bool(self.focus)),
             ("appid", NodeType::Window { appid, .. }) => f(Value::Borrow(appid)),
-            ("icon", NodeType::Window { appid, .. }) => {
-                if appid.starts_with("org.kde.") {
-                    f(Value::Borrow(&appid[8..]))
-                } else {
-                    f(Value::Borrow(appid))
-                }
-            }
+            ("icon", NodeType::Window { appid, .. }) => f(appid_to_icon(rt, appid)),
             ("title", NodeType::Window { title, .. }) => {
                 f(Value::Owned(title.take_in(|t| String::from(&**t))))
             }

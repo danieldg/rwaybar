@@ -121,7 +121,9 @@ fn open_icon(xdg: &xdg::BaseDirectories, name: &str, target_size: u32) -> io::Re
 
     let f = |mut path: PathBuf| {
         path.push(name);
-        path.set_extension("svg");
+        // We can't use set_extension here because of icon names like "org.atheme.audacious" which
+        // would turn into "org.atheme.svg" instead of "org.atheme.audacious.svg"
+        path.as_mut_os_string().push(".svg");
         match File::open(&path) {
             Ok(_) => {
                 return Some(path);
@@ -229,7 +231,7 @@ pub fn render(ctx: &mut Render, name: &str) -> Result<(), ()> {
                         Ok(file) => return Some(file),
                         _ => {}
                     }
-                    path.set_extension("png");
+                    path.as_mut_os_string().push(".svg");
                     match File::open(&path) {
                         Ok(file) => return Some(file),
                         _ => {}
