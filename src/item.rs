@@ -1,5 +1,5 @@
 //! Graphical rendering of an [Item]
-use crate::data::{ItemReference, IterationItem, Module, ModuleContext, Value};
+use crate::data::{BarData, ItemReference, IterationItem, Module, ModuleContext, Value};
 use crate::event::EventSink;
 use crate::font::{render_font, render_font_item};
 use crate::icon;
@@ -134,6 +134,7 @@ impl ItemFormat {
 
         let render = Render {
             canvas: &mut *ctx.canvas,
+            damage: ctx.damage.as_deref_mut(),
             align: ctx.align.merge(&align),
             font: font.unwrap_or(&ctx.font),
             font_size: font_size.unwrap_or(ctx.font_size),
@@ -583,8 +584,7 @@ impl Item {
                 left,
                 center,
                 right,
-                tooltips,
-                config: cfg,
+                data: BarData::new(tooltips, cfg),
             },
         }
     }
@@ -785,36 +785,120 @@ impl Item {
                 left,
                 center,
                 right,
+                data,
                 ..
             } => {
+                // Region 0 (bit 0x1) is "entire bar" - set for the outer render of this item and
+                // catches things like bar background changes.
+                //
+                // Region 1 is "left"
+                // Region 2 is "right"
+                // Region 3 is "center"
+                //
+                // A damage rectangle for each region is pushed to the ctx, and the bar rendering
+                // code will filter that list using Bar::damage_regions
+                let interest_region = ctx.runtime.divide_region(4);
                 let clip = ctx.render_extents;
                 let width = clip.1.x - ctx.render_pos.x;
+                let left_size;
+                assert!(interest_region.is_split());
 
-                let mut left_ev = left.render(ctx);
-                let left_size = ctx.render_pos.x.ceil();
-                left_ev.offset_clamp(0.0, 0.0, left_size);
-                rv.merge(left_ev);
+                if let Some(left) = data.saved_left.take() {
+                    left_size = left.2;
+                    ctx.canvas.draw_pixmap(
+                        0,
+                        0,
+                        left.0.as_ref(),
+                        &tiny_skia::PixmapPaint {
+                            blend_mode: tiny_skia::BlendMode::Source,
+                            ..Default::default()
+                        },
+                        Default::default(),
+                        None,
+                    );
 
-                let (right_canvas, (rx, ry), (mut right_ev, right_size)) =
-                    ctx.with_new_canvas_x(Point::zero(), clip.1.x, |group| {
-                        let ev = right.render(group);
-                        (ev, group.render_pos.x.ceil())
-                    });
+                    rv.merge(left.1.clone());
+                    data.saved_left.set(Some(left));
+                } else {
+                    interest_region.set(1);
+                    let mut left_ev = left.render(ctx);
+                    left_size = ctx.render_pos.x.ceil();
+                    left_ev.offset_clamp(0.0, 0.0, left_size);
 
-                let right_offset = clip.1.x - right_size;
+                    data.saved_left.set(
+                        tiny_skia::IntRect::from_xywh(
+                            0,
+                            0,
+                            1.max((left_size * ctx.render_xform.sx) as _),
+                            ctx.canvas.height(),
+                        )
+                        .and_then(|rect| ctx.canvas.as_ref().clone_rect(rect))
+                        .map(|canvas| (canvas, left_ev.clone(), left_size)),
+                    );
+                    rv.merge(left_ev);
 
-                ctx.canvas.draw_pixmap(
-                    (rx + right_offset * ctx.render_xform.sx) as i32,
-                    ry as i32,
-                    right_canvas.as_ref(),
-                    &Default::default(),
-                    Default::default(),
-                    None,
-                );
-                drop(right_canvas);
+                    let damage = ctx.damage.as_mut().unwrap();
+                    let mut pos = ctx.render_pos;
+                    ctx.render_xform.map_point(&mut pos);
+                    damage[1] = [0, 0, pos.x.ceil() as _, pos.y.ceil() as _];
+                }
 
-                right_ev.offset_clamp(right_offset, right_offset, clip.1.x);
-                rv.merge(right_ev);
+                // The right region is drawn on a full-width canvas and then shifted so that its
+                // end position matches the right side of the screen.  This avoids needing to do
+                // things like "render all the text right-to-left" and writing two versions of
+                // every item that renders sub-items.  This does mean that the left and right sides
+                // can overlap - the right side will be drawn over the left if that happens.
+                let right_size;
+                if let Some(right) = data.saved_right.take() {
+                    let mut right_ev = right.1.clone();
+                    right_size = right.2;
+
+                    let right_offset = clip.1.x - right_size;
+                    let rx = (right_offset * ctx.render_xform.sx) as i32;
+                    ctx.canvas.draw_pixmap(
+                        rx,
+                        0,
+                        right.0.as_ref(),
+                        &Default::default(),
+                        Default::default(),
+                        None,
+                    );
+
+                    right_ev.offset_clamp(right_offset, right_offset, clip.1.x);
+                    rv.merge(right_ev);
+
+                    data.saved_right.set(Some(right));
+                } else {
+                    interest_region.set(2);
+                    let (right_canvas, (rx, ry), (mut right_ev, right_pos)) = ctx
+                        .with_new_canvas_x(Point::zero(), clip.1.x, |group| {
+                            let ev = right.render(group);
+                            (ev, group.render_pos)
+                        });
+
+                    right_size = right_pos.x.ceil();
+                    let right_offset = clip.1.x - right_size;
+                    let rx = (rx + right_offset * ctx.render_xform.sx) as i32;
+
+                    let damage = ctx.damage.as_mut().unwrap();
+                    let mut pos = right_pos;
+                    ctx.render_xform.map_point(&mut pos);
+                    damage[2] = [rx, ry as i32, pos.x.ceil() as _, pos.y.ceil() as _];
+
+                    ctx.canvas.draw_pixmap(
+                        rx,
+                        ry as i32,
+                        right_canvas.as_ref(),
+                        &Default::default(),
+                        Default::default(),
+                        None,
+                    );
+                    data.saved_right
+                        .set(Some((right_canvas, right_ev.clone(), right_size)));
+
+                    right_ev.offset_clamp(right_offset, right_offset, clip.1.x);
+                    rv.merge(right_ev);
+                }
 
                 let max_center_width = width - left_size - right_size;
                 ctx.render_pos.x = clip.1.x;
@@ -824,37 +908,91 @@ impl Item {
                     return;
                 }
 
-                let (c_canvas, (cx, cy), (mut cent_ev, cent_size)) =
-                    ctx.with_new_canvas_x(Point::zero(), max_center_width, |group| {
-                        let ev = center.render(group);
-                        (ev, group.render_pos.x.ceil())
-                    });
+                // Given the size of the center item, find where to put the left edge
+                let calc_center = |cent_size| {
+                    let max_side = (width - cent_size) / 2.0;
+                    let total_room = width - (left_size + right_size + cent_size);
+                    if total_room <= 0.0 {
+                        // no gaps at all; just put it at the start of the middle region
+                        left_size
+                    } else if left_size > max_side {
+                        // left side is too long to properly center; put it just to the right of that
+                        left_size
+                    } else if right_size > max_side {
+                        // right side is too long to properly center; put it just to the left of that
+                        width - right_size - cent_size
+                    } else {
+                        // Actually center the center module
+                        max_side
+                    }
+                };
 
-                let max_side = (width - cent_size) / 2.0;
-                let total_room = width - (left_size + right_size + cent_size);
-                let cent_offset;
-                if total_room < 0.0 {
-                    // no gaps at all; just put it at the start of the middle region
-                    cent_offset = left_size;
-                } else if left_size > max_side {
-                    // left side is too long to properly center; put it just to the right of that
-                    cent_offset = left_size;
-                } else if right_size > max_side {
-                    // right side is too long to properly center; put it just to the left of that
-                    cent_offset = clip.1.x - right_size - cent_size;
-                } else {
-                    // Actually center the center module
-                    cent_offset = max_side;
+                match data.saved_center.take() {
+                    // re-render if it wanted to overflow and we now have more room
+                    Some((_, _, saved_max, saved_size))
+                        if saved_size > saved_max && max_center_width > saved_max + 1.0 => {}
+                    // re-render if it would now overflow and we now have less room
+                    Some((_, _, saved_max, saved_size))
+                        if saved_size > max_center_width && max_center_width > saved_max + 1.0 => {}
+                    // otherwise, just re-center and display the saved canvas
+                    Some(center) => {
+                        let cent_offset = calc_center(center.3);
+                        let cx = (cent_offset * ctx.render_xform.sx) as i32;
+                        ctx.canvas.draw_pixmap(
+                            cx,
+                            0,
+                            center.0.as_ref(),
+                            &Default::default(),
+                            Default::default(),
+                            None,
+                        );
+                        ctx.damage.as_mut().unwrap()[3][0] = cx;
+                        let mut cent_ev = center.1.clone();
+                        cent_ev.offset_clamp(cent_offset, cent_offset, cent_offset + center.3);
+                        rv.merge(cent_ev);
+
+                        data.saved_center.set(Some(center));
+                        return;
+                    }
+                    None => {}
                 }
 
+                // The center canvas has its width constrained by the available space
+                interest_region.set(3);
+                let (c_canvas, (cx, cy), (mut cent_ev, cent_pos)) =
+                    ctx.with_new_canvas_x(Point::zero(), max_center_width, |group| {
+                        // Allow percentage widths to work correctly by changing the top-left of
+                        // render_extents to be negative so the total width is still the same
+                        group.render_extents.0.x = group.render_extents.1.x - width;
+                        let ev = center.render(group);
+                        (ev, group.render_pos)
+                    });
+                let cent_size = cent_pos.x.ceil();
+
+                let cent_offset = calc_center(cent_size);
+                let cx = (cx + cent_offset * ctx.render_xform.sx) as i32;
+
+                let damage = ctx.damage.as_mut().unwrap();
+                let mut pos = cent_pos;
+                ctx.render_xform.map_point(&mut pos);
+                damage[3] = [cx, cy as i32, pos.x.ceil() as _, pos.y.ceil() as _];
+
                 ctx.canvas.draw_pixmap(
-                    (cx + cent_offset * ctx.render_xform.sx) as i32,
+                    cx,
                     cy as i32,
                     c_canvas.as_ref(),
                     &Default::default(),
                     Default::default(),
                     None,
                 );
+
+                data.saved_center.set(Some((
+                    c_canvas,
+                    cent_ev.clone(),
+                    max_center_width,
+                    cent_size,
+                )));
+
                 cent_ev.offset_clamp(cent_offset, cent_offset, cent_offset + cent_size);
                 rv.merge(cent_ev);
             }
@@ -1091,7 +1229,7 @@ impl PopupDesc {
         ctx.err_name = "tooltip";
 
         let format = match &ctx.runtime.items["bar"].data {
-            Module::Bar { tooltips, .. } => tooltips,
+            Module::Bar { data, .. } => &data.tooltips,
             _ => return (0, 0),
         };
 

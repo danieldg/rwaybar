@@ -8,10 +8,11 @@ use std::rc::Rc;
 use std::time::Instant;
 use wayland_client::protocol::wl_output::WlOutput;
 
+use crate::data::Module;
 use crate::event::EventSink;
 use crate::item::*;
 use crate::render::Renderer;
-use crate::state::{NotifierList, Runtime};
+use crate::state::{DrawNotifyHandle, InterestMask, Runtime};
 use crate::util::{spawn_noerr, UID};
 use crate::wayland::{Button, Popup, SurfaceData, SurfaceEvents, WaylandClient};
 
@@ -32,6 +33,8 @@ pub struct Bar {
     pub anchor_top: bool,
     click_size: u32,
     sparse: bool,
+    pub damage_regions: u8,
+    pub prev_pixel_regions: [[i32; 4]; 3],
     pub item: Rc<Item>,
     pub cfg_index: usize,
     pub id: UID,
@@ -129,20 +132,77 @@ impl Bar {
             anchor_top,
             sink: EventSink::default(),
             sparse,
+            damage_regions: 0xF,
+            prev_pixel_regions: Default::default(),
             popup: None,
             cfg_index,
             id: UID::new(),
         }
     }
 
-    pub fn render_with(&mut self, runtime: &mut Runtime, renderer: &mut Renderer) {
+    pub fn render_with(
+        &mut self,
+        mask: InterestMask,
+        runtime: &mut Runtime,
+        renderer: &mut Renderer,
+    ) {
+        runtime.set_interest_mask(mask.bar_region(0xF));
         runtime.items.insert("bar".into(), self.item.clone());
 
         let surface_data = SurfaceData::from_wl(self.ls.wl_surface());
         if surface_data.start_render() {
             let surf = self.ls.wl_surface();
             renderer.render(runtime, surf, |ctx| {
-                let new_sink = ctx.runtime.items["bar"].render(ctx);
+                ctx.damage.as_mut().unwrap().extend(self.prev_pixel_regions);
+                match &self.item.data {
+                    Module::Bar { data, .. } => {
+                        if self.damage_regions & 0x2 != 0 {
+                            data.saved_left.set(None);
+                        }
+                        if self.damage_regions & 0x4 != 0 {
+                            data.saved_right.set(None);
+                        }
+                        if self.damage_regions & 0x8 != 0 {
+                            data.saved_center.set(None);
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+                let new_sink = self.item.render(ctx);
+
+                if let Some(damage) = &mut ctx.damage {
+                    let old_damage = self.prev_pixel_regions;
+                    self.prev_pixel_regions = damage[1..].try_into().unwrap();
+
+                    // Region 0 (bit 0x1) is "entire bar": if it's damaged, leave the default
+                    // damage region in.
+                    if self.damage_regions & 0x1 != 0 {
+                        damage.truncate(1);
+                    } else {
+                        damage[0] = [0, 0, 0, 0];
+
+                        // When calculating the damage to send out, we need to consider both the
+                        // areas that are currently used and the areas that were used in the prior
+                        // frame.  Only omit a damage region if it has not moved and its bit in
+                        // damage_regions is unset.
+
+                        let mut r = self.damage_regions;
+                        for (new, old) in damage[1..].iter_mut().zip(old_damage) {
+                            r >>= 1;
+                            if old == *new && (r & 1) == 0 {
+                                *new = [0, 0, 0, 0];
+                            } else {
+                                let x0 = new[0].min(old[0]);
+                                let y0 = new[1].min(old[1]);
+                                let x1 = (new[0] + new[2]).max(old[0] + old[2]);
+                                let y1 = (new[1] + new[3]).max(old[1] + old[3]);
+                                *new = [x0, y0, x1 - x0, y1 - y0];
+                            }
+                        }
+                        // Useful damage regions always have a nonzer width
+                        damage.retain(|r| r[2] != 0);
+                    }
+                }
 
                 if self.sparse {
                     let mut old_regions = Vec::new();
@@ -169,6 +229,7 @@ impl Bar {
                 }
                 self.sink = new_sink;
             });
+            self.damage_regions = 0;
         }
         if let Some(popup) = &mut self.popup {
             if popup.vanish.map_or(false, |vanish| vanish < Instant::now()) {
@@ -186,6 +247,7 @@ impl Bar {
             }
         });
 
+        runtime.set_interest_mask(mask.bar_region(0x10));
         if let Some(popup) = popup {
             if let Some(new_size) =
                 renderer.render(runtime, &popup.wl.surf, |ctx| popup.desc.render_popup(ctx))
@@ -249,10 +311,11 @@ impl SurfaceEvents for Bar {
         if let Some(popup) = &mut self.popup {
             let vanish = Instant::now() + std::time::Duration::from_millis(100);
             popup.vanish = Some(vanish);
-            let mut notify = NotifierList::active(runtime);
+            let notify = DrawNotifyHandle::new(runtime);
             spawn_noerr(async move {
                 tokio::time::sleep_until(vanish.into()).await;
-                notify.notify_data("bar-hover");
+                // A redraw will remove the popup if the vanish deadline has passed
+                notify.notify_draw_only();
             });
         }
     }
@@ -270,10 +333,11 @@ impl SurfaceEvents for BarPopup {
     fn no_hover(&mut self, runtime: &mut Runtime) {
         let vanish = Instant::now() + std::time::Duration::from_millis(100);
         self.vanish = Some(vanish);
-        let mut notify = NotifierList::active(runtime);
+        let notify = DrawNotifyHandle::new(runtime);
         spawn_noerr(async move {
             tokio::time::sleep_until(vanish.into()).await;
-            notify.notify_data("bar-hover");
+            // A redraw will remove the popup if the vanish deadline has passed
+            notify.notify_draw_only();
         });
     }
 

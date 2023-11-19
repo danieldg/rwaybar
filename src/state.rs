@@ -4,6 +4,7 @@ use smithay_client_toolkit::shell::WaylandSurface;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
+use std::iter;
 use std::rc::{self, Rc};
 use std::task;
 use std::time::Instant;
@@ -19,37 +20,102 @@ use crate::render::{RenderCache, Renderer};
 use crate::util::{spawn, spawn_noerr, Cell};
 use crate::wayland::{SurfaceData, WaylandClient};
 
+#[derive(Default, Debug, Copy, Clone, Eq, PartialEq)]
+pub struct InterestMask(u64);
+
+impl InterestMask {
+    pub fn bar_region(&self, region: u64) -> Self {
+        InterestMask(self.0 * region)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Notifier {
     inner: Rc<NotifierInner>,
+    interest: InterestMask,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum NotifyState {
     Idle,
     DrawOnly,
-    NewData,
+    NewData(InterestMask),
 }
 
 #[derive(Debug)]
 struct NotifierInner {
     waker: Cell<Option<task::Waker>>,
     state: Cell<NotifyState>,
-    data_update_seq: Cell<u64>,
 }
 
 impl Notifier {
     pub fn notify_data(&self, who: &str) {
-        debug!("{} triggered refresh", who);
-        self.inner.state.set(NotifyState::NewData);
-        self.inner.waker.take().map(|w| w.wake());
+        debug!(
+            "{} triggered refresh on {}",
+            who,
+            (0..12)
+                .filter_map(|i| {
+                    let v = (self.interest.0 >> (5 * i)) & 0x1F;
+                    if v != 0 {
+                        use std::fmt::Write;
+                        let mut r = String::new();
+                        for (i, c) in b"ALRCP".iter().enumerate() {
+                            if v & (1 << i) != 0 {
+                                r.push(*c as char)
+                            }
+                        }
+                        write!(r, "{i}").unwrap();
+                        Some(r)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let mut interest = self.interest;
+        match self.inner.state.get() {
+            NotifyState::Idle => {
+                self.inner.waker.take().map(|w| w.wake());
+            }
+            NotifyState::DrawOnly => {
+                // already woken, and no added items
+            }
+            NotifyState::NewData(mask) => {
+                interest.0 |= mask.0;
+            }
+        }
+        self.inner.state.set(NotifyState::NewData(interest));
+    }
+}
+
+impl NotifierInner {
+    pub fn notify_draw_only(&self) {
+        if self.state.get() == NotifyState::Idle {
+            self.state.set(NotifyState::DrawOnly);
+            self.waker.take().map(|w| w.wake());
+        }
+    }
+
+    fn full_redraw(&self) {
+        self.waker.take().map(|w| w.wake());
+        self.state.set(NotifyState::NewData(InterestMask(!0)));
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DrawNotifyHandle {
+    inner: Rc<NotifierInner>,
+}
+
+impl DrawNotifyHandle {
+    pub fn new(rt: &Runtime) -> Self {
+        let inner = rt.notify.clone();
+        Self { inner }
     }
 
     pub fn notify_draw_only(&self) {
-        if self.inner.state.get() == NotifyState::Idle {
-            self.inner.state.set(NotifyState::DrawOnly);
-            self.inner.waker.take().map(|w| w.wake());
-        }
+        self.inner.notify_draw_only();
     }
 }
 
@@ -57,36 +123,35 @@ impl Notifier {
 pub struct NotifierList(Option<Notifier>);
 
 impl NotifierList {
-    pub fn active(rt: &Runtime) -> Self {
-        NotifierList(Some(Notifier {
-            inner: rt.notify.inner.clone(),
-        }))
-    }
-
-    pub fn data_update_seq(&self) -> u64 {
-        self.0
-            .as_ref()
-            .map(|n| n.inner.data_update_seq.get())
-            .unwrap_or_default()
-    }
-
     /// Add the currently-rendering bar to this list
     ///
     /// The next call to notify_data will redraw the bar that was rendering when this was called.
     pub fn add(&mut self, rt: &Runtime) {
-        self.0 = Some(Notifier {
-            inner: rt.notify.inner.clone(),
-        });
+        if let Some(notifier) = &mut self.0 {
+            notifier.interest.0 |= rt.interest.get().0;
+        } else {
+            self.0 = Some(Notifier {
+                inner: rt.notify.clone(),
+                interest: rt.interest.get(),
+            });
+        }
     }
 
+    /// Add all the items in `other` to this notifier, so they will also be marked dirty when this
+    /// notifier is used.
     pub fn merge(&mut self, other: &Self) {
-        if self.0.is_none() {
+        if let Some(notifier) = &mut self.0 {
+            if let Some(other) = &other.0 {
+                notifier.interest.0 |= other.interest.0;
+            }
+        } else {
             self.clone_from(other);
         }
     }
 
-    /// Notify the bars in the list, and then remove them until they  Future calls to notify_data
-    /// will do nothing until you add() bars again.
+    /// Mark all items in this notifier list as dirty.
+    ///
+    /// Future calls to notify_data will do nothing until you add() bars again.
     pub fn notify_data(&mut self, who: &str) {
         self.0.take().map(|n| n.notify_data(who));
     }
@@ -101,11 +166,37 @@ pub struct Runtime {
     pub cache: RenderCache,
     pub wayland: WaylandClient,
     item_var: Rc<Item>,
-    notify: Notifier,
+    notify: Rc<NotifierInner>,
+    interest: Cell<InterestMask>,
     read_depth: Cell<u8>,
 }
 
 impl Runtime {
+    pub fn set_interest_mask(&self, mask: InterestMask) {
+        self.interest.set(mask);
+    }
+
+    pub fn divide_region(&self, splits: u8) -> SplitInterest<'_> {
+        let value = self.interest.get().0;
+        let base = if value == 0 {
+            0
+        } else {
+            let shift = value.trailing_zeros();
+            let bits = (1 << splits) - 1;
+            let must_be_set = bits << shift;
+            if value & must_be_set == must_be_set {
+                1 << shift
+            } else {
+                0
+            }
+        };
+        SplitInterest {
+            interest: &self.interest,
+            base,
+            value,
+        }
+    }
+
     pub fn get_recursion_handle(&self) -> Option<impl Sized + '_> {
         let depth = self.read_depth.get();
         if depth > 80 {
@@ -188,6 +279,31 @@ impl Runtime {
     }
 }
 
+#[derive(Debug)]
+pub struct SplitInterest<'a> {
+    interest: &'a Cell<InterestMask>,
+    base: u64,
+    value: u64,
+}
+
+impl SplitInterest<'_> {
+    pub fn set(&self, n: u8) {
+        if self.base != 0 {
+            self.interest.set(InterestMask(self.base << n));
+        }
+    }
+
+    pub fn is_split(&self) -> bool {
+        self.base != 0
+    }
+}
+
+impl Drop for SplitInterest<'_> {
+    fn drop(&mut self) {
+        self.interest.set(InterestMask(self.value))
+    }
+}
+
 /// The singleton global state object
 #[derive(Debug)]
 pub struct State {
@@ -202,8 +318,7 @@ impl State {
     pub fn new(wayland: WaylandClient) -> Result<Rc<RefCell<Self>>, Box<dyn Error>> {
         let notify_inner = Rc::new(NotifierInner {
             waker: Cell::new(None),
-            state: Cell::new(NotifyState::NewData),
-            data_update_seq: Cell::new(1),
+            state: Cell::new(NotifyState::Idle),
         });
         log::debug!("State::new");
 
@@ -217,9 +332,8 @@ impl State {
                 cache: RenderCache::new(),
                 items: Default::default(),
                 item_var: Rc::new(Module::new_current_item().into()),
-                notify: Notifier {
-                    inner: notify_inner.clone(),
-                },
+                notify: notify_inner.clone(),
+                interest: Cell::new(InterestMask(0)),
                 read_depth: Cell::new(0),
                 wayland,
             },
@@ -338,7 +452,7 @@ impl State {
                 v.data.init(k, &self.runtime, None);
             }
         }
-        self.runtime.notify.inner.state.set(NotifyState::NewData);
+        self.runtime.notify.full_redraw();
 
         self.bars.clear();
         for output in self.runtime.wayland.output.outputs() {
@@ -359,7 +473,6 @@ impl State {
                     }
                 }
             }
-            self.runtime.notify.notify_data("reload");
         } else {
             self.set_data();
         }
@@ -367,26 +480,32 @@ impl State {
         Ok(())
     }
 
+    /// Request a redraw of all surfaces that have been damaged and whose rendering is not
+    /// throttled.  This should be called after damaging a surface in some way unrelated to the
+    /// items on the surface, such as by receiving a configure or scale event from the compositor.
     pub fn request_draw(&mut self) {
         self.runtime.notify.notify_draw_only();
     }
 
     fn set_data(&mut self) {
         // Propagate new_data notifications to all bar dirty fields
-        match self.runtime.notify.inner.state.replace(NotifyState::Idle) {
+        let dirty_mask = match self.runtime.notify.state.replace(NotifyState::Idle) {
             NotifyState::Idle => return,
             NotifyState::DrawOnly => return,
-            NotifyState::NewData => {}
-        }
+            NotifyState::NewData(d) => d.0,
+        };
 
-        let seq = self.runtime.notify.inner.data_update_seq.get();
-        self.runtime.notify.inner.data_update_seq.set(seq + 1);
-
-        // A smarter notify could only damage some of the surfaces
-        for bar in &self.bars {
-            SurfaceData::from_wl(bar.ls.wl_surface()).damage_full();
-            if let Some(popup) = &bar.popup {
-                SurfaceData::from_wl(&popup.wl.surf).damage_full();
+        for (i, bar) in (0..11).chain(iter::repeat(11)).zip(&mut self.bars) {
+            let mask = (dirty_mask >> (5 * i)) & 0x1F;
+            if mask & 0xF != 0 {
+                bar.damage_regions |= mask as u8 & 0xF;
+                // TODO split damage left/right/center
+                SurfaceData::from_wl(bar.ls.wl_surface()).damage_full();
+            }
+            if mask & 0x10 != 0 {
+                if let Some(popup) = &bar.popup {
+                    SurfaceData::from_wl(&popup.wl.surf).damage_full();
+                }
             }
         }
     }
@@ -395,9 +514,11 @@ impl State {
         self.set_data();
 
         let begin = Instant::now();
-        for bar in &mut self.bars {
-            bar.render_with(&mut self.runtime, &mut self.renderer);
+        for (i, bar) in (0..11).chain(iter::repeat(11)).zip(&mut self.bars) {
+            let mask = InterestMask(1 << (5 * i));
+            bar.render_with(mask, &mut self.runtime, &mut self.renderer);
         }
+        self.runtime.set_interest_mask(InterestMask(0));
         self.runtime.cache.prune(begin);
         self.runtime.wayland.flush();
         let render_time = begin.elapsed().as_nanos();

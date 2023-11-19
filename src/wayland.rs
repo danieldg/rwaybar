@@ -146,6 +146,13 @@ impl SurfaceData {
         wl.data().unwrap()
     }
 
+    /// The caller intends to start rendering to this surface.
+    ///
+    /// This returns true if the render should happen.  Reasons for returning false include:
+    ///
+    /// * The surface has not been damaged since the last render
+    /// * The surface has not yet been configured
+    /// * Rendering on this surface has been throttled by the compositor
     pub fn start_render(&self) -> bool {
         self.state
             .compare_exchange(
@@ -157,7 +164,10 @@ impl SurfaceData {
             .is_ok()
     }
 
-    /// Returns true if a render should be requested now
+    /// Marks the entire surface as damaged, needing a complete redraw.
+    ///
+    /// Returns true if a render should be requested (this can be used to avoid needless calls to
+    /// [State::request_draw]).
     pub fn damage_full(&self) -> bool {
         let prev = self.state.fetch_or(SurfaceData::DAMAGED, Ordering::Relaxed);
         prev == SurfaceData::NEED_RENDER & !SurfaceData::DAMAGED

@@ -1,6 +1,7 @@
 //! Text expansion and data sources
 #[cfg(feature = "dbus")]
 use crate::dbus::DbusValue;
+use crate::event::EventSink;
 use crate::item::{Item, ItemFormat};
 #[cfg(feature = "dbus")]
 use crate::mpris;
@@ -235,14 +236,14 @@ impl ItemReference {
 pub struct Periodic<T> {
     period: f64,
     shared: Rc<PeriodicInner<T>>,
-    timer: Cell<Option<RemoteHandle<()>>>,
 }
 
 #[derive(Debug)]
 struct PeriodicInner<T> {
     interested: Cell<NotifierList>,
-    last_read: Cell<u64>,
+    was_read: Cell<bool>,
     last_update: Cell<Option<Instant>>,
+    timer: Cell<Option<RemoteHandle<()>>>,
     data: T,
 }
 
@@ -252,15 +253,16 @@ impl<T: 'static> Periodic<T> {
             period,
             shared: Rc::new(PeriodicInner {
                 interested: Cell::default(),
-                last_read: Cell::default(),
+                was_read: Cell::default(),
                 last_update: Cell::default(),
+                timer: Cell::default(),
                 data,
             }),
-            timer: Cell::default(),
         }
     }
 
     pub fn data(&self) -> &T {
+        self.shared.was_read.set(true);
         &self.shared.data
     }
 
@@ -306,12 +308,9 @@ impl<T: 'static> Periodic<T> {
         }
 
         let now = Instant::now();
-        let seq = self.shared.interested.take_in(|notify| {
+        self.shared.interested.take_in(|notify| {
             notify.add(rt);
-            notify.data_update_seq()
         });
-        debug_assert_ne!(seq, 0);
-        self.shared.last_read.set(seq);
         if let Some(last_update) = last_update {
             // Read a new values if we are currently redrawing and it's at least 90% of the
             // deadline.  This avoids waking up several times in a row to update each of a
@@ -343,20 +342,8 @@ impl<T: 'static> Periodic<T> {
                     };
 
                     // Try to avoid reading if nobody is listening.
-                    //
-                    // If someone is actively reading our value, then last_read and interest_seq
-                    // will be equal (since the sequence update and initial draw attempt are in the
-                    // same task, which is not this one).  If last_read has fallen behind, then we
-                    // know that all items that contain our data are already marked dirty, and will
-                    // be refreshed as soon as they become visible (even without our polling there
-                    // to nudge them).  When that happens, the read will notice the value is
-                    // out-of-date and fix that immediately, along with starting a new timer task.
-                    //
-                    // If interest_seq is 0, then nobody has read the value since the last update
-                    // notification that we sent, so the same logic applies.
-                    let interest_seq = shared.interested.take_in(|n| n.data_update_seq());
-
-                    if interest_seq != shared.last_read.get() {
+                    if !shared.was_read.replace(false) {
+                        shared.timer.set(None);
                         return Ok(());
                     }
 
@@ -369,7 +356,7 @@ impl<T: 'static> Periodic<T> {
                 }
             });
             // ensure we only have one task working to update the value
-            self.timer.set(Some(rh));
+            self.shared.timer.set(Some(rh));
         } else if let Some(fut) = fut {
             spawn_noerr(fut);
         }
@@ -383,8 +370,7 @@ pub enum Module {
         left: Rc<Item>,
         center: Rc<Item>,
         right: Rc<Item>,
-        tooltips: ItemFormat,
-        config: toml::Value,
+        data: Box<BarData>,
     },
     Calendar {
         day_fmt: Box<str>,
@@ -408,7 +394,7 @@ pub enum Module {
     Clock {
         format: Box<str>,
         zone: Box<str>,
-        timer: Cell<Option<RemoteHandle<()>>>,
+        state: Rc<ClockState>,
     },
     #[cfg(feature = "dbus")]
     DbusCall {
@@ -517,6 +503,27 @@ pub enum Module {
         value: Cell<Value<'static>>,
         interested: Cell<NotifierList>,
     },
+}
+
+#[derive(Debug)]
+pub struct BarData {
+    pub tooltips: ItemFormat,
+    pub config: toml::Value,
+    pub saved_left: Cell<Option<(tiny_skia::Pixmap, EventSink, f32)>>,
+    pub saved_right: Cell<Option<(tiny_skia::Pixmap, EventSink, f32)>>,
+    pub saved_center: Cell<Option<(tiny_skia::Pixmap, EventSink, f32, f32)>>,
+}
+
+impl BarData {
+    pub fn new(tooltips: ItemFormat, config: toml::Value) -> Box<Self> {
+        Box::new(BarData {
+            tooltips,
+            config,
+            saved_left: Default::default(),
+            saved_center: Default::default(),
+            saved_right: Default::default(),
+        })
+    }
 }
 
 /// Possible contents of the "item" block
@@ -654,7 +661,7 @@ impl Module {
                 Module::Clock {
                     format,
                     zone,
-                    timer: Default::default(),
+                    state: Default::default(),
                 }
             }
             #[cfg(feature = "dbus")]
@@ -1294,7 +1301,7 @@ impl Module {
                 f(Value::Null)
             }
 
-            Module::Bar { config, .. } => match toml_to_string(config.get(key)) {
+            Module::Bar { data, .. } => match toml_to_string(data.config.get(key)) {
                 Some(value) => f(Value::Owned(value)),
                 None => f(Value::Null),
             },
@@ -1386,7 +1393,7 @@ impl Module {
             Module::Clock {
                 format,
                 zone,
-                timer,
+                state,
             } => {
                 let real_format = rt.format_or(&format, &name).into_text();
                 let real_zone = rt.format_or(&zone, &name).into_text();
@@ -1430,12 +1437,7 @@ impl Module {
                     delay = (1_000_000_000 * (60 - sec) + 999_999).checked_sub(subsec);
                 }
                 let wake = inow + delay.map_or(Duration::from_secs(1), Duration::from_nanos);
-                let mut notify = NotifierList::active(rt);
-                timer.set(Some(spawn_handle("Clock tick", async move {
-                    tokio::time::sleep_until(wake.into()).await;
-                    notify.notify_data("clock");
-                    Ok(())
-                })));
+                state.wake_at(wake, rt);
 
                 f(Value::Owned(value))
             }
@@ -1937,6 +1939,32 @@ impl Module {
             }
             _ => (),
         }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ClockState {
+    interested: Cell<NotifierList>,
+    wake: Cell<Option<Instant>>,
+    task: Cell<Option<RemoteHandle<()>>>,
+}
+
+impl ClockState {
+    fn wake_at(self: &Rc<Self>, wake: Instant, rt: &Runtime) {
+        self.interested.take_in(|i| i.add(rt));
+        if matches!(self.wake.get(), Some(time) if time <= wake) {
+            return;
+        }
+
+        let this = self.clone();
+        self.wake.set(Some(wake));
+        self.task.set(Some(spawn_handle("Clock tick", async move {
+            tokio::time::sleep_until(wake.into()).await;
+            this.interested.take().notify_data("clock");
+            this.wake.set(None);
+            this.task.set(None);
+            Ok(())
+        })));
     }
 }
 

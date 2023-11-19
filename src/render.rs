@@ -36,6 +36,7 @@ impl Renderer {
 
         let mut ctx = Render {
             canvas: &mut canvas,
+            damage: None,
             cache: &rt.cache,
             render_extents: (
                 tiny_skia::Point::zero(),
@@ -75,9 +76,16 @@ impl Renderer {
         };
         canvas.fill(tiny_skia::Color::TRANSPARENT);
         let font = &rt.fonts[0];
+        let mut damage = vec![[
+            0,
+            0,
+            surface_data.pixel_width(),
+            surface_data.pixel_height(),
+        ]];
 
         let mut ctx = Render {
             canvas: &mut canvas,
+            damage: Some(&mut damage),
             cache: &rt.cache,
             render_extents: (
                 tiny_skia::Point::zero(),
@@ -102,6 +110,9 @@ impl Renderer {
         let rv = render(&mut ctx);
         finalize(ctx.canvas.data_mut());
         surface.frame(&ctx.runtime.wayland.queue, surface.clone());
+        for [x, y, w, h] in damage {
+            surface.damage_buffer(x, y, w, h);
+        }
         surface.commit();
         Some(rv)
     }
@@ -140,7 +151,6 @@ impl Renderer {
         buffer
             .attach_to(&target)
             .expect("New buffers are not already attached");
-        target.damage_buffer(0, 0, width, height);
 
         (canvas, move |buf| {
             if !has_be_rgba {
@@ -238,6 +248,7 @@ impl RenderCache {
 /// State available to an [Item][crate::item::Item] render function
 pub struct Render<'a, 'c> {
     pub canvas: &'a mut PixmapMut<'c>,
+    pub damage: Option<&'a mut Vec<[i32; 4]>>,
 
     pub cache: &'a RenderCache,
 
@@ -328,6 +339,7 @@ impl Render<'_, '_> {
 
         let rv = f(&mut Render {
             canvas: &mut canvas.as_mut(),
+            damage: None,
             cache: &self.cache,
             render_extents,
             render_xform: self.render_xform,
