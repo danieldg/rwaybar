@@ -152,7 +152,7 @@ impl Renderer {
         })
     }
 
-    fn setup_cursor(&mut self, wl: &WaylandClient) {
+    fn setup_cursor(&mut self, wl: &WaylandClient) -> Result<(), String> {
         let mut scale = 1;
 
         for output in wl.output.outputs() {
@@ -177,9 +177,7 @@ impl Renderer {
         )
         .unwrap();
         let cursor = cursor_theme
-            .get_cursor("default")
-            .expect("Could not load cursor, check XCURSOR_THEME")
-            .clone();
+            .get_cursor("default").ok_or(String::from("Could not load cursor, check XCURSOR_THEME"))?;
 
         let cursor_surf = wl.compositor.create_surface(&wl.queue);
         let cursor_img = &cursor[0];
@@ -191,16 +189,20 @@ impl Renderer {
         cursor_surf.damage_buffer(0, 0, w as _, h as _);
         cursor_surf.commit();
         self.cursor_surf = Some(cursor_surf);
+
+	return Ok(());
     }
 
     pub fn set_cursor(&mut self, wl: &WaylandClient, mouse: &WlPointer, serial: u32) {
-        if self.cursor_surf.is_none() {
-            self.setup_cursor(wl);
-        }
-        if self.cursor_surf.is_some() {
-            let (x, y) = self.cursor_spot;
-            mouse.set_cursor(serial, self.cursor_surf.as_ref(), x, y);
-        }
+	match self.cursor_surf {
+	    Some(_) => {
+		let (x, y) = self.cursor_spot;
+		mouse.set_cursor(serial, self.cursor_surf.as_ref(), x, y);
+	    },
+	    None => {
+		_ = self.setup_cursor(wl);
+	    }
+	}
     }
 }
 
