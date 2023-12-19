@@ -323,6 +323,26 @@ Key | Expanded | Default | Details
 `fallback` | Yes | -- | The string to display if no icon is found
 `tooltip` | Yes | "" | The tooltip to display when hovering over the icon
 
+## list
+
+An item whose value can be selected from a list by actions.  This can be used
+to allow fast switching of things like the timezone for a clock.
+
+Key | Expanded | Default | Details
+----|----------|---------|--------
+`default` | No | 1 | The initial item selected (1 = first).
+`values` | No | -- | A list of values to select from
+`wrap` | No | true | Do adjustments on the list wrap around?
+
+#### Actions
+
+An action should be applied to the item that actually displays the value being
+adjusted by this item, referring to the list object by name.  The message can
+be `+1`, `-1`, `+N`, `-N`, or `=N`.
+
+```toml
+on-click = { send = "name-of-the-list-block", msg = "+1" }
+```
 
 ## meter
 

@@ -452,6 +452,12 @@ pub enum Module {
     ItemReference {
         value: Cell<ItemReference>,
     },
+    List {
+        value: Cell<usize>,
+        choices: Box<[Box<str>]>,
+        interested: Cell<NotifierList>,
+        wrap: bool,
+    },
     #[cfg(feature = "dbus")]
     MediaPlayer2 {
         target: Box<str>,
@@ -813,6 +819,40 @@ impl Module {
                     tooltip,
                 }
             }
+            Some("list") => {
+                let wrap = value
+                    .get("wrap")
+                    .and_then(toml::Value::as_bool)
+                    .unwrap_or(false);
+                if let Some(choices) = value
+                    .get("values")
+                    .and_then(|v| v.as_array())
+                    .map(|v| v.iter().map(toml::Value::as_str))
+                    .into_iter()
+                    .flatten()
+                    .map(|v| v.map(Box::from))
+                    .collect::<Option<Box<[_]>>>()
+                {
+                    if choices.is_empty() {
+                        return Module::parse_error("A list item cannot be empty");
+                    }
+                    let def = match value.get("default").map(toml::Value::as_integer) {
+                        Some(Some(i)) if i >= 1 && i <= choices.len() as _ => i as usize - 1,
+                        None => 0,
+                        _ => {
+                            return Module::parse_error("Invalid default value");
+                        }
+                    };
+                    Module::List {
+                        value: Cell::new(def),
+                        choices,
+                        interested: Default::default(),
+                        wrap,
+                    }
+                } else {
+                    Module::parse_error("A list of values is required")
+                }
+            }
             Some("meter") => {
                 let min = toml_to_string(value.get("min")).unwrap_or_default().into();
                 let max = toml_to_string(value.get("max")).unwrap_or_default().into();
@@ -1134,7 +1174,7 @@ impl Module {
         }
     }
 
-    /// One-time setup, if needed
+    /// One-time setup, if needed, and migration from before a reload
     pub fn init(&self, name: &str, _rt: &Runtime, from: Option<&Self>) {
         match (self, from) {
             (
@@ -1190,6 +1230,15 @@ impl Module {
                             do_exec_json(fd, name.to_owned(), rc),
                         )));
                     }
+                }
+            }
+            (Module::Value { value, .. }, Some(Module::Value { value: cur, .. })) => {
+                value.set(cur.take());
+            }
+            (Module::List { value, choices, .. }, Some(Module::List { value: cur, .. })) => {
+                let i = cur.get();
+                if i < choices.len() {
+                    value.set(i);
                 }
             }
             _ => {}
@@ -1605,6 +1654,17 @@ impl Module {
                 Some(item) => item.data.read_in(name, key, rt, f),
                 None => f(Value::Null),
             }),
+            Module::List {
+                value,
+                choices,
+                interested,
+                ..
+            } => {
+                interested.take_in(|i| i.add(rt));
+                let i = value.get();
+                let v = choices.get(i).unwrap_or(&choices[0]);
+                f(Value::Borrow(v))
+            }
             #[cfg(feature = "dbus")]
             Module::MediaPlayer2 { target } => mpris::read_in(name, target, key, rt, f),
             Module::Meter {
@@ -1777,6 +1837,46 @@ impl Module {
                 Some(IterationItem::Tray(item)) => tray::write(name, item, key, value, rt),
                 None => {}
             }),
+            Module::List {
+                value: v,
+                choices,
+                interested,
+                wrap,
+            } => {
+                let max = choices.len();
+                let prev = v.get();
+                let value = value.into_text();
+                let off = if value.len() == 1 {
+                    Some(1)
+                } else {
+                    value.get(1..).and_then(|v| v.parse::<usize>().ok())
+                };
+                match (value.chars().next(), off) {
+                    (Some('-'), Some(off)) => {
+                        if *wrap {
+                            let off = max - (off % max);
+                            v.set((prev + off) % max);
+                        } else {
+                            v.set(prev.saturating_sub(off));
+                        }
+                    }
+                    (Some('+'), Some(off)) => {
+                        if *wrap {
+                            v.set((prev + off) % max);
+                        } else {
+                            v.set(max.min(prev + off));
+                        }
+                    }
+                    (Some('='), Some(value)) => {
+                        v.set(value.saturating_sub(1) % max);
+                    }
+                    _ => {
+                        warn!("Could not parse offset {value}");
+                        return;
+                    }
+                }
+                interested.take().notify_data("value");
+            }
             #[cfg(feature = "dbus")]
             Module::MediaPlayer2 { target } => mpris::write(name, target, key, value, rt),
             #[cfg(feature = "pulse")]
