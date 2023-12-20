@@ -18,6 +18,14 @@ size = 20
 the-clock-font = "Liberation Sans 20"
 
 [[bar]]
+name = "eDP-1"
+left = "tvl"
+center = "clock"
+right = "tvr"
+size = 20
+the-clock-font = "Liberation Sans 20"
+
+[[bar]]
 name = "WL-1"
 left = "tvl"
 center = "clock"
@@ -416,6 +424,24 @@ format = "⏱"
 # Note: choosing a font explicitly is not required if the default fonts do not
 # contain the requested glyph, but it may be useful in case more than one font
 # defines it.
+
+# Horizontal scrolling on the emoji will move it right or left (by adjusting the padding)
+padding = "0 0 0 {emoji-pad}"
+on-scroll-right = { send = "emoji-pad", format = "{emoji-pad-r}" }
+on-scroll-left = { send = "emoji-pad", format = "{emoji-pad-l}" }
+
+[emoji-pad]
+value = 0
+
+[emoji-pad-l]
+type = 'eval'
+expr = 'max(v - 5, 0)'
+v = '{emoji-pad}'
+
+[emoji-pad-r]
+type = 'eval'
+expr = 'min(v + 5, 200)'
+v = '{emoji-pad}'
 
 [clip]
 #type = 'clipboard'

@@ -160,6 +160,18 @@ impl<'a> Into<JsonValue> for Value<'a> {
     }
 }
 
+impl<'a> From<toml::Value> for Value<'a> {
+    fn from(v: toml::Value) -> Self {
+        match v {
+            toml::Value::String(s) => Value::Owned(s),
+            toml::Value::Integer(n) => Value::Float(n as f64),
+            toml::Value::Float(n) => Value::Float(n),
+            toml::Value::Boolean(b) => Value::Bool(b),
+            _ => Value::Null,
+        }
+    }
+}
+
 impl<'a> From<Cow<'a, str>> for Value<'a> {
     fn from(v: Cow<'a, str>) -> Self {
         match v {
@@ -1093,7 +1105,7 @@ impl Module {
                 }
             }
             Some("value") => {
-                Module::new_value(toml_to_string(value.get("value")).unwrap_or_default())
+                Module::new_value(value.get("value").cloned().map_or(Value::Null, Into::into))
             }
             Some(t) => Module::parse_error(format!("Unknown module type '{t}'")),
             None => {
@@ -1120,8 +1132,8 @@ impl Module {
                         format: format.into(),
                         tooltip,
                     }
-                } else if let Some(value) = toml_to_string(value.get("value")) {
-                    Module::new_value(value)
+                } else if let Some(value) = value.get("value") {
+                    Module::new_value(value.clone())
                 } else {
                     Module::parse_error("The 'type' value is required")
                 }

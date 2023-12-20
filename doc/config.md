@@ -338,10 +338,19 @@ Key | Expanded | Default | Details
 
 An action should be applied to the item that actually displays the value being
 adjusted by this item, referring to the list object by name.  The message can
-be `+1`, `-1`, `+N`, `-N`, or `=N`.
+be `+`, `-`, `+N`, `-N`, or `=N`.
+
+For example
 
 ```toml
 on-click = { send = "name-of-the-list-block", msg = "+1" }
+```
+
+Setting `wrap = false` is best paired with a scroll action:
+
+```toml
+on-scroll-up = { send = "name-of-the-list-block", msg = "+" }
+on-scroll-down = { send = "name-of-the-list-block", msg = "-" }
 ```
 
 ## meter
