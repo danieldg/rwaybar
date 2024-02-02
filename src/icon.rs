@@ -92,14 +92,18 @@ impl OwnedImage {
     }
 
     pub fn from_svg(data: &[u8], height: u32) -> Option<Self> {
-        use usvg::TreeParsing;
-        let tree = usvg::Tree::from_data(data, &usvg::Options::default()).ok()?;
+        use usvg::{TreeParsing, TreePostProc};
+        let mut tree = usvg::Tree::from_data(data, &usvg::Options::default()).ok()?;
+        tree.postprocess(usvg::PostProcessingSteps {
+            convert_text_into_paths: false,
+        });
         let svg_width = tree.size.width();
         let svg_height = tree.size.height();
         let scale = height as f32 / svg_height;
         let width = (svg_width * scale).ceil() as u32;
         let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
-        resvg::Tree::from_usvg(&tree).render(
+        resvg::render(
+            &tree,
             tiny_skia::Transform::from_scale(scale, scale),
             &mut pixmap.as_mut(),
         );
