@@ -29,12 +29,14 @@ pub fn appid_to_icon<'a>(rt: &Runtime, appid: &'a str) -> Value<'a> {
         for dir in rt.xdg.find_data_files("applications") {
             for ent in fs::read_dir(dir).into_iter().flatten() {
                 let Ok(ent) = ent else { continue };
-                if !ent.file_name().into_vec().ends_with(b".desktop") {
+                let filename = ent.file_name().into_vec();
+                let Some(basename) = filename.strip_suffix(b".desktop") else {
                     continue;
-                }
+                };
                 let Ok(file) = fs::File::open(ent.path()) else {
                     continue;
                 };
+                let mut first = std::str::from_utf8(basename).ok();
                 let mut icon = None::<Box<str>>;
                 let mut id = None::<Box<str>>;
                 for line in BufReader::new(file).lines() {
@@ -46,6 +48,9 @@ pub fn appid_to_icon<'a>(rt: &Runtime, appid: &'a str) -> Value<'a> {
                         if name.trim() == "StartupWMClass" {
                             id = Some(value.trim().into());
                         }
+                    }
+                    if icon.is_some() && first.is_some() {
+                        map.insert(first.take().unwrap().into(), icon.clone().unwrap());
                     }
                     if icon.is_some() && id.is_some() {
                         map.insert(id.take().unwrap(), icon.take().unwrap());
