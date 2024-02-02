@@ -188,8 +188,7 @@ impl Renderer {
         .unwrap();
         let cursor = cursor_theme
             .get_cursor("default")
-            .expect("Could not load cursor, check XCURSOR_THEME")
-            .clone();
+            .expect("Could not load cursor, check XCURSOR_THEME");
 
         let cursor_surf = wl.compositor.create_surface(&wl.queue);
         let cursor_img = &cursor[0];
