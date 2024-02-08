@@ -2,6 +2,7 @@ use log::debug;
 use smithay_client_toolkit::compositor::{CompositorState, SurfaceData as SctkSurfaceData};
 use smithay_client_toolkit::output::OutputState;
 use smithay_client_toolkit::registry::{RegistryState, SimpleGlobal};
+use smithay_client_toolkit::seat::pointer::cursor_shape::CursorShapeManager;
 use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
 use smithay_client_toolkit::seat::{self, SeatState};
 use smithay_client_toolkit::shell::wlr_layer::{self as sctk_layer, LayerShell};
@@ -27,6 +28,7 @@ use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::protocol::wl_touch::WlTouch;
 use wayland_client::{Connection, Proxy, QueueHandle};
+use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape::Default as NormalCursor;
 use wayland_protocols::xdg::shell::client::xdg_popup;
 use wayland_protocols::xdg::shell::client::xdg_positioner;
 use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
@@ -63,6 +65,7 @@ pub struct WaylandClient {
     pub output: OutputState,
     pub seat: SeatState,
     pub shm: Shm,
+    pub cursor_shape: Option<CursorShapeManager>,
     pub wlr_dcm: SimpleGlobal<ZwlrDataControlManagerV1, 2>,
     pub xdg: XdgShell,
 
@@ -323,7 +326,7 @@ impl PointerHandler for State {
     fn pointer_frame(
         &mut self,
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         pointer: &WlPointer,
         events: &[PointerEvent],
     ) {
@@ -331,8 +334,14 @@ impl PointerHandler for State {
         for event in events {
             match event.kind {
                 Enter { serial } => {
-                    self.renderer
-                        .set_cursor(&self.runtime.wayland, &pointer, serial);
+                    if let Some(csm) = &self.runtime.wayland.cursor_shape {
+                        let csd = csm.get_shape_device(pointer, qh);
+                        csd.set_shape(serial, NormalCursor);
+                        csd.destroy();
+                    } else {
+                        self.renderer
+                            .set_cursor(&self.runtime.wayland, &pointer, serial);
+                    }
 
                     self.dispatch_surface_event(&event.surface, |surf, rt| {
                         surf.hover(event.position, rt);
@@ -676,6 +685,7 @@ impl WaylandClient {
             seat: SeatState::new(&globals, &queue),
             shm: Shm::bind(&globals, &queue)?,
             layer: LayerShell::bind(&globals, &queue)?,
+            cursor_shape: CursorShapeManager::bind(&globals, &queue).ok(),
             wlr_dcm: SimpleGlobal::bind(&globals, &queue)?,
             xdg: XdgShell::bind(&globals, &queue)?,
 
