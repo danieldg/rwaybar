@@ -1,9 +1,11 @@
 use crate::render::Render;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io;
-use std::path::{Component, PathBuf};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    fs::{self, File},
+    io,
+    path::{Component, PathBuf},
+};
 use tiny_skia::Transform;
 
 thread_local! {

@@ -1,21 +1,23 @@
-use crate::data::{IterationItem, Value};
-use crate::event::EventSink;
-use crate::item::Item;
-use crate::render::{Group, Render};
-use crate::state::NotifierList;
-use crate::state::Runtime;
-use crate::util::{spawn_noerr, Cell};
+use crate::{
+    data::{IterationItem, Value},
+    event::EventSink,
+    item::Item,
+    render::{Group, Render},
+    state::{NotifierList, Runtime},
+    util::{spawn_noerr, Cell},
+};
 use bytes::{Buf, BytesMut};
 use log::{error, warn};
-use std::cell::RefCell;
-use std::cmp::Ordering;
-use std::collections::HashMap;
-use std::fs;
-use std::io::{BufRead, BufReader};
-use std::rc::Rc;
-use std::sync::OnceLock;
-use tokio::net::UnixStream;
-use tokio::sync::Notify;
+use std::{
+    cell::RefCell,
+    cmp::Ordering,
+    collections::HashMap,
+    fs,
+    io::{BufRead, BufReader},
+    rc::Rc,
+    sync::OnceLock,
+};
+use tokio::{net::UnixStream, sync::Notify};
 
 thread_local! {
     static SOCK: RefCell<Option<SwaySocket>> = RefCell::new(None);

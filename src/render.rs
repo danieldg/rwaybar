@@ -1,15 +1,13 @@
-use crate::font::{FontMapped, RenderKey, TextImage};
-use crate::state::Runtime;
-use crate::wayland::{SurfaceData, WaylandClient};
+use crate::{
+    font::{FontMapped, RenderKey, TextImage},
+    state::Runtime,
+    wayland::{SurfaceData, WaylandClient},
+};
 use log::error;
 use smithay_client_toolkit::shm::slot::SlotPool;
-use std::borrow::Cow;
-use std::convert::TryInto;
-use std::time;
+use std::{borrow::Cow, convert::TryInto, time};
 use tiny_skia::PixmapMut;
-use wayland_client::protocol::wl_pointer::WlPointer;
-use wayland_client::protocol::wl_shm::Format;
-use wayland_client::protocol::wl_surface::WlSurface;
+use wayland_client::protocol::{wl_pointer::WlPointer, wl_shm::Format, wl_surface::WlSurface};
 
 #[derive(Debug)]
 pub struct Renderer {

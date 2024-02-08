@@ -1,20 +1,21 @@
-use crate::data::Value;
-use crate::state::{NotifierList, Runtime, State};
-use crate::util::{spawn, Cell};
-use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::rc::{Rc, Weak};
+use crate::{
+    data::Value,
+    state::{NotifierList, Runtime, State},
+    util::{spawn, Cell},
+};
+use std::{
+    cell::RefCell,
+    collections::VecDeque,
+    rc::{Rc, Weak},
+};
 // TODO use std::sync::Mutex;
 use bytes::{Bytes, BytesMut};
 use futures_channel::oneshot;
 use futures_util::future::{select, Either};
-use wayland_client::protocol::wl_seat::WlSeat;
-use wayland_client::Connection;
-use wayland_client::Proxy;
-use wayland_client::QueueHandle;
-use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_device_v1;
-use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_offer_v1::{
-    self, ZwlrDataControlOfferV1,
+use wayland_client::{protocol::wl_seat::WlSeat, Connection, Proxy, QueueHandle};
+use wayland_protocols_wlr::data_control::v1::client::{
+    zwlr_data_control_device_v1,
+    zwlr_data_control_offer_v1::{self, ZwlrDataControlOfferV1},
 };
 
 #[derive(Debug)]

@@ -1,15 +1,14 @@
-use futures_util::future::RemoteHandle;
-use futures_util::FutureExt;
+use futures_util::{future::RemoteHandle, FutureExt};
 use log::error;
-use std::borrow::Cow;
-use std::convert::Infallible;
-use std::error::Error;
-use std::fmt;
-use std::fs;
-use std::future::Future;
-use std::os::unix::io::AsRawFd;
-use std::os::unix::io::RawFd;
-use std::path::PathBuf;
+use std::{
+    borrow::Cow,
+    convert::Infallible,
+    error::Error,
+    fmt, fs,
+    future::Future,
+    os::unix::io::{AsRawFd, RawFd},
+    path::PathBuf,
+};
 
 pub fn toml_to_string(value: Option<&toml::Value>) -> Option<String> {
     value.and_then(|value| {

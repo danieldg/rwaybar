@@ -1,34 +1,36 @@
 //! Text expansion and data sources
 #[cfg(feature = "dbus")]
 use crate::dbus::DbusValue;
-use crate::event::EventSink;
-use crate::item::{Item, ItemFormat};
 #[cfg(feature = "dbus")]
 use crate::mpris;
 #[cfg(feature = "pulse")]
 use crate::pulse;
-use crate::state::NotifierList;
-use crate::state::Runtime;
-use crate::sway;
 #[cfg(feature = "dbus")]
 use crate::tray;
-use crate::util::{glob_expand, spawn_handle, spawn_noerr, toml_to_f64, toml_to_string, Cell, Fd};
-use crate::wlr::ClipboardData;
+use crate::{
+    event::EventSink,
+    item::{Item, ItemFormat},
+    state::{NotifierList, Runtime},
+    sway,
+    util::{glob_expand, spawn_handle, spawn_noerr, toml_to_f64, toml_to_string, Cell, Fd},
+    wlr::ClipboardData,
+};
 use evalexpr::Node as EvalExpr;
 use futures_util::future::RemoteHandle;
 use json::JsonValue;
 use libc;
 use log::{debug, error, info, warn};
-use std::borrow::Cow;
-use std::fmt;
-use std::fs;
-use std::future::Future;
-use std::io;
-use std::io::Write;
-use std::os::unix::io::{AsRawFd, IntoRawFd};
-use std::process::{ChildStdin, Command, Stdio};
-use std::rc::{Rc, Weak};
-use std::time::{Duration, Instant};
+use std::{
+    borrow::Cow,
+    fmt, fs,
+    future::Future,
+    io,
+    io::Write,
+    os::unix::io::{AsRawFd, IntoRawFd},
+    process::{ChildStdin, Command, Stdio},
+    rc::{Rc, Weak},
+    time::{Duration, Instant},
+};
 use tokio::io::unix::AsyncFd;
 
 /// The result of a data source or text expansion
@@ -1312,8 +1314,7 @@ impl Module {
                 zone,
                 monday,
             } => {
-                use chrono::Datelike;
-                use chrono::Duration;
+                use chrono::{Datelike, Duration};
                 use std::fmt::Write;
                 let real_zone = rt.format_or(&zone, &name).into_text();
                 let now = match real_zone.parse::<chrono_tz::Tz>() {
@@ -1356,8 +1357,7 @@ impl Module {
                 future,
                 monday,
             } => {
-                use chrono::Datelike;
-                use chrono::Duration;
+                use chrono::{Datelike, Duration};
                 use std::fmt::Write;
                 let real_zone = rt.format_or(&zone, &name).into_text();
                 let now = match real_zone.parse::<chrono_tz::Tz>() {

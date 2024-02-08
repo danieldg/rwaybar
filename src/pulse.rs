@@ -1,17 +1,23 @@
-use crate::data::{IterationItem, Value};
-use crate::state::NotifierList;
-use crate::state::Runtime;
-use crate::util::{self, Cell};
-use libpulse_binding::callbacks::ListResult;
-use libpulse_binding::context::introspect::{
-    ClientInfo, Introspector, SinkInfo, SinkInputInfo, SourceInfo, SourceOutputInfo,
+use crate::{
+    data::{IterationItem, Value},
+    state::{NotifierList, Runtime},
+    util::{self, Cell},
 };
-use libpulse_binding::context::subscribe::{Facility, Operation};
-use libpulse_binding::context::{self, Context};
-use libpulse_binding::def::DevicePortType;
-use libpulse_binding::error::PAErr;
-use libpulse_binding::proplist;
-use libpulse_binding::volume::{ChannelVolumes, Volume};
+use libpulse_binding::{
+    callbacks::ListResult,
+    context::{
+        self,
+        introspect::{
+            ClientInfo, Introspector, SinkInfo, SinkInputInfo, SourceInfo, SourceOutputInfo,
+        },
+        subscribe::{Facility, Operation},
+        Context,
+    },
+    def::DevicePortType,
+    error::PAErr,
+    proplist,
+    volume::{ChannelVolumes, Volume},
+};
 use libpulse_tokio::TokioMain;
 use log::{debug, error, info, warn};
 use once_cell::unsync::OnceCell;

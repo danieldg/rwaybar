@@ -1,13 +1,6 @@
-use crate::icon::OwnedImage;
-use crate::item::Formatting;
-use crate::render::Render;
-use crate::state::Runtime;
-use crate::util::UID;
+use crate::{icon::OwnedImage, item::Formatting, render::Render, state::Runtime, util::UID};
 use log::info;
-use std::fs::File;
-use std::io;
-use std::path::PathBuf;
-use std::time::Instant;
+use std::{fs::File, io, path::PathBuf, time::Instant};
 use tiny_skia::{Color, Point, Transform};
 use ttf_parser::{Face, GlyphId};
 

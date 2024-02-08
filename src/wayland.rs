@@ -1,41 +1,55 @@
 use log::debug;
-use smithay_client_toolkit::compositor::{CompositorState, SurfaceData as SctkSurfaceData};
-use smithay_client_toolkit::output::OutputState;
-use smithay_client_toolkit::registry::{RegistryState, SimpleGlobal};
-use smithay_client_toolkit::seat::pointer::cursor_shape::CursorShapeManager;
-use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
-use smithay_client_toolkit::seat::{self, SeatState};
-use smithay_client_toolkit::shell::wlr_layer::{self as sctk_layer, LayerShell};
-use smithay_client_toolkit::shell::xdg::window as xdg_window;
-use smithay_client_toolkit::shell::xdg::{popup, XdgPositioner, XdgShell};
-use smithay_client_toolkit::shell::WaylandSurface;
-use smithay_client_toolkit::shm::Shm;
-use std::cell::RefCell;
-use std::convert::Infallible;
-use std::error::Error;
-use std::io;
-use std::rc::Rc;
-use std::sync::{
-    atomic::{AtomicU32, AtomicU8, Ordering},
-    Arc, Mutex,
+use smithay_client_toolkit::{
+    compositor::{CompositorState, SurfaceData as SctkSurfaceData},
+    output::OutputState,
+    registry::{RegistryState, SimpleGlobal},
+    seat::{
+        self,
+        pointer::{
+            cursor_shape::CursorShapeManager, PointerEvent, PointerEventKind, PointerHandler,
+        },
+        SeatState,
+    },
+    shell::{
+        wlr_layer::{self as sctk_layer, LayerShell},
+        xdg::{popup, window as xdg_window, XdgPositioner, XdgShell},
+        WaylandSurface,
+    },
+    shm::Shm,
 };
-use tokio::io::unix::AsyncFd;
-use tokio::sync::Notify;
-use wayland_client::backend::WaylandError;
-use wayland_client::protocol::wl_output::WlOutput;
-use wayland_client::protocol::wl_pointer::WlPointer;
-use wayland_client::protocol::wl_seat::WlSeat;
-use wayland_client::protocol::wl_surface::WlSurface;
-use wayland_client::protocol::wl_touch::WlTouch;
-use wayland_client::{Connection, Proxy, QueueHandle};
-use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape::Default as NormalCursor;
-use wayland_protocols::xdg::shell::client::xdg_popup;
-use wayland_protocols::xdg::shell::client::xdg_positioner;
-use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
-use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
+use std::{
+    cell::RefCell,
+    convert::Infallible,
+    error::Error,
+    io,
+    rc::Rc,
+    sync::{
+        atomic::{AtomicU32, AtomicU8, Ordering},
+        Arc, Mutex,
+    },
+};
+use tokio::{io::unix::AsyncFd, sync::Notify};
+use wayland_client::{
+    backend::WaylandError,
+    protocol::{
+        wl_output::WlOutput, wl_pointer::WlPointer, wl_seat::WlSeat, wl_surface::WlSurface,
+        wl_touch::WlTouch,
+    },
+    Connection, Proxy, QueueHandle,
+};
+use wayland_protocols::{
+    wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape::Default as NormalCursor,
+    xdg::shell::client::{xdg_popup, xdg_positioner},
+};
+use wayland_protocols_wlr::{
+    data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1,
+    layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+};
 
-use crate::state::{OutputsReadyCallback, Runtime, State};
-use crate::util;
+use crate::{
+    state::{OutputsReadyCallback, Runtime, State},
+    util,
+};
 
 #[repr(u32)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -56,7 +70,7 @@ pub enum Button {
 /// Structures related to the Wayland display
 #[derive(Debug)]
 pub struct WaylandClient {
-    pub conn: wayland_client::Connection,
+    pub conn: Connection,
     pub queue: QueueHandle<State>,
     pub registry: RegistryState,
 
@@ -76,7 +90,7 @@ pub struct WaylandClient {
 
 #[derive(Debug)]
 struct WaylandIO {
-    conn: wayland_client::Connection,
+    conn: Connection,
     flush: Notify,
     fd: AsyncFd<util::Fd>,
 }
@@ -219,7 +233,7 @@ impl smithay_client_toolkit::compositor::CompositorHandler for State {
     }
     fn transform_changed(
         &mut self,
-        _: &wayland_client::Connection,
+        _: &Connection,
         _: &QueueHandle<Self>,
         _: &WlSurface,
         _: wayland_client::protocol::wl_output::Transform,
@@ -267,16 +281,10 @@ impl smithay_client_toolkit::shm::ShmHandler for State {
 }
 
 impl smithay_client_toolkit::shell::xdg::window::WindowHandler for State {
-    fn request_close(
-        &mut self,
-        _: &wayland_client::Connection,
-        _: &QueueHandle<Self>,
-        _: &xdg_window::Window,
-    ) {
-    }
+    fn request_close(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &xdg_window::Window) {}
     fn configure(
         &mut self,
-        _: &wayland_client::Connection,
+        _: &Connection,
         _: &QueueHandle<Self>,
         _: &xdg_window::Window,
         _: xdg_window::WindowConfigure,
@@ -659,7 +667,7 @@ pub trait SurfaceEvents {
 impl WaylandClient {
     pub fn new() -> Result<(Self, wayland_client::EventQueue<State>), Box<dyn Error>> {
         use std::os::fd::AsRawFd;
-        let conn = wayland_client::Connection::connect_to_env()?;
+        let conn = Connection::connect_to_env()?;
 
         let (globals, wl_queue) = wayland_client::globals::registry_queue_init::<State>(&conn)?;
         let queue = wl_queue.handle();
@@ -815,7 +823,7 @@ impl Popup {
         size: (i32, i32),
     ) -> Popup {
         match bar.ls.kind() {
-            smithay_client_toolkit::shell::wlr_layer::SurfaceKind::Wlr(ls) => {
+            sctk_layer::SurfaceKind::Wlr(ls) => {
                 let scale = bar
                     .ls
                     .wl_surface()

@@ -1,19 +1,14 @@
-use crate::data::{IterationItem, Value};
-use crate::dbus::DBus;
-use crate::state::{NotifierList, Runtime};
-use crate::util::{self, Cell};
+use crate::{
+    data::{IterationItem, Value},
+    dbus::DBus,
+    state::{NotifierList, Runtime},
+    util::{self, Cell},
+};
 use log::{debug, error, warn};
 use once_cell::unsync::OnceCell;
-use std::collections::HashMap;
-use std::convert::TryInto;
-use std::error::Error;
-use std::rc::Rc;
-use zbus::dbus_proxy;
-use zbus::fdo::DBusProxy;
-use zbus::names::BusName;
-use zbus::zvariant;
-use zvariant::Value as Variant;
-use zvariant::{Dict, OwnedValue};
+use std::{collections::HashMap, convert::TryInto, error::Error, rc::Rc};
+use zbus::{dbus_proxy, fdo::DBusProxy, names::BusName, zvariant};
+use zvariant::{Dict, OwnedValue, Value as Variant};
 
 #[dbus_proxy(interface = "org.mpris.MediaPlayer2", assume_defaults = true)]
 trait MediaPlayer2 {

@@ -1,24 +1,29 @@
 use futures_util::future::poll_fn;
 use log::{debug, error, info, warn};
 use smithay_client_toolkit::shell::WaylandSurface;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::error::Error;
-use std::iter;
-use std::rc::{self, Rc};
-use std::task;
-use std::time::Instant;
-use wayland_client::protocol::wl_callback;
-use wayland_client::protocol::wl_output::WlOutput;
-use wayland_client::Connection;
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    error::Error,
+    iter,
+    rc::{self, Rc},
+    task,
+    time::Instant,
+};
+use wayland_client::{
+    protocol::{wl_callback, wl_output::WlOutput},
+    Connection,
+};
 
-use crate::bar::Bar;
-use crate::data::{IterationItem, Module, Value};
-use crate::font::FontMapped;
-use crate::item::*;
-use crate::render::{RenderCache, Renderer};
-use crate::util::{spawn, spawn_noerr, Cell};
-use crate::wayland::{SurfaceData, WaylandClient};
+use crate::{
+    bar::Bar,
+    data::{IterationItem, Module, Value},
+    font::FontMapped,
+    item::*,
+    render::{RenderCache, Renderer},
+    util::{spawn, spawn_noerr, Cell},
+    wayland::{SurfaceData, WaylandClient},
+};
 
 #[derive(Default, Debug, Copy, Clone, Eq, PartialEq)]
 pub struct InterestMask(u64);

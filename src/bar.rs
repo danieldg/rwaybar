@@ -1,20 +1,24 @@
 use log::error;
-use smithay_client_toolkit::compositor::Region;
-use smithay_client_toolkit::output::OutputInfo;
-use smithay_client_toolkit::shell::wlr_layer::{Anchor, Layer, LayerSurface};
-use smithay_client_toolkit::shell::WaylandSurface;
-use std::convert::TryInto;
-use std::rc::Rc;
-use std::time::Instant;
+use smithay_client_toolkit::{
+    compositor::Region,
+    output::OutputInfo,
+    shell::{
+        wlr_layer::{Anchor, Layer, LayerSurface},
+        WaylandSurface,
+    },
+};
+use std::{convert::TryInto, rc::Rc, time::Instant};
 use wayland_client::protocol::wl_output::WlOutput;
 
-use crate::data::Module;
-use crate::event::EventSink;
-use crate::item::*;
-use crate::render::Renderer;
-use crate::state::{DrawNotifyHandle, InterestMask, Runtime};
-use crate::util::{spawn_noerr, UID};
-use crate::wayland::{Button, Popup, SurfaceData, SurfaceEvents, WaylandClient};
+use crate::{
+    data::Module,
+    event::EventSink,
+    item::*,
+    render::Renderer,
+    state::{DrawNotifyHandle, InterestMask, Runtime},
+    util::{spawn_noerr, UID},
+    wayland::{Button, Popup, SurfaceData, SurfaceEvents, WaylandClient},
+};
 
 #[derive(Debug)]
 pub struct BarPopup {

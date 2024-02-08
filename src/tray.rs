@@ -1,29 +1,28 @@
-use crate::data::{IterationItem, Value};
-use crate::dbus::DBus;
-use crate::event::EventSink;
-use crate::font::render_font;
-use crate::item::{Item, PopupDesc};
-use crate::render::Render;
-use crate::state::{NotifierList, Runtime};
-use crate::util::{spawn, spawn_handle, Cell};
-use crate::wayland::Button;
+use crate::{
+    data::{IterationItem, Value},
+    dbus::DBus,
+    event::EventSink,
+    font::render_font,
+    item::{Item, PopupDesc},
+    render::Render,
+    state::{NotifierList, Runtime},
+    util::{spawn, spawn_handle, Cell},
+    wayland::Button,
+};
 use async_once_cell::OnceCell as AsyncOnceCell;
 use futures_util::future::RemoteHandle;
 use log::{debug, warn};
 use once_cell::unsync::OnceCell;
-use std::collections::HashMap;
-use std::convert::TryInto;
-use std::error::Error;
-use std::mem::ManuallyDrop;
-use std::rc::Rc;
-use std::time::Instant;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use zbus::dbus_proxy;
-use zbus::fdo;
-use zbus::fdo::DBusProxy;
-use zbus::zvariant;
-use zvariant::OwnedValue;
-use zvariant::Value as Variant;
+use std::{
+    collections::HashMap,
+    convert::TryInto,
+    error::Error,
+    mem::ManuallyDrop,
+    rc::Rc,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+use zbus::{dbus_proxy, fdo, fdo::DBusProxy, zvariant};
+use zvariant::{OwnedValue, Value as Variant};
 
 #[dbus_proxy(interface = "com.canonical.dbusmenu", assume_defaults = true)]
 trait DBusMenu {

@@ -1,16 +1,17 @@
 //! Graphical rendering of an [Item]
-use crate::data::{BarData, ItemReference, IterationItem, Module, ModuleContext, Value};
-use crate::event::EventSink;
-use crate::font::{render_font, render_font_item};
-use crate::icon;
-use crate::render::{Align, Render, Width};
-use crate::state::Runtime;
 #[cfg(feature = "dbus")]
 use crate::tray;
-use crate::wayland::Button;
+use crate::{
+    data::{BarData, ItemReference, IterationItem, Module, ModuleContext, Value},
+    event::EventSink,
+    font::{render_font, render_font_item},
+    icon,
+    render::{Align, Render, Width},
+    state::Runtime,
+    wayland::Button,
+};
 use log::{debug, error, warn};
-use std::borrow::Cow;
-use std::rc::Rc;
+use std::{borrow::Cow, rc::Rc};
 use tiny_skia::{Color, Point};
 
 /// A visible item in a bar

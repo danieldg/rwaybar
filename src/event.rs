@@ -1,13 +1,9 @@
 //! Event handling (click, scroll)
-use crate::data::IterationItem;
-use crate::item::PopupDesc;
-use crate::state::Runtime;
 #[cfg(feature = "dbus")]
 use crate::tray;
-use crate::wayland::Button;
+use crate::{data::IterationItem, item::PopupDesc, state::Runtime, wayland::Button};
 use log::{error, info};
-use std::process::Command;
-use std::rc::Rc;
+use std::{process::Command, rc::Rc};
 
 /// A single click action associated with the area that activates it
 #[derive(Debug, Clone)]

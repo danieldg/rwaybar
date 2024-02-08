@@ -1,29 +1,20 @@
-use crate::data::Value;
-use crate::state::NotifierList;
-use crate::state::Runtime;
-use crate::util;
-use crate::util::{spawn_noerr, Cell};
+use crate::{
+    data::Value,
+    state::{NotifierList, Runtime},
+    util,
+    util::{spawn_noerr, Cell},
+};
 use futures_channel::mpsc::{self, UnboundedSender};
-use futures_util::future::RemoteHandle;
-use futures_util::StreamExt;
+use futures_util::{future::RemoteHandle, StreamExt};
 use log::{error, info, warn};
 use once_cell::unsync::OnceCell;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::fmt;
-use std::io;
-use std::os::unix::prelude::RawFd;
-use std::pin::Pin;
-use std::ptr::NonNull;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::task;
+use std::{
+    cell::RefCell, collections::HashMap, fmt, io, os::unix::prelude::RawFd, pin::Pin, ptr::NonNull,
+    rc::Rc, sync::Arc, task,
+};
 use tokio::net::UnixStream;
-use zbus::names::BusName;
-use zbus::zvariant;
-use zbus::{Connection, ConnectionBuilder, MessageStream};
-use zvariant::OwnedValue;
-use zvariant::Value as Variant;
+use zbus::{names::BusName, zvariant, Connection, ConnectionBuilder, MessageStream};
+use zvariant::{OwnedValue, Value as Variant};
 
 pub struct DBus {
     send: UnboundedSender<zbus::Message>,
