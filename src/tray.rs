@@ -2,7 +2,7 @@ use crate::{
     data::{IterationItem, Value},
     dbus::DBus,
     event::EventSink,
-    font::render_font,
+    font::render_font_item,
     item::{Item, PopupDesc},
     render::Render,
     state::{NotifierList, Runtime},
@@ -919,24 +919,19 @@ impl TrayPopup {
         let rendered_ids = &mut self.rendered_ids;
         rendered_ids.clear();
 
-        let line_paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::WHITE),
-            ..Default::default()
-        };
-
         let xbase = ctx.render_pos.x;
 
-        let (mut xsize, ysize) = render_font(ctx, self.title.as_deref().unwrap_or_default(), false);
-        xsize += xbase;
-        ctx.render_pos.y += ysize;
+        render_font_item(ctx, self.title.as_deref().unwrap_or_default(), false);
+
+        let mut xsize = ctx.render_pos.x;
+        ctx.render_pos.x = xbase;
 
         if let Some(tooltip) = self.tooltip.as_ref() {
             if !tooltip.is_empty() {
                 ctx.render_pos.x += 8.0;
-                let tsize = render_font(ctx, &tooltip, true);
-                xsize = xsize.max(tsize.0 + ctx.render_pos.x);
+                render_font_item(ctx, &tooltip, true);
+                xsize = xsize.max(ctx.render_pos.x);
                 ctx.render_pos.x = xbase;
-                ctx.render_pos.y += tsize.1.ceil();
             }
         }
 
@@ -962,8 +957,7 @@ impl TrayPopup {
                 if let Some(rect) =
                     tiny_skia::Rect::from_xywh(xbase, ctx.render_pos.y + 4.0, width - xbase, 2.0)
                 {
-                    ctx.canvas
-                        .fill_rect(rect, &line_paint, ctx.render_xform, None);
+                    ctx.queue.push_rect(rect, tiny_skia::Color::WHITE);
                 }
 
                 ctx.render_pos.y += 9.0;
@@ -980,16 +974,15 @@ impl TrayPopup {
                         width - indent - 5.0,
                         1.0,
                     ) {
-                        ctx.canvas
-                            .fill_rect(rect, &line_paint, ctx.render_xform, None);
+                        ctx.queue.push_rect(rect, tiny_skia::Color::WHITE);
                     }
 
                     ctx.render_pos.y += 7.0;
                 } else {
                     ctx.render_pos.x = indent;
-                    let tsize = render_font(ctx, &item.label, false);
-                    let end = ctx.render_pos.y + tsize.1.ceil();
-                    xsize = xsize.max(indent + tsize.0);
+                    render_font_item(ctx, &item.label, false);
+                    let end = ctx.render_pos.y;
+                    xsize = xsize.max(ctx.render_pos.x);
                     rendered_ids.push((ctx.render_pos.y, end, item.id));
                     ctx.render_pos.y = end + 5.0;
                 }

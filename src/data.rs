@@ -8,7 +8,6 @@ use crate::pulse;
 #[cfg(feature = "dbus")]
 use crate::tray;
 use crate::{
-    event::EventSink,
     item::{Item, ItemFormat},
     state::{NotifierList, Runtime},
     sway,
@@ -511,20 +510,11 @@ pub enum Module {
 pub struct BarData {
     pub tooltips: ItemFormat,
     pub config: toml::Value,
-    pub saved_left: Cell<Option<(tiny_skia::Pixmap, EventSink, f32)>>,
-    pub saved_right: Cell<Option<(tiny_skia::Pixmap, EventSink, f32)>>,
-    pub saved_center: Cell<Option<(tiny_skia::Pixmap, EventSink, f32, f32)>>,
 }
 
 impl BarData {
     pub fn new(tooltips: ItemFormat, config: toml::Value) -> Box<Self> {
-        Box::new(BarData {
-            tooltips,
-            config,
-            saved_left: Default::default(),
-            saved_center: Default::default(),
-            saved_right: Default::default(),
-        })
+        Box::new(BarData { tooltips, config })
     }
 }
 

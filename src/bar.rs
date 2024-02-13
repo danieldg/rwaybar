@@ -11,10 +11,9 @@ use std::{convert::TryInto, rc::Rc, time::Instant};
 use wayland_client::protocol::wl_output::WlOutput;
 
 use crate::{
-    data::Module,
     event::EventSink,
     item::*,
-    render::Renderer,
+    render::{RenderSurface, Renderer},
     state::{DrawNotifyHandle, InterestMask, Runtime},
     util::{spawn_noerr, UID},
     wayland::{Button, Popup, SurfaceData, SurfaceEvents, WaylandClient},
@@ -42,6 +41,9 @@ pub struct Bar {
     pub item: Rc<Item>,
     pub cfg_index: usize,
     pub id: UID,
+
+    #[allow(unused)]
+    render: RenderSurface,
 }
 
 impl Bar {
@@ -129,6 +131,7 @@ impl Bar {
         ls.wl_surface().commit();
 
         Bar {
+            render: RenderSurface::new(),
             name: output_data.name.clone().unwrap_or_default().into(),
             ls,
             item: Rc::new(Item::new_bar(cfg)),
@@ -154,24 +157,11 @@ impl Bar {
         runtime.items.insert("bar".into(), self.item.clone());
 
         let surface_data = SurfaceData::from_wl(self.ls.wl_surface());
+
         if surface_data.start_render() {
             let surf = self.ls.wl_surface();
             renderer.render(runtime, surf, |ctx| {
                 ctx.damage.as_mut().unwrap().extend(self.prev_pixel_regions);
-                match &self.item.data {
-                    Module::Bar { data, .. } => {
-                        if self.damage_regions & 0x2 != 0 {
-                            data.saved_left.set(None);
-                        }
-                        if self.damage_regions & 0x4 != 0 {
-                            data.saved_right.set(None);
-                        }
-                        if self.damage_regions & 0x8 != 0 {
-                            data.saved_center.set(None);
-                        }
-                    }
-                    _ => unreachable!(),
-                }
                 let new_sink = self.item.render(ctx);
 
                 if let Some(damage) = &mut ctx.damage {
@@ -235,6 +225,7 @@ impl Bar {
             });
             self.damage_regions = 0;
         }
+
         if let Some(popup) = &mut self.popup {
             if popup.vanish.map_or(false, |vanish| vanish < Instant::now()) {
                 self.popup = None;

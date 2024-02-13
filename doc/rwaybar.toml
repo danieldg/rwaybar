@@ -1,6 +1,6 @@
 # Bars are defined as an array, so you can have more than one
 [[bar]]
-name = "DP-1"
+name = "DP-3"
 left = "dpl"
 right = "dpr"
 size = 40
@@ -70,7 +70,7 @@ type = "group"
 fg = "white"
 bg = "black"
 bg-alpha = 0.3
-items = ["clock", "mode", "workspaces"]
+items = ["clock", "mode", "workspaces", "workspaces-repr"]
 
 [time_fmt]
 # type='value' is implied if the only key is 'value'

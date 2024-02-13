@@ -1,6 +1,6 @@
 use crate::{icon::OwnedImage, item::Formatting, render::Render, state::Runtime, util::UID};
 use log::info;
-use std::{fs::File, io, path::PathBuf, time::Instant};
+use std::{fs::File, io, path::PathBuf, sync::Arc, time::Instant};
 use tiny_skia::{Color, Point, Transform};
 use ttf_parser::{Face, GlyphId};
 
@@ -247,51 +247,17 @@ static HQ_PIXMAP_PAINT: tiny_skia::PixmapPaint = tiny_skia::PixmapPaint {
     quality: tiny_skia::FilterQuality::Bicubic,
 };
 
-pub fn render_font(ctx: &mut Render, text: &str, markup: bool) -> (f32, f32) {
-    let (mut to_draw, size) = layout_font(
-        ctx.font,
-        ctx.font_size,
-        ctx.runtime,
-        ctx.font_color,
-        text,
-        markup,
-    );
-    let clip_w = ctx.render_extents.1.x - ctx.render_pos.x;
-    if size.1 > clip_w {
-        to_draw.retain(|glyph| glyph.position.0 < clip_w);
-    }
-    let xform = ctx
-        .render_xform
-        .pre_translate(ctx.render_pos.x, ctx.render_pos.y);
-    draw_font_with(
-        ctx.canvas,
-        xform,
-        &to_draw,
-        |canvas, path, color| {
-            let paint = tiny_skia::Paint {
-                shader: tiny_skia::Shader::SolidColor(color),
-                anti_alias: true,
-                ..tiny_skia::Paint::default()
-            };
-            canvas.fill_path(
-                &path,
-                &paint,
-                tiny_skia::FillRule::EvenOdd,
-                Transform::identity(),
-                None,
-            );
-        },
-        |canvas, xform, img| {
-            canvas.draw_pixmap(0, 0, img.0.as_ref(), &HQ_PIXMAP_PAINT, xform, None);
-        },
-    );
-    size
+const SUBPIXEL_KEYS: f32 = 8.0;
+fn get_subpixel_key(x: f32) -> u8 {
+    let frac = x - x.floor();
+    let idx = frac * SUBPIXEL_KEYS;
+    idx.floor() as u8
 }
 
 #[derive(Eq, Hash, PartialEq, Debug)]
 pub struct RenderKey {
-    x_offset_centipixel: u8,
-    y_offset_centipixel: u8,
+    x_offset_subpix: u8,
+    y_offset_subpix: u8,
     scale: u8,
 
     font: UID,
@@ -312,8 +278,8 @@ const PIXMAP_MARGIN: i32 = 5;
 pub struct TextImage {
     width: f32,
     height: f32,
-    y_offset_centipixel: u8,
-    pixmap: tiny_skia::Pixmap,
+    y_offset_subpix: u8,
+    pixmap: Arc<tiny_skia::Pixmap>,
     pub last_used: Instant,
 }
 
@@ -324,8 +290,8 @@ fn to_color_u32(color: Color) -> u32 {
 
 impl RenderKey {
     fn new(ctx: &Render, xform: tiny_skia::Transform, text: &str) -> Option<Self> {
-        let xi = (xform.tx * 100.0).round() as u64 % 100;
-        let yi = (xform.tx * 100.0).round() as u64 % 100;
+        let xi = get_subpixel_key(xform.tx);
+        let yi = get_subpixel_key(xform.ty);
         let scale = xform.sx as u8;
         if scale as f32 != xform.sy || xform.sx != xform.sy {
             return None;
@@ -334,8 +300,8 @@ impl RenderKey {
             .text_stroke
             .and_then(|_| ctx.text_stroke_size.map(|s| (s * 1000.0).round() as u32));
         Some(RenderKey {
-            x_offset_centipixel: xi as u8,
-            y_offset_centipixel: yi as u8,
+            x_offset_subpix: xi,
+            y_offset_subpix: yi,
             scale,
             font: ctx.font.uid,
             font_size_millipt: (ctx.font_size * 1000.0).round() as u32,
@@ -359,19 +325,21 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         y: ystart,
     } = ctx.render_pos;
 
-    let mut xform = ctx.render_xform.pre_translate(xstart, ystart);
+    let mut xform = Transform::from_scale(ctx.scale, ctx.scale).pre_translate(xstart, ystart);
 
     let clip_w = ctx.render_extents.1.x - ctx.render_pos.x;
     let clip_h = ctx.render_extents.1.y - ctx.render_extents.0.y;
 
-    let mut key = RenderKey::new(ctx, xform, text);
+    let mut key = None;
+    if ctx.queue.cache.is_some() {
+        key = RenderKey::new(ctx, xform, text);
+    }
 
     if key
         .as_ref()
         .and_then(|k| {
             let mut xform = xform;
-            let mut cache = ctx.cache.text.borrow_mut();
-            let ti = cache.get_mut(k)?;
+            let ti = ctx.queue.cache.as_mut().unwrap().text.get_mut(k)?;
             if ti.width > clip_w {
                 return None;
             }
@@ -386,31 +354,36 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
                 }
                 _ => {}
             }
-            if ti.y_offset_centipixel as u64 != (xlate_y * 100.0).round() as u64 % 100 {
+
+            let fixed_yi = get_subpixel_key(xlate_y);
+
+            if ti.y_offset_subpix != fixed_yi {
                 return None;
             }
 
             let mut origin = [Point {
-                x: -(k.x_offset_centipixel as f32 / 100.0),
-                y: -(ti.y_offset_centipixel as f32 / 100.0),
+                x: -(k.x_offset_subpix as f32 / SUBPIXEL_KEYS),
+                y: -(ti.y_offset_subpix as f32 / SUBPIXEL_KEYS),
             }];
             xform.map_points(&mut origin);
             let draw_x = origin[0].x.round() as i32 - PIXMAP_MARGIN;
             let draw_y = origin[0].y.round() as i32 - PIXMAP_MARGIN;
 
-            ctx.canvas.draw_pixmap(
-                draw_x,
-                draw_y,
-                ti.pixmap.as_ref(),
-                &tiny_skia::PixmapPaint::default(),
-                tiny_skia::Transform::identity(),
-                None,
-            );
-
             ti.last_used = Instant::now();
 
             ctx.render_pos.x += ti.width;
             ctx.render_pos.y += ti.height;
+
+            let img = ti.pixmap.clone();
+
+            ctx.queue.push_image(
+                tiny_skia::Point {
+                    x: draw_x as f32 / ctx.scale,
+                    y: draw_y as f32 / ctx.scale,
+                },
+                img,
+            );
+
             Some(())
         })
         .is_some()
@@ -435,7 +408,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
     ctx.render_pos.x += width;
     ctx.render_pos.y += height;
 
-    if to_draw.is_empty() {
+    if to_draw.is_empty() || ctx.bounds_only {
         return;
     }
 
@@ -451,18 +424,18 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
             _ => {}
         }
     }
-    let x_offset_centipixel = ((xform.tx * 100.0).round() as u64 % 100) as u8;
-    let y_offset_centipixel = ((xform.ty * 100.0).round() as u64 % 100) as u8;
+    let x_offset_subpix = get_subpixel_key(xform.tx);
+    let y_offset_subpix = get_subpixel_key(xform.ty);
 
     let mut bounding = [
         Point::zero(),
         Point {
-            x: width + (x_offset_centipixel as f32 / 100.0),
-            y: height + (y_offset_centipixel as f32 / 100.0),
+            x: width + (x_offset_subpix as f32 / SUBPIXEL_KEYS),
+            y: height + (y_offset_subpix as f32 / SUBPIXEL_KEYS),
         },
         Point {
-            x: -(x_offset_centipixel as f32 / 100.0),
-            y: -(y_offset_centipixel as f32 / 100.0),
+            x: -(x_offset_subpix as f32 / SUBPIXEL_KEYS),
+            y: -(y_offset_subpix as f32 / SUBPIXEL_KEYS),
         },
     ];
 
@@ -519,7 +492,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
                 );
             },
             |canvas, xform, img| {
-                canvas.draw_pixmap(0, 0, img.0.as_ref(), &HQ_PIXMAP_PAINT, xform, None);
+                canvas.draw_pixmap(0, 0, img.as_ref(), &HQ_PIXMAP_PAINT, xform, None);
             },
         );
     } else {
@@ -542,27 +515,28 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
                 );
             },
             |canvas, xform, img| {
-                canvas.draw_pixmap(0, 0, img.0.as_ref(), &HQ_PIXMAP_PAINT, xform, None);
+                canvas.draw_pixmap(0, 0, img.as_ref(), &HQ_PIXMAP_PAINT, xform, None);
             },
         );
     }
 
-    ctx.canvas.draw_pixmap(
-        draw_x,
-        draw_y,
-        pixmap.as_ref(),
-        &tiny_skia::PixmapPaint::default(),
-        tiny_skia::Transform::identity(),
-        None,
+    let pixmap = Arc::new(pixmap);
+
+    ctx.queue.push_image(
+        tiny_skia::Point {
+            x: draw_x as f32 / ctx.scale,
+            y: draw_y as f32 / ctx.scale,
+        },
+        pixmap.clone(),
     );
 
     if let Some(key) = key {
-        ctx.cache.text.borrow_mut().insert(
+        ctx.queue.cache.as_mut().unwrap().text.insert(
             key,
             TextImage {
                 width,
                 height,
-                y_offset_centipixel,
+                y_offset_subpix,
                 pixmap,
                 last_used: Instant::now(),
             },

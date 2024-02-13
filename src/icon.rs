@@ -5,6 +5,7 @@ use std::{
     fs::{self, File},
     io,
     path::{Component, PathBuf},
+    sync::Arc,
 };
 use tiny_skia::Transform;
 
@@ -13,11 +14,13 @@ thread_local! {
 }
 
 #[derive(Debug)]
-pub struct OwnedImage(pub tiny_skia::Pixmap);
+pub struct OwnedImage {
+    pub pixmap: Arc<tiny_skia::Pixmap>,
+}
 
 impl OwnedImage {
     pub fn as_ref(&self) -> tiny_skia::PixmapRef {
-        self.0.as_ref()
+        tiny_skia::Pixmap::as_ref(&self.pixmap)
     }
 
     pub fn from_file<R: io::Read>(mut file: R, tsize: u32, rescale: bool) -> Option<Self> {
@@ -65,16 +68,18 @@ impl OwnedImage {
             };
             *pixel = c.premultiply();
         }
-        Some(Self(pixmap))
+        Some(Self {
+            pixmap: Arc::new(pixmap),
+        })
     }
 
     pub fn rescale_height(self, height: u32) -> Self {
-        if self.0.height() == height {
+        if self.pixmap.height() == height {
             return self;
         }
-        let scale = height as f32 / self.0.height() as f32;
+        let scale = height as f32 / self.pixmap.height() as f32;
         let xform = Transform::from_scale(scale, scale);
-        let px_width = (self.0.width() as f32 * scale).ceil() as u32;
+        let px_width = (self.pixmap.width() as f32 * scale).ceil() as u32;
         let mut pixmap = tiny_skia::Pixmap::new(px_width, height).unwrap();
 
         pixmap.draw_pixmap(
@@ -90,7 +95,9 @@ impl OwnedImage {
             None,
         );
 
-        Self(pixmap)
+        Self {
+            pixmap: Arc::new(pixmap),
+        }
     }
 
     pub fn from_svg(data: &[u8], height: u32) -> Option<Self> {
@@ -109,7 +116,9 @@ impl OwnedImage {
             tiny_skia::Transform::from_scale(scale, scale),
             &mut pixmap.as_mut(),
         );
-        Some(Self(pixmap))
+        Some(Self {
+            pixmap: Arc::new(pixmap),
+        })
     }
 }
 
@@ -217,11 +226,10 @@ where
 }
 
 pub fn render(ctx: &mut Render, name: &str) -> Result<(), ()> {
-    let xform = ctx.render_xform;
-    let mut extent_points = [ctx.render_pos, ctx.render_extents.1];
-    xform.map_points(&mut extent_points);
-    let xsize = extent_points[1].x - extent_points[0].x;
-    let ysize = extent_points[1].y - extent_points[0].y;
+    let room = ctx.render_extents.1 - ctx.render_pos;
+    let xsize = room.x * ctx.scale;
+    let ysize = room.y * ctx.scale;
+
     let tsize = ysize as u32;
     if f32::min(xsize, ysize) < 1.0 {
         return Err(());
@@ -252,17 +260,14 @@ pub fn render(ctx: &mut Render, name: &str) -> Result<(), ()> {
                 .and_then(|file| OwnedImage::from_file(file, tsize, true))
         }) {
             Some(img) => {
-                ctx.canvas.draw_pixmap(
-                    extent_points[0].x.round() as i32,
-                    extent_points[0].y.round() as i32,
-                    img.as_ref(),
-                    &Default::default(),
-                    Transform::identity(),
-                    None,
-                );
-                // convert the sizes back to virtual pixels (inverse xform)
-                ctx.render_pos.x += img.0.width() as f32 / xform.sx;
-                ctx.render_pos.y += img.0.height() as f32 / xform.sy;
+                ctx.render_pos.x = ctx.render_pos.x.ceil();
+                ctx.render_pos.y = ctx.render_pos.y.ceil();
+                // convert the sizes back to virtual pixels
+                let w = img.pixmap.width() as f32 / ctx.scale;
+                let h = img.pixmap.height() as f32 / ctx.scale;
+                ctx.queue.push_image(ctx.render_pos, img.pixmap.clone());
+                ctx.render_pos.x += w;
+                ctx.render_pos.y += h;
                 Ok(())
             }
             None => Err(()),

@@ -20,7 +20,7 @@ use crate::{
     data::{IterationItem, Module, Value},
     font::FontMapped,
     item::*,
-    render::{RenderCache, Renderer},
+    render::Renderer,
     util::{spawn, spawn_noerr, Cell},
     wayland::{SurfaceData, WaylandClient},
 };
@@ -168,7 +168,6 @@ pub struct Runtime {
     pub xdg: xdg::BaseDirectories,
     pub fonts: Vec<FontMapped>,
     pub items: HashMap<String, Rc<Item>>,
-    pub cache: RenderCache,
     pub wayland: WaylandClient,
     item_var: Rc<Item>,
     notify: Rc<NotifierInner>,
@@ -334,7 +333,6 @@ impl State {
             runtime: Runtime {
                 xdg: xdg::BaseDirectories::new()?,
                 fonts: Vec::new(),
-                cache: RenderCache::new(),
                 items: Default::default(),
                 item_var: Rc::new(Module::new_current_item().into()),
                 notify: notify_inner.clone(),
@@ -524,7 +522,7 @@ impl State {
             bar.render_with(mask, &mut self.runtime, &mut self.renderer);
         }
         self.runtime.set_interest_mask(InterestMask(0));
-        self.runtime.cache.prune(begin);
+        self.renderer.cache.prune(begin);
         self.runtime.wayland.flush();
         let render_time = begin.elapsed().as_nanos();
         log::debug!(

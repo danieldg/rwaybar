@@ -4,7 +4,7 @@ use crate::tray;
 use crate::{
     data::{BarData, ItemReference, IterationItem, Module, ModuleContext, Value},
     event::EventSink,
-    font::{render_font, render_font_item},
+    font::render_font_item,
     icon,
     render::{Align, Render, Width},
     state::Runtime,
@@ -134,7 +134,7 @@ impl ItemFormat {
         let stroke_size = get_f32("text-outline-width");
 
         let render = Render {
-            canvas: &mut *ctx.canvas,
+            queue: &mut *ctx.queue,
             damage: ctx.damage.as_deref_mut(),
             align: ctx.align.merge(&align),
             font: font.unwrap_or(&ctx.font),
@@ -395,6 +395,7 @@ impl Formatting {
             }
         }
 
+        let mark = ctx.queue.start_group();
         ctx.render_pos = start_pos;
         ctx.render_extents = inner_clip;
 
@@ -420,25 +421,14 @@ impl Formatting {
             match ctx.align.horiz {
                 Some(f) => {
                     inner_x_offset = expand * f;
-                    let x0 = start_pos.x.floor() as usize;
-                    let x1 = end_pos.x.ceil() as usize;
-                    let ilen = x1 - x0;
-                    let wlen = min_width.ceil() as usize;
-                    if wlen > ilen {
-                        // Align by rotating the pixels of the inner clip region to the right.  The
-                        // right part of the clip region should just be blank pixels at this point,
-                        // which is what we want to put on the left.
-                        let rlen = (wlen - ilen) * 4;
-                        let stride = ctx.canvas.width() as usize * 4;
-                        let h = ctx.canvas.height() as usize;
-                        for y in 0..h {
-                            let x0 = y * stride + x0 * 4;
-                            let x2 = y * stride + (x0 + wlen) * 4;
-                            if let Some(buf) = ctx.canvas.data_mut().get_mut(x0..x2) {
-                                buf.rotate_right(rlen);
-                            }
-                        }
-                    }
+
+                    ctx.queue.translate_group(
+                        &mark,
+                        Point {
+                            x: inner_x_offset,
+                            y: 0.,
+                        },
+                    );
                 }
                 _ => {
                     // defaults to left align
@@ -462,6 +452,8 @@ impl Formatting {
             };
 
         if format.bg_rgba.is_some() || format.border.is_some() {
+            let end_mark = ctx.queue.start_group();
+
             use tiny_skia::Rect;
             let mut bg_clip = (start_pos, end_pos);
             if let Some((t, r, b, l)) = format.padding {
@@ -475,31 +467,19 @@ impl Formatting {
                 if let Some(rect) =
                     Rect::from_ltrb(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x, bg_clip.1.y)
                 {
-                    let paint = tiny_skia::Paint {
-                        shader: tiny_skia::Shader::SolidColor(rgba),
-                        anti_alias: true,
-                        // background is painted "underneath"
-                        blend_mode: tiny_skia::BlendMode::DestinationOver,
-                        ..tiny_skia::Paint::default()
-                    };
-                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
+                    ctx.queue.push_rect(rect, rgba);
                 }
             }
 
             if let Some((t, r, b, l)) = format.border {
                 let rgba = format.border_rgba.unwrap_or(ctx.font_color);
-                let paint = tiny_skia::Paint {
-                    shader: tiny_skia::Shader::SolidColor(rgba),
-                    anti_alias: true,
-                    ..tiny_skia::Paint::default()
-                };
 
                 bg_clip.0.y -= t;
                 if let Some(rect) =
                     Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x - bg_clip.0.x, t)
                 {
                     // top edge, no corners
-                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
+                    ctx.queue.push_rect(rect, rgba);
                 }
 
                 bg_clip.0.x -= l;
@@ -507,14 +487,14 @@ impl Formatting {
                     Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, l, bg_clip.1.y - bg_clip.0.y)
                 {
                     // left edge + top-left corner
-                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
+                    ctx.queue.push_rect(rect, rgba);
                 }
 
                 if let Some(rect) =
                     Rect::from_xywh(bg_clip.1.x, bg_clip.0.y, r, bg_clip.1.y - bg_clip.0.y)
                 {
                     // right edge + top-right corner
-                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
+                    ctx.queue.push_rect(rect, rgba);
                 }
 
                 bg_clip.1.x += r;
@@ -522,9 +502,11 @@ impl Formatting {
                     Rect::from_xywh(bg_clip.0.x, bg_clip.1.y, bg_clip.1.x - bg_clip.0.x, b)
                 {
                     // bottom edge + both corners
-                    ctx.canvas.fill_rect(rect, &paint, ctx.render_xform, None);
+                    ctx.queue.push_rect(rect, rgba);
                 }
             }
+
+            ctx.queue.swap_rect_ordering(&mark, &end_mark);
         }
 
         (outer_pos, inner_x_offset, start_pos.x, end_pos.x)
@@ -786,9 +768,9 @@ impl Item {
                 left,
                 center,
                 right,
-                data,
                 ..
             } => {
+                let scale = ctx.scale;
                 // Region 0 (bit 0x1) is "entire bar" - set for the outer render of this item and
                 // catches things like bar background changes.
                 //
@@ -804,105 +786,55 @@ impl Item {
                 let left_size;
                 assert!(interest_region.is_split());
 
-                if let Some(left) = data.saved_left.take() {
-                    left_size = left.2;
-                    ctx.canvas.draw_pixmap(
-                        0,
-                        0,
-                        left.0.as_ref(),
-                        &tiny_skia::PixmapPaint {
-                            blend_mode: tiny_skia::BlendMode::Source,
-                            ..Default::default()
-                        },
-                        Default::default(),
-                        None,
-                    );
-
-                    rv.merge(left.1.clone());
-                    data.saved_left.set(Some(left));
-                } else {
+                {
                     interest_region.set(1);
                     let mut left_ev = left.render(ctx);
                     left_size = ctx.render_pos.x.ceil();
                     left_ev.offset_clamp(0.0, 0.0, left_size);
 
-                    data.saved_left.set(
-                        tiny_skia::IntRect::from_xywh(
-                            0,
-                            0,
-                            1.max((left_size * ctx.render_xform.sx) as _),
-                            ctx.canvas.height(),
-                        )
-                        .and_then(|rect| ctx.canvas.as_ref().clone_rect(rect))
-                        .map(|canvas| (canvas, left_ev.clone(), left_size)),
-                    );
                     rv.merge(left_ev);
 
                     let damage = ctx.damage.as_mut().unwrap();
-                    let mut pos = ctx.render_pos;
-                    ctx.render_xform.map_point(&mut pos);
+                    let pos = ctx.render_pos
+                        * Point {
+                            x: ctx.scale,
+                            y: ctx.scale,
+                        };
                     damage[1] = [0, 0, pos.x.ceil() as _, pos.y.ceil() as _];
                 }
 
-                // The right region is drawn on a full-width canvas and then shifted so that its
-                // end position matches the right side of the screen.  This avoids needing to do
-                // things like "render all the text right-to-left" and writing two versions of
-                // every item that renders sub-items.  This does mean that the left and right sides
-                // can overlap - the right side will be drawn over the left if that happens.
                 let right_size;
-                if let Some(right) = data.saved_right.take() {
-                    let mut right_ev = right.1.clone();
-                    right_size = right.2;
-
-                    let right_offset = clip.1.x - right_size;
-                    let rx = (right_offset * ctx.render_xform.sx) as i32;
-                    ctx.canvas.draw_pixmap(
-                        rx,
-                        0,
-                        right.0.as_ref(),
-                        &Default::default(),
-                        Default::default(),
-                        None,
-                    );
-
-                    right_ev.offset_clamp(right_offset, right_offset, clip.1.x);
-                    rv.merge(right_ev);
-
-                    data.saved_right.set(Some(right));
-                } else {
+                {
+                    ctx.render_pos = clip.0;
                     interest_region.set(2);
-                    let (right_canvas, (rx, ry), (mut right_ev, right_pos)) = ctx
-                        .with_new_canvas_x(Point::zero(), clip.1.x, |group| {
-                            let ev = right.render(group);
-                            (ev, group.render_pos)
-                        });
 
-                    right_size = right_pos.x.ceil();
+                    let mark = ctx.queue.start_group();
+                    let mut right_ev = right.render(ctx);
+
+                    right_size = ctx.render_pos.x.ceil();
+
                     let right_offset = clip.1.x - right_size;
-                    let rx = (rx + right_offset * ctx.render_xform.sx) as i32;
 
                     let damage = ctx.damage.as_mut().unwrap();
-                    let mut pos = right_pos;
-                    ctx.render_xform.map_point(&mut pos);
-                    damage[2] = [rx, ry as i32, pos.x.ceil() as _, pos.y.ceil() as _];
+                    let tl = Point {
+                        x: right_offset,
+                        y: 0.,
+                    };
+                    let br = ctx.render_pos;
+                    ctx.queue.translate_group(&mark, tl);
 
-                    ctx.canvas.draw_pixmap(
-                        rx,
-                        ry as i32,
-                        right_canvas.as_ref(),
-                        &Default::default(),
-                        Default::default(),
-                        None,
-                    );
-                    data.saved_right
-                        .set(Some((right_canvas, right_ev.clone(), right_size)));
+                    damage[2] = [
+                        (tl.x * scale) as i32,
+                        (tl.y * scale) as i32,
+                        (br.x.ceil() * scale) as _,
+                        (br.y.ceil() * scale) as _,
+                    ];
 
                     right_ev.offset_clamp(right_offset, right_offset, clip.1.x);
                     rv.merge(right_ev);
                 }
 
                 let max_center_width = width - left_size - right_size;
-                ctx.render_pos.x = clip.1.x;
 
                 if max_center_width <= 0.0 {
                     // don't render the center if there's no room at all
@@ -928,71 +860,36 @@ impl Item {
                     }
                 };
 
-                match data.saved_center.take() {
-                    // re-render if it wanted to overflow and we now have more room
-                    Some((_, _, saved_max, saved_size))
-                        if saved_size > saved_max && max_center_width > saved_max + 1.0 => {}
-                    // re-render if it would now overflow and we now have less room
-                    Some((_, _, saved_max, saved_size))
-                        if saved_size > max_center_width && max_center_width > saved_max + 1.0 => {}
-                    // otherwise, just re-center and display the saved canvas
-                    Some(center) => {
-                        let cent_offset = calc_center(center.3);
-                        let cx = (cent_offset * ctx.render_xform.sx) as i32;
-                        ctx.canvas.draw_pixmap(
-                            cx,
-                            0,
-                            center.0.as_ref(),
-                            &Default::default(),
-                            Default::default(),
-                            None,
-                        );
-                        ctx.damage.as_mut().unwrap()[3][0] = cx;
-                        let mut cent_ev = center.1.clone();
-                        cent_ev.offset_clamp(cent_offset, cent_offset, cent_offset + center.3);
-                        rv.merge(cent_ev);
-
-                        data.saved_center.set(Some(center));
-                        return;
-                    }
-                    None => {}
-                }
-
-                // The center canvas has its width constrained by the available space
                 interest_region.set(3);
-                let (c_canvas, (cx, cy), (mut cent_ev, cent_pos)) =
-                    ctx.with_new_canvas_x(Point::zero(), max_center_width, |group| {
-                        // Allow percentage widths to work correctly by changing the top-left of
-                        // render_extents to be negative so the total width is still the same
-                        group.render_extents.0.x = group.render_extents.1.x - width;
-                        let ev = center.render(group);
-                        (ev, group.render_pos)
-                    });
-                let cent_size = cent_pos.x.ceil();
+                let mark = ctx.queue.start_group();
+                let x0 = clip.1.x - max_center_width;
+                ctx.render_pos.x = x0;
+                ctx.render_pos.y = clip.0.y;
 
-                let cent_offset = calc_center(cent_size);
-                let cx = (cx + cent_offset * ctx.render_xform.sx) as i32;
+                let mut cent_ev = center.render(ctx);
+                let cent_size = (ctx.render_pos.x - x0).ceil();
 
-                let damage = ctx.damage.as_mut().unwrap();
-                let mut pos = cent_pos;
-                ctx.render_xform.map_point(&mut pos);
-                damage[3] = [cx, cy as i32, pos.x.ceil() as _, pos.y.ceil() as _];
+                let cent_offset = calc_center(cent_size).floor();
 
-                ctx.canvas.draw_pixmap(
-                    cx,
-                    cy as i32,
-                    c_canvas.as_ref(),
-                    &Default::default(),
-                    Default::default(),
-                    None,
+                ctx.queue.translate_group(
+                    &mark,
+                    Point {
+                        x: cent_offset - x0,
+                        y: 0.,
+                    },
                 );
 
-                data.saved_center.set(Some((
-                    c_canvas,
-                    cent_ev.clone(),
-                    max_center_width,
-                    cent_size,
-                )));
+                let damage = ctx.damage.as_mut().unwrap();
+                let br = Point {
+                    x: cent_offset + cent_size,
+                    y: ctx.render_pos.y,
+                };
+                damage[3] = [
+                    (cent_offset * scale) as i32,
+                    0,
+                    (br.x.ceil() * scale) as _,
+                    (br.y.ceil() * scale) as _,
+                ];
 
                 cent_ev.offset_clamp(cent_offset, cent_offset, cent_offset + cent_size);
                 rv.merge(cent_ev);
@@ -1032,74 +929,68 @@ impl Item {
                 let value = value.fract();
 
                 let origin = ctx.render_pos;
-                let mut base_ev = items[base].render(ctx);
 
-                let (canvas, (draw_x, draw_y), mut over_ev) =
-                    ctx.with_new_canvas_x(origin, ctx.render_pos.x, |group| {
-                        items[base + 1].render(group)
-                    });
+                let mark1 = ctx.queue.start_group();
+                let mut ev1 = items[base].render(ctx);
+                let end1 = ctx.render_pos;
 
-                let mut bb_l = origin.x;
-                let mut bb_r = ctx.render_pos.x;
+                ctx.render_pos = origin;
+
+                let mark2 = ctx.queue.start_group();
+                let mut ev2 = items[base + 1].render(ctx);
+                let end2 = ctx.render_pos;
+
+                let mark3 = ctx.queue.start_group();
+
+                let bb_l = origin.x;
+                let bb_r = end1.x.max(end2.x);
                 let hoff = (bb_r - bb_l) * value;
 
                 let rb_t = origin.y;
-                let rb_b = ctx.render_pos.y;
+                let rb_b = end1.y.max(end2.y);
                 let voff = (rb_b - rb_t) * value;
 
-                let mut bb_t = ctx.render_extents.0.y;
-                let mut bb_b = ctx.render_extents.1.y;
+                let bb_t = ctx.render_extents.0.y;
+                let bb_b = ctx.render_extents.1.y;
+
+                ctx.render_pos.x = bb_r;
+                ctx.render_pos.y = rb_b;
+
+                let (mut bb1, mut bb2) = ([bb_l, bb_t, bb_r, bb_b], [bb_l, bb_t, bb_r, bb_b]);
 
                 match dir {
                     b'r' => {
-                        over_ev.offset_clamp(0.0, bb_l, bb_l + hoff);
-                        rv.merge(over_ev);
-                        base_ev.offset_clamp(0.0, bb_l + hoff, bb_r);
-                        rv.merge(base_ev);
-                        bb_r = bb_l + hoff;
+                        ev1.offset_clamp(0.0, bb_l + hoff, bb_r);
+                        rv.merge(ev1);
+                        ev2.offset_clamp(0.0, bb_l, bb_l + hoff);
+                        rv.merge(ev2);
+
+                        bb1[0] = bb_l + hoff;
+                        bb2[2] = bb_l + hoff;
                     }
                     b'l' => {
-                        over_ev.offset_clamp(0.0, bb_r - hoff, bb_r);
-                        rv.merge(over_ev);
-                        base_ev.offset_clamp(0.0, bb_l, bb_r - hoff);
-                        rv.merge(base_ev);
-                        bb_l = bb_r - hoff;
+                        ev2.offset_clamp(0.0, bb_r - hoff, bb_r);
+                        rv.merge(ev2);
+                        ev1.offset_clamp(0.0, bb_l, bb_r - hoff);
+                        rv.merge(ev1);
+                        bb1[2] = bb_r - hoff;
+                        bb2[0] = bb_r - hoff;
                     }
                     b'd' => {
-                        rv.merge(base_ev);
-                        bb_b = rb_t + voff;
+                        rv.merge(ev1);
+                        bb1[1] = rb_t + voff;
+                        bb2[3] = rb_t + voff;
                     }
                     b'u' => {
-                        rv.merge(base_ev);
-                        bb_t = rb_b - voff;
+                        rv.merge(ev1);
+                        bb1[3] = rb_b - voff;
+                        bb2[1] = rb_b - voff;
                     }
                     _ => unreachable!(),
                 }
 
-                // If we use ctx.render_xform in fill_rect, we would have to apply the inverse
-                // transform and the translate to the canvas; this ends up doing a bunch of
-                // needless work inside tiny_skia.  Instead, just apply the transform to the rect
-                // and do the whole fill in identity space.
-                let mut p = [Point { x: bb_l, y: bb_t }, Point { x: bb_r, y: bb_b }];
-                ctx.render_xform.map_points(&mut p);
-
-                ctx.canvas.fill_rect(
-                    tiny_skia::Rect::from_ltrb(p[0].x, p[0].y, p[1].x, p[1].y).unwrap(),
-                    &tiny_skia::Paint {
-                        shader: tiny_skia::Pattern::new(
-                            canvas.as_ref(),
-                            tiny_skia::SpreadMode::Pad,
-                            tiny_skia::FilterQuality::Nearest,
-                            1.0,
-                            tiny_skia::Transform::from_translate(draw_x, draw_y),
-                        ),
-                        blend_mode: tiny_skia::BlendMode::Source,
-                        anti_alias: true,
-                        force_hq_pipeline: false,
-                    },
-                    Default::default(),
-                    None,
-                );
+                ctx.queue.crop_range(&mark1, &mark2, bb1);
+                ctx.queue.crop_range(&mark2, &mark3, bb2);
             }
             Module::Icon {
                 name,
@@ -1265,9 +1156,9 @@ impl PopupDesc {
 
                 let markup = source.format.markup;
 
-                let (width, height) = render_font(ctx, &value, markup);
-                ctx.render_pos.x = width + 4.0;
-                ctx.render_pos.y = height + 4.0;
+                render_font_item(ctx, &value, markup);
+                ctx.render_pos.x += 2.0;
+                ctx.render_pos.y += 2.0;
             }
             #[cfg(feature = "dbus")]
             PopupDesc::Tray(tray) => tray.render(ctx),
