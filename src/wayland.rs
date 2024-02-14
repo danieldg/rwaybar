@@ -181,6 +181,13 @@ impl SurfaceData {
             .is_ok()
     }
 
+    /// After calling start_render, we discovered that the damage didn't actually do anything, so
+    /// we aborted the render.  Remove the throttle bit since we didn't actually submit a frame
+    /// callback.
+    pub fn undo_damage(&self) {
+        self.state.store(SurfaceData::CONFIGURED, Ordering::Relaxed)
+    }
+
     /// Marks the entire surface as damaged, needing a complete redraw.
     ///
     /// Returns true if a render should be requested (this can be used to avoid needless calls to

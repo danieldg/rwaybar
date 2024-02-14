@@ -4,8 +4,14 @@ use crate::{
     wayland::{SurfaceData, WaylandClient},
 };
 use log::error;
-use smithay_client_toolkit::shm::slot::SlotPool;
-use std::{borrow::Cow, convert::TryInto, sync::Arc, time};
+use smithay_client_toolkit::shm::slot::{Slot, SlotPool};
+use std::{
+    borrow::Cow,
+    collections::HashSet,
+    hash::{Hash, Hasher},
+    sync::Arc,
+    time,
+};
 use wayland_client::protocol::{wl_pointer::WlPointer, wl_shm::Format, wl_surface::WlSurface};
 
 /// Global render state independent of any window's lifetime
@@ -39,7 +45,6 @@ impl Renderer {
         };
         let mut ctx = Render {
             queue: &mut queue,
-            damage: None,
             render_extents: (
                 tiny_skia::Point::zero(),
                 tiny_skia::Point { x: 1.0, y: 1.0 },
@@ -65,39 +70,26 @@ impl Renderer {
         &mut self,
         rt: &mut Runtime,
         surface: &WlSurface,
+        data: &mut RenderSurface,
         render: impl FnOnce(&mut Render) -> R,
-    ) -> Option<R> {
+    ) -> R {
         let surface_data = SurfaceData::from_wl(surface);
-        let (canvas, finalize, cache) = self.render_be_rgba(&mut rt.wayland, surface);
-        let mut canvas = match tiny_skia::PixmapMut::from_bytes(
-            canvas,
-            surface_data.pixel_width() as u32,
-            surface_data.pixel_height() as u32,
-        ) {
-            Some(canvas) => canvas,
-            None => return None,
-        };
-        canvas.fill(tiny_skia::Color::TRANSPARENT);
-        let font = &rt.fonts[0];
-        let mut damage = vec![[
-            0,
-            0,
-            surface_data.pixel_width(),
-            surface_data.pixel_height(),
-        ]];
+
+        let pixel_width = surface_data.pixel_width() as u32;
+        let pixel_height = surface_data.pixel_height() as u32;
+        let scale = surface_data.scale_factor() as f32;
+        let render_xform = surface_data.scale_transform();
+        let no_xform = tiny_skia::Transform::identity();
 
         let mut queue = Queue {
             rect: vec![],
             image: vec![],
-            cache: Some(cache),
+            cache: Some(&mut self.cache),
         };
-
-        let scale = surface_data.scale_factor() as f32;
-        let render_xform = surface_data.scale_transform();
+        let font = &rt.fonts[0];
 
         let mut ctx = Render {
             queue: &mut queue,
-            damage: Some(&mut damage),
             render_extents: (
                 tiny_skia::Point::zero(),
                 tiny_skia::Point {
@@ -121,7 +113,53 @@ impl Renderer {
         };
         let rv = render(&mut ctx);
 
-        for rect in queue.rect {
+        let mut damage = data.diff_contents(&queue, scale);
+
+        let everything = tiny_skia::IntRect::from_xywh(0, 0, pixel_width, pixel_height).unwrap();
+
+        damage.retain_mut(|dmg| match dmg.intersect(&everything) {
+            Some(i) => {
+                *dmg = i;
+                true
+            }
+            None => false,
+        });
+
+        if damage.is_empty() {
+            // This happens when a wakeup didn't actually cause the displayed data to change. For
+            // example, a load or temperature value can easily remain constant.
+            surface_data.undo_damage();
+            return rv;
+        }
+
+        // We must destructure here to release the borrow of self.cache
+        let Queue { rect, image, .. } = queue;
+
+        // Drawing is done directly to the SHM region.  If must_clear is false, that region still
+        // contains the prior frame, so we can avoid redrawing undamaged areas.
+        let (canvas, must_clear, finalize) = self.render_be_rgba(data, &mut rt.wayland, surface);
+        let mut canvas = tiny_skia::PixmapMut::from_bytes(canvas, pixel_width, pixel_height)
+            .expect("Bad canvas size?");
+
+        let draw_damage = if must_clear {
+            std::array::from_ref(&everything) as &[_]
+        } else {
+            &damage
+        };
+
+        if must_clear {
+            canvas.fill(tiny_skia::Color::TRANSPARENT);
+        } else {
+            let paint = tiny_skia::Paint {
+                blend_mode: tiny_skia::BlendMode::Clear,
+                ..Default::default()
+            };
+            for rect in &damage {
+                canvas.fill_rect(rect.to_rect(), &paint, no_xform, None);
+            }
+        }
+
+        for rect in &rect {
             if rect.bounds.width() <= 0.0 {
                 continue;
             }
@@ -130,30 +168,22 @@ impl Renderer {
                 anti_alias: true,
                 ..Default::default()
             };
-            canvas.fill_rect(rect.bounds, &paint, render_xform, None);
+            if must_clear {
+                canvas.fill_rect(rect.bounds, &paint, render_xform, None);
+            } else {
+                rect.for_damage(&damage, scale, |rect| {
+                    canvas.fill_rect(rect, &paint, no_xform, None)
+                });
+            }
         }
 
-        for img in queue.image {
-            let x = img.top_left.x;
-            let y = img.top_left.y;
-            if img.crop[0].is_nan() {
-                canvas.draw_pixmap(
-                    x as i32,
-                    y as i32,
-                    img.pixels.as_ref().as_ref(),
-                    &Default::default(),
-                    Default::default(),
-                    None,
-                );
-            } else {
-                let mut crop = img.crop;
-                for c in &mut crop {
-                    *c *= scale;
-                }
-                let [l, t, r, b] = crop;
+        for img in &image {
+            let x = img.top_left.x * scale;
+            let y = img.top_left.y * scale;
 
+            let whole = img.for_damage(&draw_damage, scale, |rect| {
                 canvas.fill_rect(
-                    tiny_skia::Rect::from_ltrb(l, t, r, b).unwrap(),
+                    rect,
                     &tiny_skia::Paint {
                         shader: tiny_skia::Pattern::new(
                             img.pixels.as_ref().as_ref(),
@@ -167,64 +197,52 @@ impl Renderer {
                     tiny_skia::Transform::identity(),
                     None,
                 );
+            });
+
+            if whole {
+                canvas.draw_pixmap(
+                    x as i32,
+                    y as i32,
+                    img.pixels.as_ref().as_ref(),
+                    &Default::default(),
+                    Default::default(),
+                    None,
+                );
             }
         }
         finalize(canvas.data_mut());
         surface.frame(&rt.wayland.queue, surface.clone());
-        for [x, y, w, h] in damage {
-            surface.damage_buffer(x, y, w, h);
+
+        for r in damage {
+            surface.damage_buffer(r.x(), r.y(), r.width() as _, r.height() as _);
         }
         surface.commit();
-        Some(rv)
+        rv
     }
 
-    pub fn render_be_rgba(
+    fn render_be_rgba(
         &mut self,
+        rs: &mut RenderSurface,
         wl: &WaylandClient,
         target: &WlSurface,
-    ) -> (&mut [u8], impl FnOnce(&mut [u8]), &mut RenderCache) {
-        let data = SurfaceData::from_wl(target);
-        let width = data.pixel_width();
-        let height = data.pixel_height();
-        let stride = width * 4;
+    ) -> (&mut [u8], bool, impl FnOnce(&mut [u8])) {
+        let (must_clear, has_be_rgba, canvas) = rs.prep_slot(self, wl, target);
 
-        let len = height as usize * stride as usize;
-
-        let shm = match &mut self.shm {
-            Some(shm) => shm,
-            v @ None => {
-                let shm = SlotPool::new(len * 2, &wl.shm).unwrap();
-                v.get_or_insert(shm)
+        if !has_be_rgba && !must_clear {
+            for pixel in canvas.chunks_mut(4) {
+                let [r, g, b, a]: [u8; 4] = (&*pixel).try_into().expect("partial pixel");
+                pixel.copy_from_slice(&[b, g, r, a]);
             }
-        };
+        }
 
-        let has_be_rgba = *self
-            .has_be_rgba
-            .get_or_insert_with(|| wl.shm.formats().contains(&Format::Abgr8888));
-        let fmt = if has_be_rgba {
-            Format::Abgr8888
-        } else {
-            // wayland always supports this format, so we convert to it as a fallback
-            Format::Argb8888
-        };
-        let (buffer, canvas) = shm.create_buffer(width, height, stride, fmt).expect("OOM");
-
-        buffer
-            .attach_to(&target)
-            .expect("New buffers are not already attached");
-
-        (
-            canvas,
-            move |buf| {
-                if !has_be_rgba {
-                    for pixel in buf.chunks_mut(4) {
-                        let [r, g, b, a]: [u8; 4] = (&*pixel).try_into().expect("partial pixel");
-                        pixel.copy_from_slice(&[b, g, r, a]);
-                    }
+        (canvas, must_clear, move |buf| {
+            if !has_be_rgba {
+                for pixel in buf.chunks_mut(4) {
+                    let [r, g, b, a]: [u8; 4] = (&*pixel).try_into().expect("partial pixel");
+                    pixel.copy_from_slice(&[b, g, r, a]);
                 }
-            },
-            &mut self.cache,
-        )
+            }
+        })
     }
 
     fn setup_cursor(&mut self, wl: &WaylandClient) {
@@ -281,12 +299,130 @@ impl Renderer {
 /// Render state bound to a bar
 #[derive(Debug)]
 pub struct RenderSurface {
-    // TODO damage tracking goes here
+    rect: HashSet<RenderRect>,
+    image: HashSet<RenderImage>,
+    size: (i32, i32),
+
+    slot: Option<Slot>,
 }
 
 impl RenderSurface {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            rect: HashSet::new(),
+            image: HashSet::new(),
+            size: (0, 0),
+            slot: None,
+        }
+    }
+
+    fn prep_slot<'r>(
+        &mut self,
+        renderer: &'r mut Renderer,
+        wl: &WaylandClient,
+        target: &WlSurface,
+    ) -> (bool, bool, &'r mut [u8]) {
+        let data = SurfaceData::from_wl(target);
+        let width = data.pixel_width();
+        let height = data.pixel_height();
+        let stride = width * 4;
+        let len = height as usize * stride as usize;
+
+        if self.size != (width, height) {
+            self.slot = None;
+        }
+        self.size = (width, height);
+
+        let shm = match &mut renderer.shm {
+            Some(shm) => shm,
+            v @ None => {
+                let shm = SlotPool::new(len * 2, &wl.shm).unwrap();
+                v.get_or_insert(shm)
+            }
+        };
+
+        let has_be_rgba = *renderer
+            .has_be_rgba
+            .get_or_insert_with(|| wl.shm.formats().contains(&Format::Abgr8888));
+        let fmt = if has_be_rgba {
+            Format::Abgr8888
+        } else {
+            // wayland always supports this format, so we convert to it as a fallback
+            Format::Argb8888
+        };
+
+        if self.slot.as_ref().is_some_and(|s| shm.canvas(s).is_none()) {
+            self.slot = None;
+        }
+
+        let must_clear = self.slot.is_none();
+
+        let slot = self
+            .slot
+            .get_or_insert_with(|| shm.new_slot(len).expect("OOM"));
+
+        let buffer = shm
+            .create_buffer_in(slot, width, height, stride, fmt)
+            .unwrap();
+        let canvas = shm.canvas(&buffer).expect("Checked above");
+
+        buffer
+            .attach_to(&target)
+            .expect("New buffers are not already attached");
+
+        (must_clear, has_be_rgba, canvas)
+    }
+
+    /// Take the current and previous frame's contents, and remove identical regions.  Mark any
+    /// other region as a damage area.
+    ///
+    /// Technically this could miss a pair of regions or images that only change their relative
+    /// Z-ordering, but that's pretty hard to make happen by accident.
+    ///
+    /// In order to avoid making a ton of small regions, merge any regions within 7 pixels of each
+    /// other.  This also ignores the Y coordinate when determining what to merge, because most
+    /// damage occupies the full height of the bar anyway.
+    fn diff_contents(&mut self, queue: &Queue, scale: f32) -> Vec<tiny_skia::IntRect> {
+        let mut dmg = Vec::new();
+
+        for rect in &queue.rect {
+            if !self.rect.remove(&rect) {
+                if let Some(bbox) = rect.bbox(scale) {
+                    dmg.push(bbox);
+                }
+            }
+        }
+        dmg.extend(self.rect.drain().filter_map(|e| e.bbox(scale)));
+
+        for img in &queue.image {
+            if !self.image.remove(&img) {
+                if let Some(bbox) = img.bbox(scale) {
+                    dmg.push(bbox);
+                }
+            }
+        }
+        dmg.extend(self.image.drain().filter_map(|e| e.bbox(scale)));
+
+        self.rect.extend(queue.rect.iter().cloned());
+        self.image.extend(queue.image.iter().cloned());
+
+        // This could also consider y-coordinates, but that's harder
+        dmg.sort_by_key(|r| r.x());
+        dmg.dedup_by(|b, a| {
+            let dup = a.right() + 7 > b.left();
+            if dup {
+                *a = tiny_skia::IntRect::from_ltrb(
+                    a.left().min(b.left()),
+                    a.top().min(b.top()),
+                    a.right().max(b.right()),
+                    a.bottom().max(b.bottom()),
+                )
+                .unwrap();
+            }
+            dup
+        });
+
+        dmg
     }
 }
 
@@ -318,17 +454,125 @@ impl RenderCache {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 struct RenderRect {
     bounds: tiny_skia::Rect,
     color: tiny_skia::Color,
 }
 
-#[derive(Debug)]
+impl Hash for RenderRect {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        h.write_u32(self.bounds.left().to_bits());
+        h.write_u32(self.bounds.top().to_bits());
+        h.write_u32(self.bounds.right().to_bits());
+        h.write_u32(self.bounds.bottom().to_bits());
+        h.write_u32(self.color.red().to_bits());
+        h.write_u32(self.color.green().to_bits());
+        h.write_u32(self.color.blue().to_bits());
+        h.write_u32(self.color.alpha().to_bits());
+    }
+}
+
+impl Eq for RenderRect {}
+
+impl RenderRect {
+    fn bbox(&self, scale: f32) -> Option<tiny_skia::IntRect> {
+        tiny_skia::IntRect::from_ltrb(
+            (self.bounds.left() * scale).floor() as i32,
+            (self.bounds.top() * scale).floor() as i32,
+            (self.bounds.right() * scale).ceil() as i32,
+            (self.bounds.bottom() * scale).ceil() as i32,
+        )
+    }
+
+    fn for_damage(
+        &self,
+        damage: &[tiny_skia::IntRect],
+        scale: f32,
+        mut fill: impl FnMut(tiny_skia::Rect),
+    ) {
+        let Some(bbox) = self.bbox(scale) else {
+            return;
+        };
+        for dbox in damage {
+            if let Some(rect) = bbox.intersect(dbox) {
+                fill(rect.to_rect());
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct RenderImage {
     top_left: tiny_skia::Point,
     pixels: Arc<tiny_skia::Pixmap>,
+    // LTRB
     crop: [f32; 4],
+}
+
+impl Hash for RenderImage {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        h.write_usize(Arc::as_ptr(&self.pixels) as _);
+        h.write_u32(self.top_left.x.to_bits());
+        h.write_u32(self.top_left.y.to_bits());
+    }
+}
+
+impl Eq for RenderImage {}
+
+impl PartialEq for RenderImage {
+    fn eq(&self, r: &Self) -> bool {
+        Arc::as_ptr(&self.pixels) == Arc::as_ptr(&r.pixels)
+            && self.top_left == r.top_left
+            && ((self.crop[0].is_nan() && r.crop[0].is_nan()) || self.crop == r.crop)
+    }
+}
+
+impl RenderImage {
+    fn bbox(&self, scale: f32) -> Option<tiny_skia::IntRect> {
+        let tiny_skia::Point { x, y } = self.top_left;
+        let w = self.pixels.width() as f32 * scale;
+        let h = self.pixels.height() as f32 * scale;
+        let ibox = tiny_skia::IntRect::from_xywh(
+            (x * scale).floor() as i32,
+            (y * scale).floor() as i32,
+            w.ceil() as u32,
+            h.ceil() as u32,
+        )?;
+        if self.crop[0].is_nan() {
+            Some(ibox)
+        } else {
+            let cbox = tiny_skia::IntRect::from_ltrb(
+                (self.crop[0] * scale) as i32,
+                (self.crop[1] * scale) as i32,
+                (self.crop[2] * scale) as i32,
+                (self.crop[3] * scale) as i32,
+            )?;
+            cbox.intersect(&ibox)
+        }
+    }
+
+    fn for_damage(
+        &self,
+        damage: &[tiny_skia::IntRect],
+        scale: f32,
+        mut fill: impl FnMut(tiny_skia::Rect),
+    ) -> bool {
+        let can_draw_full = self.crop[0].is_nan();
+        let Some(bbox) = self.bbox(scale) else {
+            return false;
+        };
+
+        for dbox in damage {
+            if let Some(rect) = bbox.intersect(dbox) {
+                if can_draw_full && rect == bbox {
+                    return true;
+                }
+                fill(rect.to_rect());
+            }
+        }
+        false
+    }
 }
 
 #[derive(Debug)]
@@ -426,8 +670,6 @@ impl Queue<'_> {
 /// State available to an [Item][crate::item::Item] render function
 pub struct Render<'a, 'c> {
     pub queue: &'a mut Queue<'c>,
-
-    pub damage: Option<&'a mut Vec<[i32; 4]>>,
 
     pub scale: f32,
 

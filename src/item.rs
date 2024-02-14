@@ -135,7 +135,6 @@ impl ItemFormat {
 
         let render = Render {
             queue: &mut *ctx.queue,
-            damage: ctx.damage.as_deref_mut(),
             align: ctx.align.merge(&align),
             font: font.unwrap_or(&ctx.font),
             font_size: font_size.unwrap_or(ctx.font_size),
@@ -770,16 +769,12 @@ impl Item {
                 right,
                 ..
             } => {
-                let scale = ctx.scale;
                 // Region 0 (bit 0x1) is "entire bar" - set for the outer render of this item and
                 // catches things like bar background changes.
                 //
                 // Region 1 is "left"
                 // Region 2 is "right"
                 // Region 3 is "center"
-                //
-                // A damage rectangle for each region is pushed to the ctx, and the bar rendering
-                // code will filter that list using Bar::damage_regions
                 let interest_region = ctx.runtime.divide_region(4);
                 let clip = ctx.render_extents;
                 let width = clip.1.x - ctx.render_pos.x;
@@ -793,14 +788,6 @@ impl Item {
                     left_ev.offset_clamp(0.0, 0.0, left_size);
 
                     rv.merge(left_ev);
-
-                    let damage = ctx.damage.as_mut().unwrap();
-                    let pos = ctx.render_pos
-                        * Point {
-                            x: ctx.scale,
-                            y: ctx.scale,
-                        };
-                    damage[1] = [0, 0, pos.x.ceil() as _, pos.y.ceil() as _];
                 }
 
                 let right_size;
@@ -815,20 +802,13 @@ impl Item {
 
                     let right_offset = clip.1.x - right_size;
 
-                    let damage = ctx.damage.as_mut().unwrap();
-                    let tl = Point {
-                        x: right_offset,
-                        y: 0.,
-                    };
-                    let br = ctx.render_pos;
-                    ctx.queue.translate_group(&mark, tl);
-
-                    damage[2] = [
-                        (tl.x * scale) as i32,
-                        (tl.y * scale) as i32,
-                        (br.x.ceil() * scale) as _,
-                        (br.y.ceil() * scale) as _,
-                    ];
+                    ctx.queue.translate_group(
+                        &mark,
+                        Point {
+                            x: right_offset,
+                            y: 0.,
+                        },
+                    );
 
                     right_ev.offset_clamp(right_offset, right_offset, clip.1.x);
                     rv.merge(right_ev);
@@ -878,18 +858,6 @@ impl Item {
                         y: 0.,
                     },
                 );
-
-                let damage = ctx.damage.as_mut().unwrap();
-                let br = Point {
-                    x: cent_offset + cent_size,
-                    y: ctx.render_pos.y,
-                };
-                damage[3] = [
-                    (cent_offset * scale) as i32,
-                    0,
-                    (br.x.ceil() * scale) as _,
-                    (br.y.ceil() * scale) as _,
-                ];
 
                 cent_ev.offset_clamp(cent_offset, cent_offset, cent_offset + cent_size);
                 rv.merge(cent_ev);
