@@ -180,27 +180,6 @@ impl Runtime {
         self.interest.set(mask);
     }
 
-    pub fn divide_region(&self, splits: u8) -> SplitInterest<'_> {
-        let value = self.interest.get().0;
-        let base = if value == 0 {
-            0
-        } else {
-            let shift = value.trailing_zeros();
-            let bits = (1 << splits) - 1;
-            let must_be_set = bits << shift;
-            if value & must_be_set == must_be_set {
-                1 << shift
-            } else {
-                0
-            }
-        };
-        SplitInterest {
-            interest: &self.interest,
-            base,
-            value,
-        }
-    }
-
     pub fn get_recursion_handle(&self) -> Option<impl Sized + '_> {
         let depth = self.read_depth.get();
         if depth > 80 {
@@ -280,31 +259,6 @@ impl Runtime {
                 panic!("The 'item' variable was not assignable");
             }
         }
-    }
-}
-
-#[derive(Debug)]
-pub struct SplitInterest<'a> {
-    interest: &'a Cell<InterestMask>,
-    base: u64,
-    value: u64,
-}
-
-impl SplitInterest<'_> {
-    pub fn set(&self, n: u8) {
-        if self.base != 0 {
-            self.interest.set(InterestMask(self.base << n));
-        }
-    }
-
-    pub fn is_split(&self) -> bool {
-        self.base != 0
-    }
-}
-
-impl Drop for SplitInterest<'_> {
-    fn drop(&mut self) {
-        self.interest.set(InterestMask(self.value))
     }
 }
 
@@ -498,14 +452,13 @@ impl State {
             NotifyState::NewData(d) => d.0,
         };
 
-        for (i, bar) in (0..11).chain(iter::repeat(11)).zip(&mut self.bars) {
-            let mask = (dirty_mask >> (5 * i)) & 0x1F;
-            if mask & 0xF != 0 {
-                bar.damage_regions |= mask as u8 & 0xF;
+        for (i, bar) in (0..31).chain(iter::repeat(31)).zip(&mut self.bars) {
+            let mask = (dirty_mask >> (2 * i)) & 3;
+            if mask & 1 != 0 {
                 // TODO split damage left/right/center
                 SurfaceData::from_wl(bar.ls.wl_surface()).damage_full();
             }
-            if mask & 0x10 != 0 {
+            if mask & 2 != 0 {
                 if let Some(popup) = &bar.popup {
                     SurfaceData::from_wl(&popup.wl.surf).damage_full();
                 }
@@ -517,8 +470,8 @@ impl State {
         self.set_data();
 
         let begin = Instant::now();
-        for (i, bar) in (0..11).chain(iter::repeat(11)).zip(&mut self.bars) {
-            let mask = InterestMask(1 << (5 * i));
+        for (i, bar) in (0..31).chain(iter::repeat(31)).zip(&mut self.bars) {
+            let mask = InterestMask(1 << (2 * i));
             bar.render_with(mask, &mut self.runtime, &mut self.renderer);
         }
         self.runtime.set_interest_mask(InterestMask(0));

@@ -775,14 +775,11 @@ impl Item {
                 // Region 1 is "left"
                 // Region 2 is "right"
                 // Region 3 is "center"
-                let interest_region = ctx.runtime.divide_region(4);
                 let clip = ctx.render_extents;
                 let width = clip.1.x - ctx.render_pos.x;
                 let left_size;
-                assert!(interest_region.is_split());
 
                 {
-                    interest_region.set(1);
                     let mut left_ev = left.render(ctx);
                     left_size = ctx.render_pos.x.ceil();
                     left_ev.offset_clamp(0.0, 0.0, left_size);
@@ -793,7 +790,6 @@ impl Item {
                 let right_size;
                 {
                     ctx.render_pos = clip.0;
-                    interest_region.set(2);
 
                     let mark = ctx.queue.start_group();
                     let mut right_ev = right.render(ctx);
@@ -840,7 +836,6 @@ impl Item {
                     }
                 };
 
-                interest_region.set(3);
                 let mark = ctx.queue.start_group();
                 let x0 = clip.1.x - max_center_width;
                 ctx.render_pos.x = x0;

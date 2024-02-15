@@ -36,7 +36,6 @@ pub struct Bar {
     pub anchor_top: bool,
     click_size: u32,
     sparse: bool,
-    pub damage_regions: u8,
     pub item: Rc<Item>,
     pub cfg_index: usize,
     pub id: UID,
@@ -137,7 +136,6 @@ impl Bar {
             anchor_top,
             sink: EventSink::default(),
             sparse,
-            damage_regions: 0xF,
             popup: None,
             cfg_index,
             id: UID::new(),
@@ -150,7 +148,7 @@ impl Bar {
         runtime: &mut Runtime,
         renderer: &mut Renderer,
     ) {
-        runtime.set_interest_mask(mask.bar_region(0xF));
+        runtime.set_interest_mask(mask.bar_region(1));
         runtime.items.insert("bar".into(), self.item.clone());
 
         let surface_data = SurfaceData::from_wl(self.ls.wl_surface());
@@ -185,7 +183,6 @@ impl Bar {
                 }
                 self.sink = new_sink;
             });
-            self.damage_regions = 0;
         }
 
         if let Some(popup) = &mut self.popup {
@@ -204,7 +201,7 @@ impl Bar {
             }
         });
 
-        runtime.set_interest_mask(mask.bar_region(0x10));
+        runtime.set_interest_mask(mask.bar_region(2));
         if let Some(popup) = popup {
             let new_size = renderer.render(runtime, &popup.wl.surf, &mut self.render, |ctx| {
                 popup.desc.render_popup(ctx)
