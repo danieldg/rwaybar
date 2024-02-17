@@ -6,26 +6,16 @@ use crate::{
 };
 use futures_channel::mpsc::{self, UnboundedSender};
 use futures_util::{future::RemoteHandle, StreamExt};
-use log::{error, info, warn};
+use log::{error, info};
 use once_cell::unsync::OnceCell;
-use std::{
-    cell::RefCell, collections::HashMap, fmt, io, os::unix::prelude::RawFd, pin::Pin, ptr::NonNull,
-    rc::Rc, sync::Arc, task,
-};
-use tokio::net::UnixStream;
-use zbus::{names::BusName, zvariant, Connection, ConnectionBuilder, MessageStream};
+use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc, task};
+use zbus::{zvariant, Connection};
 use zvariant::{OwnedValue, Value as Variant};
 
 pub struct DBus {
     send: UnboundedSender<zbus::Message>,
 
     bus: util::Cell<Result<Connection, Vec<task::Waker>>>,
-
-    sig_watchers: util::Cell<Vec<Box<dyn SignalWatcherCall>>>,
-    prop_watchers: util::Cell<
-        Vec<Box<dyn FnMut(&zbus::MessageHeader, &str, &HashMap<&str, OwnedValue>, &[&str])>>,
-    >,
-    name_watchers: util::Cell<Vec<Box<dyn FnMut(&BusName, &str, &str)>>>,
 }
 
 impl fmt::Debug for DBus {
@@ -72,83 +62,18 @@ impl DBus {
         let tb = Rc::new(DBus {
             send,
             bus: Cell::new(Err(Vec::new())),
-            sig_watchers: Default::default(),
-            prop_watchers: Default::default(),
-            name_watchers: Default::default(),
-        });
-
-        // Note: reference cycles don't matter, the DBus object is not freeable
-        let this = tb.clone();
-        tb.add_signal_watcher(move |_path, iface, memb, msg| {
-            match (|| -> zbus::Result<()> {
-                if iface != "org.freedesktop.DBus.Properties" || memb != "PropertiesChanged" {
-                    return Ok(());
-                }
-                let hdr = msg.header()?;
-                let (iface, changed, inval): (&str, HashMap<&str, OwnedValue>, Vec<&str>) =
-                    msg.body()?;
-                let mut watchers = this.prop_watchers.replace(Vec::new());
-                for watcher in &mut watchers {
-                    (*watcher)(&hdr, iface, &changed, &inval);
-                }
-                this.prop_watchers.take_in(|w| {
-                    if w.is_empty() {
-                        *w = watchers;
-                    } else {
-                        w.extend(watchers);
-                    }
-                });
-                Ok(())
-            })() {
-                Ok(()) => {}
-                Err(e) => warn!("Could not parse PropertiesPropertiesChanged message: {}", e),
-            }
-        });
-
-        let this = tb.clone();
-        tb.add_signal_watcher(move |_path, iface, memb, msg| {
-            match (|| -> zbus::Result<()> {
-                if iface != "org.freedesktop.DBus" || memb != "NameOwnerChanged" {
-                    return Ok(());
-                }
-                let (name, old, new) = msg.body()?;
-                let mut watchers = this.name_watchers.replace(Vec::new());
-                for watcher in &mut watchers {
-                    (*watcher)(&name, old, new);
-                }
-                this.name_watchers.take_in(|w| {
-                    if w.is_empty() {
-                        *w = watchers;
-                    } else {
-                        w.extend(watchers);
-                    }
-                });
-                Ok(())
-            })() {
-                Ok(()) => {}
-                Err(e) => warn!("Could not parse: {}", e),
-            }
         });
 
         let this = tb.clone();
         util::spawn("DBus Sender", async move {
-            use zbus::Address;
-            let addr = if is_session {
-                Address::session()?
+            use zbus::conn::Builder;
+            let zbus = if is_session {
+                Builder::session()?
             } else {
-                Address::system()?
+                Builder::system()?
             };
 
-            let zbus = match addr {
-                Address::Unix(s) => {
-                    let stream = AsSocket(UnixStream::connect(s).await?);
-                    ConnectionBuilder::socket(stream)
-                        .internal_executor(false)
-                        .build()
-                        .await?
-                }
-                _ => panic!(),
-            };
+            let zbus = zbus.internal_executor(false).build().await?;
             match this.bus.replace(Ok(zbus.clone())) {
                 Ok(_) => unreachable!(),
                 Err(wakers) => {
@@ -157,15 +82,10 @@ impl DBus {
                     }
                 }
             }
-            util::spawn(
-                "Incoming DBus Events",
-                this.clone().dispatcher((&zbus).into()),
-            );
 
             while let Some(msg) = recv.next().await {
-                zbus.send_message(msg).await?;
+                zbus.send(&msg).await?;
             }
-            error!("Unexpected termination of D-Bus output stream");
             Ok(())
         });
 
@@ -174,167 +94,6 @@ impl DBus {
 
     pub fn send(&self, msg: zbus::Message) {
         let _ = self.send.unbounded_send(msg);
-    }
-
-    pub fn add_signal_watcher<F>(&self, f: F)
-    where
-        F: FnMut(&zvariant::ObjectPath, &str, &str, &zbus::Message) + 'static,
-    {
-        if std::mem::size_of::<F>() != 0 {
-            self.do_add_signal_watcher(Box::new(SignalWatcherNZ(f)))
-        } else {
-            self.do_add_signal_watcher(Box::new(SignalWatcherZST(0, f)))
-        }
-    }
-
-    fn do_add_signal_watcher(&self, b: Box<dyn SignalWatcherCall>) {
-        self.sig_watchers.take_in(|w| w.push(b));
-    }
-
-    pub fn add_property_change_watcher<F>(&self, f: F)
-    where
-        F: FnMut(&zbus::MessageHeader, &str, &HashMap<&str, OwnedValue>, &[&str]) + 'static,
-    {
-        if self.prop_watchers.take_in(|w| {
-            w.push(Box::new(f));
-            w.len() == 1
-        }) {
-            self.send(zbus::Message::method(
-                None::<&str>,
-                Some("org.freedesktop.DBus"),
-                "/org/freedesktop/DBus",
-                Some("org.freedesktop.DBus"),
-                "AddMatch",
-                &("type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'")
-            ).unwrap());
-        }
-    }
-
-    pub fn add_name_watcher<F>(&self, f: F)
-    where
-        F: FnMut(&BusName, &str, &str) + 'static,
-    {
-        if self.name_watchers.take_in(|w| {
-            w.push(Box::new(f));
-            w.len() == 1
-        }) {
-            self.send(
-                zbus::Message::method(
-                    None::<&str>,
-                    Some("org.freedesktop.DBus"),
-                    "/org/freedesktop/DBus",
-                    Some("org.freedesktop.DBus"),
-                    "AddMatch",
-                    &("type='signal',interface='org.freedesktop.DBus',member='NameOwnerChanged'"),
-                )
-                .unwrap(),
-            );
-        }
-    }
-
-    async fn dispatcher(
-        self: Rc<Self>,
-        mut zbus: MessageStream,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        while let Some(msg) = zbus.next().await {
-            self.dispatch(msg?)?;
-        }
-        error!("Unexpected end of D-Bus message stream");
-        Ok(())
-    }
-
-    fn dispatch(&self, msg: Arc<zbus::Message>) -> zbus::Result<()> {
-        use zbus::MessageType;
-        match msg.message_type() {
-            MessageType::Signal => {
-                let mut watchers = self.sig_watchers.replace(Vec::new());
-                match (msg.path(), msg.interface(), msg.member()) {
-                    (Some(path), Some(iface), Some(memb)) => {
-                        for watcher in &mut watchers {
-                            watcher.call(&path, &iface, &memb, &msg);
-                        }
-                    }
-                    _ => {
-                        log::debug!("Ignoring invalid dbus signal");
-                    }
-                }
-                self.sig_watchers.take_in(|w| {
-                    if w.is_empty() {
-                        *w = watchers;
-                    } else {
-                        w.extend(watchers);
-                    }
-                });
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct AsSocket(UnixStream);
-
-impl zbus::Socket for AsSocket {
-    fn poll_recvmsg(
-        &mut self,
-        cx: &mut task::Context<'_>,
-        buf: &mut [u8],
-    ) -> task::Poll<io::Result<(usize, Vec<zvariant::OwnedFd>)>> {
-        use tokio::io::AsyncRead;
-        //use futures::ready;
-        //ready!(self.0.poll_read_ready(cx)?);
-        let mut buf = tokio::io::ReadBuf::new(buf);
-        let rv = Pin::new(&mut self.0).poll_read(cx, &mut buf);
-        rv.map_ok(|()| (buf.filled().len(), vec![]))
-    }
-    fn poll_sendmsg(
-        &mut self,
-        cx: &mut task::Context<'_>,
-        buffer: &[u8],
-        fds: &[RawFd],
-    ) -> task::Poll<io::Result<usize>> {
-        use tokio::io::AsyncWrite;
-        if !fds.is_empty() {
-            // I don't use fds.  Makes this impl much easier.
-            Err(io::ErrorKind::InvalidData)?;
-        }
-        Pin::new(&mut self.0).poll_write(cx, buffer)
-    }
-    fn close(&self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-struct SignalWatcherNZ<F: ?Sized>(F);
-struct SignalWatcherZST<F: ?Sized>(u8, F);
-
-trait SignalWatcherCall {
-    fn call(&mut self, path: &zvariant::ObjectPath, iface: &str, memb: &str, msg: &zbus::Message);
-    fn get_sw_ptr(&self) -> Option<NonNull<()>>;
-}
-
-impl<F> SignalWatcherCall for SignalWatcherNZ<F>
-where
-    F: FnMut(&zvariant::ObjectPath, &str, &str, &zbus::Message) + 'static,
-{
-    fn call(&mut self, path: &zvariant::ObjectPath, iface: &str, memb: &str, msg: &zbus::Message) {
-        (self.0)(path, iface, memb, msg)
-    }
-    fn get_sw_ptr(&self) -> Option<NonNull<()>> {
-        NonNull::new(self as *const SignalWatcherNZ<F> as *mut ())
-    }
-}
-
-impl<F> SignalWatcherCall for SignalWatcherZST<F>
-where
-    F: FnMut(&zvariant::ObjectPath, &str, &str, &zbus::Message) + 'static,
-{
-    fn call(&mut self, path: &zvariant::ObjectPath, iface: &str, memb: &str, msg: &zbus::Message) {
-        (self.1)(path, iface, memb, msg)
-    }
-    fn get_sw_ptr(&self) -> Option<NonNull<()>> {
-        NonNull::new(self as *const SignalWatcherZST<F> as *mut ())
     }
 }
 
@@ -425,16 +184,16 @@ impl DbusValue {
                     expr.push_str(path);
                     expr.push_str("'");
                 }
+                // TODO remove matches when this object is dropped
                 dbus.send(
-                    zbus::Message::method(
-                        None::<&str>,
-                        Some("org.freedesktop.DBus"),
-                        "/org/freedesktop/DBus",
-                        Some("org.freedesktop.DBus"),
-                        "AddMatch",
-                        &expr,
-                    )
-                    .unwrap(),
+                    zbus::Message::method("/org/freedesktop/DBus", "AddMatch")
+                        .unwrap()
+                        .destination("org.freedesktop.DBus")
+                        .unwrap()
+                        .interface("org.freedesktop.DBus")
+                        .unwrap()
+                        .build(&expr)
+                        .unwrap(),
                 );
 
                 let watch_path: Option<Box<str>> = watch_path.map(Into::into);
@@ -446,13 +205,13 @@ impl DbusValue {
                     while let Some(Ok(msg)) = stream.next().await {
                         if let Some(rc) = weak.upgrade() {
                             let (i, m) = watch_method.rsplit_once(".").unwrap();
-                            if msg.interface().as_deref() != Some(i)
-                                || msg.member().as_deref() != Some(m)
+                            if msg.header().interface().map(|n| n.as_str()) != Some(i)
+                                || msg.header().member().map(|n| n.as_str()) != Some(m)
                             {
                                 continue;
                             }
                             if let Some(path) = &watch_path {
-                                if msg.path().as_deref() != Some(&*path) {
+                                if msg.header().path().map(|p| p.as_str()) != Some(&*path) {
                                     continue;
                                 }
                             }
@@ -467,29 +226,68 @@ impl DbusValue {
             Some(None) => error!("Invalid dbus watch expression, ignoring"),
             None if property.is_some() => {
                 let prop = property.unwrap_or_default().to_owned();
+
+                let expr = format!("type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path='{}',arg0='{}'",
+                    rc.path, rc.args[0].as_str().unwrap(),
+                );
+                dbus.send(
+                    zbus::Message::method("/org/freedesktop/DBus", "AddMatch")
+                        .unwrap()
+                        .destination("org.freedesktop.DBus")
+                        .unwrap()
+                        .interface("org.freedesktop.DBus")
+                        .unwrap()
+                        .build(&expr)
+                        .unwrap(),
+                );
+
                 let weak = Rc::downgrade(&rc);
-                rc.bus
-                    .add_property_change_watcher(move |hdr, iface, change, invalid| {
-                        if let (Some(rc), Some((target_iface, prop))) =
-                            (weak.upgrade(), prop.rsplit_once("."))
+
+                let h = util::spawn_handle("DBus value watcher", async move {
+                    let zbus = dbus.connection().await;
+                    let mut stream = zbus::MessageStream::from(zbus);
+                    while let Some(Ok(msg)) = stream.next().await {
+                        let hdr = msg.header();
+                        if hdr.interface().map(|n| n.as_str())
+                            != Some("org.freedesktop.DBus.Properties")
+                            || hdr.member().map(|n| n.as_str()) != Some("PropertiesChanged")
                         {
-                            if iface != target_iface
-                                || hdr.path().ok().flatten().map(|p| p.as_str()) != Some(&*rc.path)
-                            {
-                                return;
+                            continue;
+                        }
+                        if let Some(rc) = weak.upgrade() {
+                            if msg.header().path().map(|p| p.as_str()) != Some(&*rc.path) {
+                                continue;
                             }
-                            if let Some(value) = change.get(prop) {
+
+                            let body = msg.body();
+                            let (iface, changed, inval): (
+                                &str,
+                                HashMap<&str, OwnedValue>,
+                                Vec<&str>,
+                            ) = body.deserialize()?;
+
+                            if iface != rc.args[0].as_str().unwrap() {
+                                continue;
+                            }
+
+                            if let Some(value) = changed.get(&*prop) {
                                 // match the Get return type
-                                let v = zvariant::StructureBuilder::new()
-                                    .add_field(value.clone())
-                                    .build()
-                                    .into();
+                                let v = Variant::Structure(
+                                    zvariant::StructureBuilder::new()
+                                        .append_field((**value).try_clone().unwrap())
+                                        .build(),
+                                )
+                                .try_to_owned()
+                                .unwrap();
                                 *rc.value.borrow_mut() = Some(v);
-                            } else if invalid.iter().any(|p| p == &prop) {
+                            } else if inval.iter().any(|p| p == &prop) {
                                 *rc.value.borrow_mut() = None;
                             }
                         }
-                    });
+                    }
+                    Ok(())
+                });
+                rc.watch.set(Some(h));
             }
             None => {}
         }
@@ -527,7 +325,8 @@ impl DbusValue {
                 )
                 .await;
             match msg.as_ref().map(|m| m.body()) {
-                Ok(Ok(xml)) => {
+                Ok(body) => {
+                    let xml = body.deserialize()?;
                     let mut reader = xml::EventReader::from_str(xml);
                     let mut sig = String::new();
                     let mut in_iface = false;
@@ -584,9 +383,6 @@ impl DbusValue {
                             }
                         }
                     }
-                }
-                Ok(Err(e)) => {
-                    info!("Error introspecting {} {}: {}", self.bus_name, self.path, e);
                 }
                 Err(e) => {
                     info!("Error introspecting {} {}: {}", self.bus_name, self.path, e);
@@ -687,7 +483,8 @@ impl DbusValue {
             )
             .await?;
 
-        *self.value.borrow_mut() = Some(Variant::Structure(reply.body()?).into());
+        *self.value.borrow_mut() =
+            Some(Variant::Structure(reply.body().deserialize()?).try_to_owned()?);
 
         self.interested.take().notify_data("dbus-read");
         Ok(())
@@ -719,7 +516,7 @@ impl DbusValue {
                     .unwrap_or("0")
                     .parse::<usize>()
                     .ok()
-                    .and_then(|i| a.get().get(i))
+                    .and_then(|i| a.get(i).ok().flatten())
                 {
                     Some(v) => Self::read_variant(v, keys, rt, f),
                     None => f(Value::Null),
@@ -733,9 +530,17 @@ impl DbusValue {
                 // sig is "a{sv}" or "a{oa...}"
                 let sig = d.full_signature().as_bytes();
                 let v = match sig.get(2) {
-                    Some(b's') => d.get(key),
-                    Some(b'o') => d.get(&zvariant::ObjectPath::from_str_unchecked(key)),
-                    Some(b'g') => d.get(&zvariant::Signature::from_str_unchecked(key)),
+                    Some(b's') => d.get(&key).ok().flatten().map(Variant::try_to_owned),
+                    Some(b'o') => d
+                        .get(&zvariant::ObjectPath::from_str_unchecked(key))
+                        .ok()
+                        .flatten()
+                        .map(Variant::try_to_owned),
+                    Some(b'g') => d
+                        .get(&zvariant::Signature::from_str_unchecked(key))
+                        .ok()
+                        .flatten()
+                        .map(Variant::try_to_owned),
                     _ => {
                         info!(
                             "Unsupported dict key in type: '{}'",
@@ -744,9 +549,9 @@ impl DbusValue {
                         return f(Value::Null);
                     }
                 };
-                match v.ok().flatten() {
-                    Some(v) => Self::read_variant(v, keys, rt, f),
-                    None => f(Value::Null),
+                match v {
+                    Some(Ok(v)) => Self::read_variant(&*v, keys, rt, f),
+                    _ => f(Value::Null),
                 }
             }
             Variant::Structure(s) => {
