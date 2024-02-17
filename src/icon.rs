@@ -13,7 +13,7 @@ thread_local! {
     static CACHE : RefCell<HashMap<(String, u32), Option<OwnedImage>>> = Default::default();
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OwnedImage {
     pub pixmap: Arc<tiny_skia::Pixmap>,
 }
@@ -262,10 +262,12 @@ pub fn render(ctx: &mut Render, name: &str) -> Result<(), ()> {
             Some(img) => {
                 ctx.render_pos.x = ctx.render_pos.x.ceil();
                 ctx.render_pos.y = ctx.render_pos.y.ceil();
+                let mut tl = ctx.render_pos;
+                tl.scale(ctx.scale);
                 // convert the sizes back to virtual pixels
                 let w = img.pixmap.width() as f32 / ctx.scale;
                 let h = img.pixmap.height() as f32 / ctx.scale;
-                ctx.queue.push_image(ctx.render_pos, img.pixmap.clone());
+                ctx.queue.push_image(tl, img.pixmap.clone());
                 ctx.render_pos.x += w;
                 ctx.render_pos.y += h;
                 Ok(())

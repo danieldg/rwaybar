@@ -58,13 +58,13 @@ impl Notifier {
         debug!(
             "{} triggered refresh on {}",
             who,
-            (0..12)
+            (0..32)
                 .filter_map(|i| {
-                    let v = (self.interest.0 >> (5 * i)) & 0x1F;
+                    let v = (self.interest.0 >> (2 * i)) & 3;
                     if v != 0 {
                         use std::fmt::Write;
                         let mut r = String::new();
-                        for (i, c) in b"ALRCP".iter().enumerate() {
+                        for (i, c) in b"BP".iter().enumerate() {
                             if v & (1 << i) != 0 {
                                 r.push(*c as char)
                             }

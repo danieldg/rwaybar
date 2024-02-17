@@ -421,7 +421,7 @@ impl Formatting {
                 Some(f) => {
                     inner_x_offset = expand * f;
 
-                    ctx.queue.translate_group(
+                    ctx.translate_group(
                         &mark,
                         Point {
                             x: inner_x_offset,
@@ -798,7 +798,7 @@ impl Item {
 
                     let right_offset = clip.1.x - right_size;
 
-                    ctx.queue.translate_group(
+                    ctx.translate_group(
                         &mark,
                         Point {
                             x: right_offset,
@@ -846,7 +846,7 @@ impl Item {
 
                 let cent_offset = calc_center(cent_size).floor();
 
-                ctx.queue.translate_group(
+                ctx.translate_group(
                     &mark,
                     Point {
                         x: cent_offset - x0,
@@ -952,8 +952,8 @@ impl Item {
                     _ => unreachable!(),
                 }
 
-                ctx.queue.crop_range(&mark1, &mark2, bb1);
-                ctx.queue.crop_range(&mark2, &mark3, bb2);
+                ctx.crop_range(&mark1, &mark2, bb1);
+                ctx.crop_range(&mark2, &mark3, bb2);
             }
             Module::Icon {
                 name,

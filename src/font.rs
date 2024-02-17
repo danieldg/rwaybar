@@ -45,23 +45,30 @@ impl FontMapped {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct CGlyph<'a> {
     pub id: GlyphId,
+    /// For normal glyphs, scales from font units (integer) to render coordinates.
+    /// If pixmap is Some, then scales from pixmap pixel to final pixel
     pub scale: f32,
-    pub position: (f32, f32),
+    /// Relative position from the layout's origin point.
+    ///
+    /// If pixmap is Some, this is the top-left corner.
+    /// For normal glyphs, this is the bottom-left (not a bbox)
+    pub position: Point,
     pub font: &'a FontMapped,
     pub color: Color,
+    pub pixmap: Option<OwnedImage>,
 }
 
-pub fn layout_font<'a>(
+fn layout_font<'a>(
     font: &'a FontMapped,
     size_pt: f32,
     runtime: &'a Runtime,
     rgba: Color,
     text: &str,
     markup: bool,
-) -> (Vec<CGlyph<'a>>, (f32, f32)) {
+) -> (Vec<CGlyph<'a>>, Point) {
     let scale = font.scale_from_pt(size_pt);
     let mut xpos = 0.0f32;
     let mut xmax = 0.0f32;
@@ -154,7 +161,7 @@ pub fn layout_font<'a>(
                 }
                 prev = None;
             }
-            let position = (xpos, ypos);
+            let position = Point { x: xpos, y: ypos };
             let scale = fid.scale_from_pt(size_pt);
             let w = fid.as_ref().glyph_hor_advance(id).unwrap_or(0);
             xpos += w as f32 * scale;
@@ -164,21 +171,103 @@ pub fn layout_font<'a>(
                 scale,
                 font: fid,
                 color,
+                pixmap: None,
             })
         })
         .collect();
 
-    let width = xpos.max(xmax) as f32;
-    let height = ypos - scale * font.as_ref().descender() as f32;
-    (to_draw, (width, height))
+    let text_size = Point {
+        x: xpos.max(xmax) as f32,
+        y: ypos - scale * font.as_ref().descender() as f32,
+    };
+
+    (to_draw, text_size)
 }
 
-pub fn draw_font_with<T>(
+/// Determine the bounding box of this series of glyphs
+///
+/// Output coordinates use the render scale and position as the origin.
+fn bounding_box(to_draw: &mut [CGlyph], g_scale: f32, stroke: f32) -> (Point, Point) {
+    let mut tl = Point {
+        x: f32::MAX,
+        y: f32::MAX,
+    };
+    let mut br = Point {
+        x: f32::MIN,
+        y: f32::MIN,
+    };
+    for &mut CGlyph {
+        id,
+        ref mut scale,
+        ref mut position,
+        font,
+        ref mut pixmap,
+        ..
+    } in to_draw
+    {
+        if let Some(gbox) = font.as_ref().glyph_bounding_box(id) {
+            let mut g_tl = Point {
+                x: gbox.x_min as f32,
+                y: -gbox.y_max as f32,
+            };
+            let mut g_br = Point {
+                x: gbox.x_max as f32,
+                y: -gbox.y_min as f32,
+            };
+            g_tl.scale(*scale);
+            g_br.scale(*scale);
+            g_tl += *position;
+            g_br += *position;
+            tl.x = tl.x.min(g_tl.x - stroke);
+            tl.y = tl.y.min(g_tl.y - stroke);
+            br.x = br.x.max(g_br.x + stroke);
+            br.y = br.y.max(g_br.y + stroke);
+            continue;
+        }
+
+        let target_ppem = *scale * font.as_ref().units_per_em() as f32 * g_scale;
+        let target_h = *scale * font.as_ref().height() as f32 * g_scale;
+
+        position.y -= font.as_ref().ascender() as f32 * *scale;
+        if let Some(raster_img) = font.as_ref().glyph_raster_image(id, target_ppem as u16) {
+            if let Some(img) = OwnedImage::from_data(raster_img.data, target_h as u32, false) {
+                *pixmap = Some(img);
+
+                *scale = target_ppem / raster_img.pixels_per_em as f32;
+
+                position.x += raster_img.x as f32 * *scale;
+                position.y += raster_img.y as f32 * *scale;
+            }
+        }
+        if pixmap.is_none() {
+            if let Some(svg) = font.as_ref().glyph_svg_image(id) {
+                *pixmap = OwnedImage::from_svg(svg.data, target_h as u32);
+                *scale = 1.;
+            }
+        }
+        if let Some(img) = pixmap.as_ref() {
+            let size = Point {
+                x: img.pixmap.width() as f32 / g_scale,
+                y: img.pixmap.height() as f32 / g_scale,
+            };
+            let g_br = *position + size;
+
+            tl.x = tl.x.min(position.x);
+            tl.y = tl.y.min(position.y);
+            br.x = br.x.max(g_br.x);
+            br.y = br.y.max(g_br.y);
+        }
+    }
+
+    (tl, br)
+}
+
+fn draw_font_with<T>(
     target: &mut T,
     xform: Transform,
     to_draw: &[CGlyph],
     mut draw: impl FnMut(&mut T, &tiny_skia::Path, Color),
-    mut draw_img: impl FnMut(&mut T, Transform, OwnedImage),
+    mut draw_img: impl FnMut(&mut T, Transform, &OwnedImage),
 ) {
     for &CGlyph {
         id,
@@ -186,8 +275,16 @@ pub fn draw_font_with<T>(
         position,
         font,
         color,
+        ref pixmap,
     } in to_draw
     {
+        if let Some(img) = pixmap.as_ref() {
+            let xform = xform.pre_translate(position.x, position.y);
+            let xform = xform.pre_scale(scale, scale);
+            draw_img(target, xform, img);
+            continue;
+        }
+
         struct Draw(tiny_skia::PathBuilder);
         let mut path = Draw(tiny_skia::PathBuilder::new());
         impl ttf_parser::OutlineBuilder for Draw {
@@ -208,34 +305,12 @@ pub fn draw_font_with<T>(
             }
         }
         if let Some(_bounds) = font.as_ref().outline_glyph(id, &mut path) {
-            let xform = xform.pre_translate(position.0, position.1);
+            let xform = xform.pre_translate(position.x, position.y);
             let xform = xform.pre_scale(scale, scale);
             if let Some(path) = path.0.finish().and_then(|p| p.transform(xform)) {
                 draw(target, &path, color);
             }
             continue;
-        }
-        let target_ppem = scale * font.as_ref().units_per_em() as f32;
-        let target_h = scale * font.as_ref().height() as f32;
-        if let Some(raster_img) = font.as_ref().glyph_raster_image(id, target_ppem as u16) {
-            // This is a PNG glyph (color emoji); read it into a pixbuf and draw like an icon
-            if let Some(img) = OwnedImage::from_data(raster_img.data, target_h as u32, false) {
-                let ypos = position.1 - font.as_ref().ascender() as f32 * scale;
-                let png_scale = target_ppem / raster_img.pixels_per_em as f32;
-                let xform = xform.pre_translate(position.0, ypos);
-                let xform = xform.pre_scale(png_scale, png_scale);
-                let xform = xform.pre_translate(raster_img.x as f32, raster_img.y as f32);
-                draw_img(target, xform, img);
-                continue;
-            }
-        }
-        if let Some(svg) = font.as_ref().glyph_svg_image(id) {
-            if let Some(img) = OwnedImage::from_svg(svg.data, target_h as u32) {
-                let ypos = position.1 - font.as_ref().ascender() as f32 * scale;
-                let xform = xform.pre_translate(position.0, ypos);
-                draw_img(target, xform, img);
-                continue;
-            }
         }
     }
 }
@@ -254,31 +329,47 @@ fn get_subpixel_key(x: f32) -> u8 {
     idx.floor() as u8
 }
 
+/// Align the given point to the pixel grid, returning true if the change would be unnoticeable
+fn align_nearby_grid(Point { x, y }: &mut Point) -> bool {
+    let margin = 1.0 / SUBPIXEL_KEYS;
+    let xp = *x;
+    let yp = *y;
+    let xr = xp.round();
+    let yr = yp.round();
+    *x = xr;
+    *y = yr;
+    let dx = xp - xr;
+    let dy = yp - yr;
+    (dx.abs() <= margin) && (dy.abs() <= margin)
+}
+
 #[derive(Eq, Hash, PartialEq, Debug)]
 pub struct RenderKey {
     x_offset_subpix: u8,
     y_offset_subpix: u8,
-    scale: u8,
 
     font: UID,
     font_size_millipt: u32,
     font_color: u32,
-    text_stroke: Option<u32>,
-    text_stroke_size_milli: Option<u32>,
+    text_stroke: u32,
+    text_stroke_size_milli: u32,
 
-    text: String,
+    text: Box<str>,
 }
-
-/// The margin in pixels that text is allowed to occupy outside its declared borders.  This may
-/// happen due to outlines, accents, or emoji images that extend above or below the intended
-/// borders.
-const PIXMAP_MARGIN: i32 = 5;
 
 #[derive(Debug)]
 pub struct TextImage {
-    width: f32,
-    height: f32,
-    y_offset_subpix: u8,
+    /// Declared size of the text, in pixels.
+    ///
+    /// This controls the movement of render_pos, and is only vaguely related to the size of the
+    /// bounding box of the text.
+    text_size: Point,
+
+    /// Pixel distance from the initial render_pos to the actual pixmap origin.
+    ///
+    /// This plus pixmap.(width, height) forms the actual bounding box for the text.
+    origin_offset: Point,
+
     pixmap: Arc<tiny_skia::Pixmap>,
     pub last_used: Instant,
 }
@@ -289,25 +380,23 @@ fn to_color_u32(color: Color) -> u32 {
 }
 
 impl RenderKey {
-    fn new(ctx: &Render, xform: tiny_skia::Transform, text: &str) -> Option<Self> {
-        let xi = get_subpixel_key(xform.tx);
-        let yi = get_subpixel_key(xform.ty);
-        let scale = xform.sx as u8;
-        if scale as f32 != xform.sy || xform.sx != xform.sy {
-            return None;
-        }
-        let text_stroke_size_milli = ctx
-            .text_stroke
-            .and_then(|_| ctx.text_stroke_size.map(|s| (s * 1000.0).round() as u32));
+    fn new(ctx: &Render, text: &str) -> Option<Self> {
+        let pixel_x = ctx.render_pos.x * ctx.scale;
+        let pixel_y = ctx.render_pos.y * ctx.scale;
+        let xi = get_subpixel_key(pixel_x);
+        let yi = get_subpixel_key(pixel_y);
+
+        let text_stroke_size_milli = ctx.text_stroke.map_or(0, |_| {
+            (ctx.text_stroke_size.unwrap_or(1.0) * ctx.scale * 1000.0).round() as u32
+        });
         Some(RenderKey {
             x_offset_subpix: xi,
             y_offset_subpix: yi,
-            scale,
             font: ctx.font.uid,
-            font_size_millipt: (ctx.font_size * 1000.0).round() as u32,
+            font_size_millipt: (ctx.scale * ctx.font_size * 1000.0).round() as u32,
             font_color: to_color_u32(ctx.font_color),
 
-            text_stroke: ctx.text_stroke.map(to_color_u32),
+            text_stroke: ctx.text_stroke.map_or(0, to_color_u32),
             text_stroke_size_milli,
 
             text: text.into(),
@@ -320,69 +409,50 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         return;
     }
 
-    let Point {
-        x: xstart,
-        y: ystart,
-    } = ctx.render_pos;
-
-    let mut xform = Transform::from_scale(ctx.scale, ctx.scale).pre_translate(xstart, ystart);
+    let scale = ctx.scale;
+    let mut render_pos = ctx.render_pos;
 
     let clip_w = ctx.render_extents.1.x - ctx.render_pos.x;
     let clip_h = ctx.render_extents.1.y - ctx.render_extents.0.y;
 
     let mut key = None;
     if ctx.queue.cache.is_some() {
-        key = RenderKey::new(ctx, xform, text);
+        key = RenderKey::new(ctx, text);
     }
 
     if key
         .as_ref()
         .and_then(|k| {
-            let mut xform = xform;
             let ti = ctx.queue.cache.as_mut().unwrap().text.get_mut(k)?;
-            if ti.width > clip_w {
+            let mut text_size = ti.text_size;
+            text_size.scale(1. / scale);
+
+            if text_size.x > clip_w {
                 return None;
             }
-            let mut xlate_y = xform.ty;
             match ctx.align.vert {
                 Some(f) if !ctx.render_flex => {
-                    let extra = clip_h - ti.height;
+                    let extra = clip_h - text_size.y;
                     if extra >= 0.0 {
-                        xform = xform.pre_translate(0.0, extra * f);
-                        xlate_y = xform.ty;
+                        render_pos.y += extra * f;
+                        ctx.render_pos.y += extra * f;
                     }
                 }
                 _ => {}
             }
 
-            let fixed_yi = get_subpixel_key(xlate_y);
+            let mut pixel_pos = ctx.render_pos;
+            pixel_pos.scale(scale);
 
-            if ti.y_offset_subpix != fixed_yi {
+            let mut pixmap_tl = pixel_pos - ti.origin_offset;
+            if !align_nearby_grid(&mut pixmap_tl) {
                 return None;
             }
 
-            let mut origin = [Point {
-                x: -(k.x_offset_subpix as f32 / SUBPIXEL_KEYS),
-                y: -(ti.y_offset_subpix as f32 / SUBPIXEL_KEYS),
-            }];
-            xform.map_points(&mut origin);
-            let draw_x = origin[0].x.round() as i32 - PIXMAP_MARGIN;
-            let draw_y = origin[0].y.round() as i32 - PIXMAP_MARGIN;
-
-            ti.last_used = Instant::now();
-
-            ctx.render_pos.x += ti.width;
-            ctx.render_pos.y += ti.height;
-
             let img = ti.pixmap.clone();
-
-            ctx.queue.push_image(
-                tiny_skia::Point {
-                    x: draw_x as f32 / ctx.scale,
-                    y: draw_y as f32 / ctx.scale,
-                },
-                img,
-            );
+            ti.last_used = Instant::now();
+            ctx.render_pos += text_size;
+            ctx.queue.push_image(pixmap_tl, img);
 
             Some(())
         })
@@ -391,7 +461,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         return;
     }
 
-    let (mut to_draw, (width, height)) = layout_font(
+    let (mut to_draw, mut text_size) = layout_font(
         ctx.font,
         ctx.font_size,
         &ctx.runtime,
@@ -400,60 +470,77 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         markup,
     );
 
-    if width > clip_w {
-        to_draw.retain(|glyph| glyph.position.0 < clip_w);
+    if text_size.y > clip_w {
+        to_draw.retain(|glyph| glyph.position.x < clip_w);
         key = None;
     }
 
-    ctx.render_pos.x += width;
-    ctx.render_pos.y += height;
-
-    if to_draw.is_empty() || ctx.bounds_only {
-        return;
-    }
+    ctx.render_pos += text_size;
 
     if !ctx.render_flex {
         match ctx.align.vert {
             Some(f) => {
-                let extra = clip_h - height;
+                let extra = clip_h - text_size.y;
                 if extra >= 0.0 {
-                    xform = xform.pre_translate(0.0, extra * f);
+                    render_pos.y += extra * f;
                     ctx.render_pos.y += extra * f;
                 }
             }
             _ => {}
         }
     }
-    let x_offset_subpix = get_subpixel_key(xform.tx);
-    let y_offset_subpix = get_subpixel_key(xform.ty);
 
-    let mut bounding = [
-        Point::zero(),
-        Point {
-            x: width + (x_offset_subpix as f32 / SUBPIXEL_KEYS),
-            y: height + (y_offset_subpix as f32 / SUBPIXEL_KEYS),
-        },
-        Point {
-            x: -(x_offset_subpix as f32 / SUBPIXEL_KEYS),
-            y: -(y_offset_subpix as f32 / SUBPIXEL_KEYS),
-        },
-    ];
+    if to_draw.is_empty() || ctx.bounds_only {
+        return;
+    }
 
-    xform.map_points(&mut bounding);
-    let xsize = bounding[1].x - bounding[0].x + (PIXMAP_MARGIN * 2) as f32;
-    let ysize = bounding[1].y - bounding[0].y + (PIXMAP_MARGIN * 2) as f32;
-    let draw_x = bounding[2].x.round() as i32 - PIXMAP_MARGIN;
-    let draw_y = bounding[2].y.round() as i32 - PIXMAP_MARGIN;
+    let stroke_width = if ctx.text_stroke.is_some() {
+        ctx.text_stroke_size.unwrap_or(1.0)
+    } else {
+        0.0
+    };
 
+    // bounding box relative to render_pos
+    let bbox = bounding_box(&mut to_draw, scale, 1.0 + stroke_width);
+
+    if bbox.0.x >= bbox.1.x || bbox.0.y >= bbox.1.y {
+        // empty bounding box
+        return;
+    }
+
+    // our pixmap location, in render coordinates, not yet aligned to the pixel grid
+    let bbox_tl = bbox.0 + render_pos;
+    let bbox_br = bbox.1 + render_pos;
+
+    // Expand the bbox to full pixels
+    let pixel_l = (bbox_tl.x * scale).floor();
+    let pixel_t = (bbox_tl.y * scale).floor();
+    let pixel_r = (bbox_br.x * scale).ceil();
+    let pixel_b = (bbox_br.y * scale).ceil();
+
+    // pixmap location, in pixel coordinates
+    let pixmap_tl = Point {
+        x: pixel_l,
+        y: pixel_t,
+    };
+    let xsize = pixel_r - pixel_l;
+    let ysize = pixel_b - pixel_t;
+
+    let origin_offset = Point {
+        x: render_pos.x * scale - pixel_l,
+        y: render_pos.y * scale - pixel_t,
+    };
+
+    // transform from render_pos-relative to our-pixmap-pixel
     let render_xform = tiny_skia::Transform {
-        sx: xform.sx,
-        sy: xform.sy,
-        tx: bounding[2].x - draw_x as f32,
-        ty: bounding[2].y - draw_y as f32,
+        sx: scale,
+        sy: scale,
+        tx: origin_offset.x,
+        ty: origin_offset.y,
         ..tiny_skia::Transform::identity()
     };
 
-    let mut pixmap = match tiny_skia::Pixmap::new(xsize.ceil() as u32, ysize.ceil() as u32) {
+    let mut pixmap = match tiny_skia::Pixmap::new(xsize as u32, ysize as u32) {
         Some(pixmap) => pixmap,
         None => {
             log::debug!("Not rendering \"{text}\" ({xsize}, {ysize})");
@@ -468,7 +555,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
             ..tiny_skia::Paint::default()
         };
         let stroke = tiny_skia::Stroke {
-            width: ctx.text_stroke_size.unwrap_or(1.0),
+            width: stroke_width,
             ..Default::default()
         };
 
@@ -522,21 +609,15 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
 
     let pixmap = Arc::new(pixmap);
 
-    ctx.queue.push_image(
-        tiny_skia::Point {
-            x: draw_x as f32 / ctx.scale,
-            y: draw_y as f32 / ctx.scale,
-        },
-        pixmap.clone(),
-    );
+    ctx.queue.push_image(pixmap_tl, pixmap.clone());
 
     if let Some(key) = key {
+        text_size.scale(scale);
         ctx.queue.cache.as_mut().unwrap().text.insert(
             key,
             TextImage {
-                width,
-                height,
-                y_offset_subpix,
+                text_size,
+                origin_offset,
                 pixmap,
                 last_used: Instant::now(),
             },
