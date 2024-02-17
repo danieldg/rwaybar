@@ -368,6 +368,11 @@ pub struct TextImage {
     /// bounding box of the text.
     text_size: Point,
 
+    /// Clip width used while rendering, in pixels.
+    ///
+    /// If this is less than text_size.x, then the pixmap should be considered to be clipped.
+    clip_w_px: f32,
+
     /// Pixel distance from the initial render_pos to the actual pixmap origin.
     ///
     /// This plus pixmap.(width, height) forms the actual bounding box for the text.
@@ -417,6 +422,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
 
     let clip_w = ctx.render_extents.1.x - ctx.render_pos.x;
     let clip_h = ctx.render_extents.1.y - ctx.render_extents.0.y;
+    let clip_w_px = clip_w * scale;
 
     let mut key = None;
     if ctx.queue.cache.is_some() {
@@ -428,11 +434,20 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         .and_then(|k| {
             let ti = ctx.queue.cache.as_mut().unwrap().text.get_mut(k)?;
             let mut text_size = ti.text_size;
-            text_size.scale(1. / scale);
 
-            if text_size.x > clip_w {
+            if text_size.x > ti.clip_w_px {
+                // the cached key was clipped
+                if (clip_w_px - ti.clip_w_px).abs() > 1.0 {
+                    // the saved clip is too different from what we need
+                    return None;
+                }
+            } else if text_size.x > clip_w_px + 1.0 {
+                // we need to clip it, can't use the cached rendering
                 return None;
             }
+
+            text_size.scale(1. / scale);
+
             match ctx.align.vert {
                 Some(f) if !ctx.render_flex => {
                     let extra = clip_h - text_size.y;
@@ -473,9 +488,8 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         markup,
     );
 
-    if text_size.y > clip_w {
+    if text_size.x > clip_w {
         to_draw.retain(|glyph| glyph.position.x < clip_w);
-        key = None;
     }
 
     ctx.render_pos += text_size;
@@ -620,6 +634,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
             key,
             TextImage {
                 text_size,
+                clip_w_px,
                 origin_offset,
                 pixmap,
                 last_used: Instant::now(),
