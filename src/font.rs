@@ -83,12 +83,15 @@ fn layout_font<'a>(
 
     let to_draw: Vec<_> = text
         .char_indices()
-        .filter_map(|(i, c)| {
+        .filter_map(|(i, mut c)| {
             if c == '\n' {
                 xmax = xmax.max(xpos);
                 xpos = 0.0;
                 ypos += line_height as f32;
                 return None;
+            }
+            if c == '\t' {
+                c = ' ';
             }
             let mut fid = stack.last().map_or(font, |v| v.0);
             let color = stack.last().map_or(rgba, |v| v.1);
