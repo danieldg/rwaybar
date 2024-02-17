@@ -40,15 +40,14 @@ xml-rs = "*"
 
 # GUI
 png = "0.17"
-resvg = { version = "0.38", default-features = false }
+resvg = { version = "0.40", default-features = false }
 smithay-client-toolkit = { version = "0.18.1", default-features = false, git = "https://github.com/Smithay/client-toolkit.git", branch = "v0.18.1" }
 #smithay-client-toolkit = { version = "*", default-features = false, path = "../smithay-client-toolkit" }
 tiny-skia = "0.11"
 ttf-parser = "*"
-usvg = { version = "0.38", default-features = false }
 wayland-client = { version = "0.31" }
 wayland-cursor = { version = "0.31" }
-wayland-protocols = { version = "0.31", features = ['unstable', 'server'] }
+wayland-protocols = { version = "0.31", features = ['unstable', 'staging'] }
 wayland-protocols-wlr = { version = "0.2" }
 
 # Module specific
