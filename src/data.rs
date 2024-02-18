@@ -162,6 +162,34 @@ impl<'a> Into<JsonValue> for Value<'a> {
     }
 }
 
+impl<'a> From<Value<'a>> for evalexpr::Value {
+    fn from(v: Value) -> Self {
+        match v {
+            Value::Owned(s) => evalexpr::Value::String(s),
+            Value::Borrow(s) => evalexpr::Value::String(s.into()),
+            Value::Float(f) => evalexpr::Value::Float(f),
+            Value::Bool(f) => evalexpr::Value::Boolean(f),
+            Value::Null => evalexpr::Value::Empty,
+        }
+    }
+}
+
+impl<'a> From<evalexpr::Value> for Value<'a> {
+    fn from(v: evalexpr::Value) -> Self {
+        match v {
+            evalexpr::Value::String(s) => Value::Owned(s),
+            evalexpr::Value::Float(n) => Value::Float(n),
+            evalexpr::Value::Int(n) => Value::Float(n as _),
+            evalexpr::Value::Boolean(b) => Value::Bool(b),
+            evalexpr::Value::Empty => Value::Null,
+            _ => {
+                warn!("Ignoring invalid return type from eval");
+                Value::Null
+            }
+        }
+    }
+}
+
 impl<'a> From<toml::Value> for Value<'a> {
     fn from(v: toml::Value) -> Self {
         match v {
@@ -1536,89 +1564,15 @@ impl Module {
                 }
             }
             Module::Eval { expr, vars } => {
-                struct Context<'a> {
-                    vars: Vec<(&'a str, evalexpr::Value)>,
-                }
-                impl<'a> evalexpr::Context for Context<'a> {
-                    fn get_value(&self, name: &str) -> Option<&evalexpr::Value> {
-                        self.vars
-                            .iter()
-                            .filter(|&&(k, _)| k == name)
-                            .next()
-                            .map(|(_, v)| v)
-                    }
-                    fn call_function(
-                        &self,
-                        name: &str,
-                        arg: &evalexpr::Value,
-                    ) -> evalexpr::EvalexprResult<evalexpr::Value> {
-                        match name {
-                            "float" => {
-                                if arg.is_float() {
-                                    return Ok(arg.clone());
-                                }
-                                let rv = arg.as_string()?;
-                                match rv.trim().parse() {
-                                    Ok(v) => Ok(evalexpr::Value::Float(v)),
-                                    Err(_) => Err(evalexpr::error::EvalexprError::ExpectedFloat {
-                                        actual: evalexpr::Value::String(rv),
-                                    }),
-                                }
-                            }
-                            "int" => {
-                                if let Ok(f) = arg.as_float() {
-                                    return Ok(evalexpr::Value::Int(f as _));
-                                }
-                                let rv = arg.as_string()?;
-                                match rv.trim().parse() {
-                                    Ok(v) => Ok(evalexpr::Value::Int(v)),
-                                    Err(_) => Err(evalexpr::error::EvalexprError::ExpectedInt {
-                                        actual: evalexpr::Value::String(rv),
-                                    }),
-                                }
-                            }
-                            _ => Err(evalexpr::error::EvalexprError::FunctionIdentifierNotFound(
-                                name.into(),
-                            )),
-                        }
-                    }
-                    fn are_builtin_functions_disabled(&self) -> bool {
-                        false
-                    }
-                    fn set_builtin_functions_disabled(
-                        &mut self,
-                        _: bool,
-                    ) -> evalexpr::EvalexprResult<()> {
-                        Err(evalexpr::error::EvalexprError::BuiltinFunctionsCannotBeDisabled)
-                    }
-                }
-                let ctx = Context {
+                let ctx = EvalContext {
+                    rt: &rt,
                     vars: vars
                         .iter()
-                        .map(|(k, v)| {
-                            (
-                                &k[..],
-                                match v.read_to_owned(k, "", rt) {
-                                    Value::Owned(s) => evalexpr::Value::String(s),
-                                    Value::Borrow(s) => evalexpr::Value::String(s.into()),
-                                    Value::Float(f) => evalexpr::Value::Float(f),
-                                    Value::Bool(f) => evalexpr::Value::Boolean(f),
-                                    Value::Null => evalexpr::Value::Empty,
-                                },
-                            )
-                        })
+                        .map(|(k, v)| (&k[..], v.read_to_owned(k, "", rt).into()))
                         .collect(),
                 };
                 match expr.eval_with_context(&ctx) {
-                    Ok(evalexpr::Value::String(s)) => f(Value::Owned(s)),
-                    Ok(evalexpr::Value::Float(n)) => f(Value::Float(n)),
-                    Ok(evalexpr::Value::Int(n)) => f(Value::Float(n as _)),
-                    Ok(evalexpr::Value::Boolean(b)) => f(Value::Bool(b)),
-                    Ok(evalexpr::Value::Empty) => f(Value::Null),
-                    Ok(_) => {
-                        warn!("Ignoring invalid return type from eval");
-                        f(Value::Null)
-                    }
+                    Ok(e) => f(e.into()),
                     Err(e) => {
                         warn!("Eval error in {}: {}", name, e);
                         f(Value::Null)
@@ -1985,6 +1939,74 @@ impl ClockState {
             this.task.set(None);
             Ok(())
         })));
+    }
+}
+
+pub struct EvalContext<'a> {
+    pub rt: &'a Runtime,
+    pub vars: Vec<(&'a str, evalexpr::Value)>,
+}
+
+impl<'a> evalexpr::Context for EvalContext<'a> {
+    fn get_value(&self, name: &str) -> Option<&evalexpr::Value> {
+        self.vars
+            .iter()
+            .filter(|&&(k, _)| k == name)
+            .next()
+            .map(|(_, v)| v)
+    }
+    fn call_function(
+        &self,
+        name: &str,
+        arg: &evalexpr::Value,
+    ) -> evalexpr::EvalexprResult<evalexpr::Value> {
+        match name {
+            "float" => {
+                if arg.is_float() {
+                    return Ok(arg.clone());
+                }
+                let rv = arg.as_string()?;
+                match rv.trim().parse() {
+                    Ok(v) => Ok(evalexpr::Value::Float(v)),
+                    Err(_) => Err(evalexpr::error::EvalexprError::ExpectedFloat {
+                        actual: evalexpr::Value::String(rv),
+                    }),
+                }
+            }
+            "int" => {
+                if let Ok(f) = arg.as_float() {
+                    return Ok(evalexpr::Value::Int(f as _));
+                }
+                let rv = arg.as_string()?;
+                match rv.trim().parse() {
+                    Ok(v) => Ok(evalexpr::Value::Int(v)),
+                    Err(_) => Err(evalexpr::error::EvalexprError::ExpectedInt {
+                        actual: evalexpr::Value::String(rv),
+                    }),
+                }
+            }
+            "get" => {
+                let key = arg.as_string()?;
+                let (name, key) = match key.find('.') {
+                    Some(p) => (&key[..p], &key[p + 1..]),
+                    None => (&key[..], ""),
+                };
+                if let Some(item) = self.rt.items.get(name) {
+                    Ok(item.data.read_to_owned(name, key, self.rt).into())
+                } else {
+                    Ok(evalexpr::Value::Empty)
+                }
+            }
+            _ => Err(evalexpr::error::EvalexprError::FunctionIdentifierNotFound(
+                name.into(),
+            )),
+        }
+    }
+    fn are_builtin_functions_disabled(&self) -> bool {
+        false
+    }
+    fn set_builtin_functions_disabled(&mut self, _: bool) -> evalexpr::EvalexprResult<()> {
+        Err(evalexpr::error::EvalexprError::BuiltinFunctionsCannotBeDisabled)
     }
 }
 

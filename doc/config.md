@@ -61,6 +61,13 @@ configuration) to consult for the item.  The `.key` part is optional and allows
 modules to provide multiple values; see the module-specific documentation for
 details.
 
+A text expansion using `{=formula:format}` is evaluated as a mathematical
+expression in the same way as the [eval](#eval) block.  The values of any named
+block will be made available to the expression (it is not possible to specify a
+key or use a block with a hyphen, but see the `get` function).  Note that it is
+not possible to use a `:` character in the expression, regardless of escaping
+or quoting; use an eval block if this is a problem.
+
 ## Formatting
 
 Any block may contain one or more of the following keys, which influence the
@@ -249,7 +256,13 @@ Evaluates the given expression.  Basic math and logic operators are supported,
 but not variable assignment, conditionals, looping, or recursion.  Variables
 referenced in this expression refer to the expanded value of other keys in this
 block.  See [https://docs.rs/evalexpr/#builtin-functions] for a list of
-available functions.
+available functions, in addition to:
+
+Function | Argument | Description
+---------|----------|-------------
+`float` | Any | Convert the value to a number
+`int` | Any | Convert the value to an integer
+`get` | String | Read a value from a named block, for example `get("disk.percent-used")` 
 
 ## exec-json
 

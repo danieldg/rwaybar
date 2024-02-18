@@ -17,7 +17,7 @@ use wayland_client::{
 
 use crate::{
     bar::Bar,
-    data::{IterationItem, Module, Value},
+    data::{EvalContext, IterationItem, Module, Value},
     font::FontMapped,
     item::*,
     render::Renderer,
@@ -196,6 +196,23 @@ impl Runtime {
         }
     }
 
+    pub fn eval(&self, expr: &str) -> Result<Value<'static>, evalexpr::EvalexprError> {
+        let expr = evalexpr::build_operator_tree(expr)?;
+        let mut vars = Vec::new();
+        for ident in expr.iter_variable_identifiers() {
+            if let Some(item) = self.items.get(ident) {
+                let value = item.data.read_to_owned(ident, "", self);
+                vars.push((ident, value.into()));
+            } else {
+                return Err(evalexpr::EvalexprError::CustomMessage(format!(
+                    "Value {ident} not found"
+                )));
+            }
+        }
+        let ctx = EvalContext { rt: &self, vars };
+        expr.eval_with_context(&ctx).map(Into::into)
+    }
+
     pub fn format<'a>(&'a self, fmt: &'a str) -> Result<Value<'a>, strfmt::FmtError> {
         if !fmt.contains("{") {
             return Ok(Value::Borrow(fmt));
@@ -205,6 +222,11 @@ impl Runtime {
             && !fmt[1..fmt.len() - 1].contains(&['{', ':'] as &[char])
         {
             let q = &fmt[1..fmt.len() - 1];
+            if q.starts_with("=") {
+                return self
+                    .eval(&q[1..])
+                    .map_err(|e| strfmt::FmtError::KeyError(e.to_string()));
+            }
             let (name, key) = match q.find('.') {
                 Some(p) => (&q[..p], &q[p + 1..]),
                 None => (&q[..], ""),
@@ -215,7 +237,25 @@ impl Runtime {
                 return Err(strfmt::FmtError::KeyError(name.to_string()));
             }
         }
+
         strfmt::strfmt_map(fmt, |mut q| {
+            if q.key.starts_with("=") {
+                match self.eval(&q.key[1..]) {
+                    Ok(s) => {
+                        return match Value::from(s) {
+                            Value::Borrow(s) => q.str(s),
+                            Value::Owned(s) => q.str(&s),
+                            Value::Float(f) => q.f64(f),
+                            Value::Bool(true) => q.str("1"),
+                            Value::Bool(false) => q.str("0"),
+                            Value::Null => q.str(""),
+                        }
+                    }
+                    Err(e) => {
+                        return Err(strfmt::FmtError::KeyError(e.to_string()));
+                    }
+                }
+            }
             let (name, key) = match q.key.find('.') {
                 Some(p) => (&q.key[..p], &q.key[p + 1..]),
                 None => (&q.key[..], ""),

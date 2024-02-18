@@ -426,10 +426,10 @@ format = "⏱"
 # defines it.
 #font = "emoji"
 
-# Horizontal scrolling on the emoji will move it right or left (by adjusting the padding)
-padding = "0 0 0 {emoji-pad}"
-on-scroll-right = { send = "emoji-pad", format = "{emoji-pad-r}" }
-on-scroll-left = { send = "emoji-pad", format = "{emoji-pad-l}" }
+# Scrolling on the emoji will move it right or left (by adjusting the padding)
+padding = "0 0 0 {emoji_pad}"
+on-scroll-left = { send = "emoji_pad", format = "{=max(0,emoji_pad - 5)}" }
+on-scroll-right = { send = "emoji_pad", format = "{=min(200,emoji_pad + 5)}" }
 
 # Have a font tester as the tooltip to the emoji item
 tooltip = ['font-tester']
@@ -441,18 +441,8 @@ on-scroll-down = { write = "font-tester", "format" = "+32" }
 type = 'font-test'
 font = "emoji"
 
-[emoji-pad]
+[emoji_pad]
 value = 0
-
-[emoji-pad-l]
-type = 'eval'
-expr = 'max(v - 5, 0)'
-v = '{emoji-pad}'
-
-[emoji-pad-r]
-type = 'eval'
-expr = 'min(v + 5, 200)'
-v = '{emoji-pad}'
 
 [clip]
 #type = 'clipboard'
