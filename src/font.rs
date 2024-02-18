@@ -170,21 +170,26 @@ fn layout_font<'a>(
                 id = fid.as_ref().glyph_index(c).unwrap_or_default();
             }
             if id.0 != 0 {
-                let kern = ttf_parser::Tag::from_bytes(b"kern");
                 if let Some(prev) = prev {
-                    xpos += fid
-                        .as_ref()
-                        .raw_face()
-                        .table(kern)
-                        .and_then(ttf_parser::kern::Table::parse)
+                    let tables = fid.as_ref().tables();
+                    let offset = tables
+                        .kern
                         .map(|t| t.subtables)
                         .into_iter()
                         .flatten()
                         .filter(|st| st.horizontal && !st.variable)
                         .filter_map(|st| st.glyphs_kerning(prev, id))
-                        .next()
-                        .unwrap_or(0) as f32
-                        * scale;
+                        .fold(0, |a, b| a + b);
+                    let offset = tables
+                        .kerx
+                        .map(|t| t.subtables)
+                        .into_iter()
+                        .flatten()
+                        .filter(|st| st.horizontal && !st.variable)
+                        .filter_map(|st| st.glyphs_kerning(prev, id))
+                        .fold(offset, |a, b| a + b);
+
+                    xpos += offset as f32 * scale;
                 }
                 prev = Some(id);
             } else {
