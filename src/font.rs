@@ -429,54 +429,64 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         key = RenderKey::new(ctx, text);
     }
 
-    if key
-        .as_ref()
-        .and_then(|k| {
-            let ti = ctx.queue.cache.as_mut().unwrap().text.get_mut(k)?;
-            let mut text_size = ti.text_size;
+    /* try */
+    match (|| {
+        let ti = ctx.queue.cache.as_mut()?.text.get_mut(key.as_ref()?)?;
+        let mut text_size = ti.text_size;
 
-            if text_size.x > ti.clip_w_px {
-                // the cached key was clipped
-                if (clip_w_px - ti.clip_w_px).abs() > 1.0 {
-                    // the saved clip is too different from what we need
-                    return None;
-                }
-            } else if text_size.x > clip_w_px + 1.0 {
-                // we need to clip it, can't use the cached rendering
+        let mut add_clip = false;
+
+        if text_size.x > ti.clip_w_px {
+            // the cached key was clipped
+            if ti.clip_w_px > clip_w_px + 1.0 {
+                // it was clipped too large
+                add_clip = true;
+            } else if clip_w_px > ti.clip_w_px + 1.0 {
+                // the saved pixmap is too small, re-render
                 return None;
             }
+            // else the clip is close enough
+        } else if text_size.x > clip_w_px + 1.0 {
+            // we need to clip it
+            add_clip = true;
+        }
 
-            text_size.scale(1. / scale);
+        text_size.scale(1. / scale);
 
-            match ctx.align.vert {
-                Some(f) if !ctx.render_flex => {
-                    let extra = clip_h - text_size.y;
-                    if extra >= 0.0 {
-                        render_pos.y += extra * f;
-                        ctx.render_pos.y += extra * f;
-                    }
+        match ctx.align.vert {
+            Some(f) if !ctx.render_flex => {
+                let extra = clip_h - text_size.y;
+                if extra >= 0.0 {
+                    render_pos.y += extra * f;
+                    ctx.render_pos.y += extra * f;
                 }
-                _ => {}
             }
+            _ => {}
+        }
 
-            let mut pixel_pos = ctx.render_pos;
-            pixel_pos.scale(scale);
+        let mut pixel_pos = ctx.render_pos;
+        pixel_pos.scale(scale);
 
-            let mut pixmap_tl = pixel_pos - ti.origin_offset;
-            if !align_nearby_grid(&mut pixmap_tl) {
-                return None;
-            }
+        let mut pixmap_tl = pixel_pos - ti.origin_offset;
+        if !align_nearby_grid(&mut pixmap_tl) {
+            return None;
+        }
 
-            let img = ti.pixmap.clone();
-            ti.last_used = Instant::now();
-            ctx.render_pos += text_size;
+        let img = ti.pixmap.clone();
+        ti.last_used = Instant::now();
+        ctx.render_pos += text_size;
+        if add_clip {
+            let r = pixmap_tl.x + clip_w_px;
+            let crop = [0., 0., r, f32::MAX];
+            ctx.queue.push_image_clip(pixmap_tl, img, crop);
+        } else {
             ctx.queue.push_image(pixmap_tl, img);
+        }
 
-            Some(())
-        })
-        .is_some()
-    {
-        return;
+        Some(())
+    })() {
+        Some(()) => return,
+        None => {}
     }
 
     let (mut to_draw, mut text_size) = layout_font(

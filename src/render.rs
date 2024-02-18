@@ -598,13 +598,22 @@ impl Queue<'_> {
     }
 
     pub fn push_image(&mut self, top_left: tiny_skia::Point, pixels: Arc<tiny_skia::Pixmap>) {
+        self.push_image_clip(top_left, pixels, [f32::NAN; 4]);
+    }
+
+    pub fn push_image_clip(
+        &mut self,
+        top_left: tiny_skia::Point,
+        pixels: Arc<tiny_skia::Pixmap>,
+        crop: [f32; 4],
+    ) {
         if top_left.x.fract() != 0.0 || top_left.y.fract() != 0.0 {
             log::debug!("Found fractional image coordinates ({top_left:?})");
         }
         self.image.push(RenderImage {
             top_left,
             pixels,
-            crop: [f32::NAN; 4],
+            crop,
         });
     }
 
