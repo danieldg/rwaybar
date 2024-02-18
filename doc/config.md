@@ -168,6 +168,8 @@ Key | Expanded | Default | Details
 `day-format` | No | ` %e` | Format for days of the current month that are not today.
 `today-format` | No | ` <span color='green'><b>%e</b></span>` | Format for the current day.
 `other-format` | No | ` <span color='gray'>%e</span>` | Format for days of the prior and next months.
+`before` | No | - | If set to an integer, display that many weeks before today instead of this month.
+`after` | No | before | If `before` is set, this controls how many weeks after today to display.
 
 ## clipboard
 Key | Expanded | Default | Details
@@ -297,6 +299,17 @@ Key | Expanded | Default | Details
 
 When inside a focus-list block, the `item` block refers to the current item (so
 `{item.title}` would refer to the title key).
+
+## font-test
+
+This expands to a table of glyphs in the current font.  Best used as a tooltip, as seen in the example config.
+
+Before each character is the HTML entity that will produce the character when
+passed in a block with `markup = true`.  This is wlll be something like `#84`
+(written fully as `"&#84;est"` for displaying `Test`).  If the output is
+`@1234`, then there is no unicode character that results in this glyph being
+output; you can use `&@1234;` to display it anyway.  This is generally due to
+the glyph being used to render some multi-code-point entity.
 
 ## formatted
 

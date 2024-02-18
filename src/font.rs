@@ -84,6 +84,9 @@ fn layout_font<'a>(
     let to_draw: Vec<_> = text
         .char_indices()
         .filter_map(|(i, mut c)| {
+            if skip > i {
+                return None;
+            }
             if c == '\n' {
                 xmax = xmax.max(xpos);
                 xpos = 0.0;
@@ -122,12 +125,50 @@ fn layout_font<'a>(
                         }
                         stack.push((fid, color));
                     }
+                    return None;
                 }
             }
-            if skip > i {
-                return None;
+            let mut id = GlyphId(0);
+            if markup && c == '&' {
+                if let Some(eot) = text[i..].find(';') {
+                    let tag = &text[i..][..eot][1..];
+                    skip = i + eot + 1;
+                    if tag.starts_with("#0x") || tag.starts_with("#0X") {
+                        match u32::from_str_radix(&tag[3..], 16)
+                            .ok()
+                            .and_then(char::from_u32)
+                        {
+                            Some(nc) => c = nc,
+                            None => return None,
+                        }
+                    } else if tag.starts_with('#') {
+                        match tag[1..].parse().ok().and_then(char::from_u32) {
+                            Some(nc) => c = nc,
+                            None => return None,
+                        }
+                    } else if tag.starts_with('@') {
+                        if let Ok(gi) = tag[1..].parse::<u16>() {
+                            if gi > 0 && gi < fid.as_ref().number_of_glyphs() {
+                                id.0 = gi;
+                            } else {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    } else {
+                        match tag {
+                            "amp" => c = '&',
+                            "lt" => c = '<',
+                            "gt" => c = '>',
+                            _ => return None,
+                        }
+                    }
+                }
             }
-            let mut id = fid.as_ref().glyph_index(c).unwrap_or_default();
+            if id.0 == 0 {
+                id = fid.as_ref().glyph_index(c).unwrap_or_default();
+            }
             if id.0 != 0 {
                 let kern = ttf_parser::Tag::from_bytes(b"kern");
                 if let Some(prev) = prev {
@@ -236,7 +277,7 @@ fn bounding_box(to_draw: &mut [CGlyph], g_scale: f32, stroke: f32) -> (Point, Po
             if let Some(img) = OwnedImage::from_data(raster_img.data, target_h as u32, false) {
                 *pixmap = Some(img);
 
-                *scale = target_ppem / raster_img.pixels_per_em as f32;
+                *scale = target_ppem / raster_img.pixels_per_em as f32 / g_scale;
 
                 position.x += raster_img.x as f32 * *scale;
                 position.y += raster_img.y as f32 * *scale;

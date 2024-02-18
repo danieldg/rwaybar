@@ -7,7 +7,11 @@ use crate::{
 use futures_util::{future::RemoteHandle, StreamExt};
 use log::{debug, error, warn};
 use std::{cell::OnceCell, collections::HashMap, convert::TryInto, error::Error, rc::Rc};
-use zbus::{fdo::DBusProxy, names::BusName, names::UniqueName, zvariant};
+use zbus::{
+    fdo::DBusProxy,
+    names::{BusName, UniqueName},
+    zvariant,
+};
 use zvariant::{OwnedValue, Value as Variant};
 
 // TODO need nonblocking caching

@@ -955,6 +955,44 @@ impl Item {
                 ctx.crop_range(&mark1, &mark2, bb1);
                 ctx.crop_range(&mark2, &mark3, bb2);
             }
+            Module::FontTest { offset, interested } => {
+                use std::fmt::Write;
+                interested.take_in(|i| i.add(&ctx.runtime));
+                let font = ctx.font.as_ref();
+                let glyphs = font.number_of_glyphs();
+                let offset = offset.get();
+                let mut glyph_to_char = vec![0u32; glyphs as usize];
+                if let Some(cmap) = font.tables().cmap {
+                    for st in cmap.subtables {
+                        if !st.is_unicode() {
+                            continue;
+                        }
+                        st.codepoints(|c| {
+                            if let Some(i) = st.glyph_index(c) {
+                                if let Some(e) = glyph_to_char.get_mut(i.0 as usize) {
+                                    *e = c;
+                                }
+                            }
+                        });
+                    }
+                }
+                let end = glyphs.min(offset.saturating_add(64));
+                let mut text = String::new();
+                _ = write!(text, "Showing glyph {offset}-{end}/{glyphs}:\n");
+                for (i, &c) in glyph_to_char.iter().enumerate().skip(offset as _).take(64) {
+                    if c > 0 && char::from_u32(c).is_some() {
+                        _ = write!(text, "#{c:04} (&@{i};) ");
+                    } else {
+                        _ = write!(text, "@{i:04} (&@{i};) ");
+                    }
+                    if i & 0x7 == 0x7 {
+                        text.pop();
+                        text.push('\n');
+                    }
+                }
+                text.pop();
+                render_font_item(ctx, &text, true);
+            }
             Module::Icon {
                 name,
                 fallback,

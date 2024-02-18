@@ -426,6 +426,10 @@ pub enum Module {
         focused: Rc<Item>,
         spacing: Box<str>,
     },
+    FontTest {
+        offset: Cell<u16>,
+        interested: Cell<NotifierList>,
+    },
     Formatted {
         format: Box<str>,
         tooltip: Option<Rc<Item>>,
@@ -758,6 +762,10 @@ impl Module {
                     spacing,
                 }
             }
+            Some("font-test") => Module::FontTest {
+                offset: Cell::new(0),
+                interested: Default::default(),
+            },
             Some("formatted") | Some("text") => {
                 let format = value
                     .get("format")
@@ -1288,6 +1296,7 @@ impl Module {
             Module::Group { .. }
             | Module::Fade { .. }
             | Module::FocusList { .. }
+            | Module::FontTest { .. }
             | Module::Tray { .. } => {
                 error!("Cannot use '{}' in a text expansion", name);
                 f(Value::Null)
@@ -1825,6 +1834,27 @@ impl Module {
                         warn!("Could not write to '{}' : {}", name, e);
                     }
                 }
+            }
+            Module::FontTest { offset, interested } => {
+                let value = value.into_text();
+                let off = if value.len() == 1 {
+                    Some(16)
+                } else {
+                    value.get(1..).and_then(|v| v.parse::<u16>().ok())
+                };
+                match (value.chars().next(), off) {
+                    (Some('-'), Some(off)) => {
+                        offset.set(offset.get().saturating_sub(off));
+                    }
+                    (Some('+'), Some(off)) => {
+                        offset.set(offset.get().saturating_add(off));
+                    }
+                    _ => {
+                        warn!("Could not parse offset {value}");
+                        return;
+                    }
+                }
+                interested.take().notify_data("value");
             }
             Module::Item { value: v } => v.take_in(|item| match item.as_ref() {
                 #[cfg(feature = "dbus")]

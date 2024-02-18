@@ -59,7 +59,7 @@ the-clock-font = "Liberation Sans 20"
 mono = "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf"
 symbola = "/usr/share/fonts/gdouros-symbola/Symbola.ttf"
 # Note: this font provides images for emojis, so it disregards the font color.
-emoji = "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf"
+emoji = "/usr/share/fonts/google-noto-color-emoji-fonts/NotoColorEmoji.ttf"
 # This font provides the '' thermometer symbols used in the example
 # temperature meter, in addition to some non-colored emojis.
 fontawesome = "/usr/share/fonts/fontawesome/FontAwesome.otf"
@@ -420,15 +420,26 @@ format = "{psi-cpu-10.1} {psi-io-10.1} {cpu_icon}"
 
 [emoji]
 format = "⏱"
-#font = "emoji"
+
 # Note: choosing a font explicitly is not required if the default fonts do not
 # contain the requested glyph, but it may be useful in case more than one font
 # defines it.
+#font = "emoji"
 
 # Horizontal scrolling on the emoji will move it right or left (by adjusting the padding)
 padding = "0 0 0 {emoji-pad}"
 on-scroll-right = { send = "emoji-pad", format = "{emoji-pad-r}" }
 on-scroll-left = { send = "emoji-pad", format = "{emoji-pad-l}" }
+
+# Have a font tester as the tooltip to the emoji item
+tooltip = ['font-tester']
+# Vertical scrolling on the emoji will change the font tester
+on-scroll-up = { write = "font-tester", "format" = "-32" }
+on-scroll-down = { write = "font-tester", "format" = "+32" }
+
+[font-tester]
+type = 'font-test'
+font = "emoji"
 
 [emoji-pad]
 value = 0
