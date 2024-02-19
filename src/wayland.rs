@@ -25,7 +25,7 @@ use std::{
     rc::Rc,
     sync::{
         atomic::{AtomicU32, AtomicU8, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
 };
 use tokio::{io::unix::AsyncFd, sync::Notify};
@@ -38,7 +38,14 @@ use wayland_client::{
     Connection, Proxy, QueueHandle,
 };
 use wayland_protocols::{
-    wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape::Default as NormalCursor,
+    wp::{
+        cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape::Default as NormalCursor,
+        fractional_scale::v1::client::{
+            wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+            wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+        },
+        viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
+    },
     xdg::shell::client::{xdg_popup, xdg_positioner},
 };
 use wayland_protocols_wlr::{
@@ -81,6 +88,8 @@ pub struct WaylandClient {
     pub shm: Shm,
     pub cursor_shape: Option<CursorShapeManager>,
     pub wlr_dcm: SimpleGlobal<ZwlrDataControlManagerV1, 2>,
+    pub wp_fscale: SimpleGlobal<WpFractionalScaleManagerV1, 1>,
+    pub wp_viewport: SimpleGlobal<WpViewporter, 1>,
     pub xdg: XdgShell,
 
     taps: Vec<TapState>,
@@ -104,9 +113,13 @@ smithay_client_toolkit::delegate_registry!(State);
 smithay_client_toolkit::delegate_seat!(State);
 smithay_client_toolkit::delegate_shm!(State);
 smithay_client_toolkit::delegate_simple!(State, ZwlrDataControlManagerV1, 1);
+smithay_client_toolkit::delegate_simple!(State, WpFractionalScaleManagerV1, 1);
+smithay_client_toolkit::delegate_simple!(State, WpViewporter, 1);
 smithay_client_toolkit::delegate_touch!(State);
 smithay_client_toolkit::delegate_xdg_popup!(State);
 smithay_client_toolkit::delegate_xdg_shell!(State);
+
+wayland_client::delegate_noop!(State: WpViewport);
 
 #[derive(Default, Debug, Clone)]
 struct PointerState {
@@ -135,10 +148,39 @@ impl smithay_client_toolkit::registry::ProvidesRegistryState for State {
 #[derive(Debug)]
 pub struct SurfaceData {
     sctk: SctkSurfaceData,
+    extra: OnceLock<(WpFractionalScaleV1, WpViewport)>,
+    scale_120: AtomicU32,
     width: AtomicU32,
     height: AtomicU32,
 
     state: AtomicU8,
+}
+
+impl Drop for SurfaceData {
+    fn drop(&mut self) {
+        if let Some((fs, vp)) = self.extra.get_mut() {
+            fs.destroy();
+            vp.destroy();
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct Scale120(u32);
+
+impl Scale120 {
+    pub fn from_output(scale: i32) -> Self {
+        Scale120(scale as u32 * 120)
+    }
+    pub fn to_buffer_scale(&self) -> i32 {
+        (self.0 as i32 + 119) / 120
+    }
+}
+
+impl Default for Scale120 {
+    fn default() -> Self {
+        Scale120(120)
+    }
 }
 
 impl smithay_client_toolkit::compositor::SurfaceDataExt for SurfaceData {
@@ -171,14 +213,14 @@ impl SurfaceData {
     /// * The surface has not yet been configured
     /// * Rendering on this surface has been throttled by the compositor
     pub fn start_render(&self) -> bool {
-        self.state
-            .compare_exchange(
-                SurfaceData::NEED_RENDER,
-                SurfaceData::POST_RENDER,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            )
-            .is_ok()
+        let state = self.state.load(Ordering::Relaxed);
+        if state == SurfaceData::NEED_RENDER {
+            self.state
+                .store(SurfaceData::POST_RENDER, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
     }
 
     /// After calling start_render, we discovered that the damage didn't actually do anything, so
@@ -202,8 +244,24 @@ impl SurfaceData {
         tiny_skia::Transform::from_scale(scale as f32, scale as f32)
     }
 
-    pub fn scale_factor(&self) -> i32 {
-        self.sctk.scale_factor()
+    pub fn scale_120(&self) -> Scale120 {
+        let scale_120 = self.scale_120.load(Ordering::Relaxed);
+        if scale_120 == 0 {
+            // fall back to the integer scale factor
+            Scale120(self.sctk.scale_factor() as u32 * 120)
+        } else {
+            Scale120(scale_120)
+        }
+    }
+
+    pub fn scale_factor(&self) -> f32 {
+        let scale_120 = self.scale_120.load(Ordering::Relaxed);
+        if scale_120 == 0 {
+            // fall back to the integer scale factor
+            self.sctk.scale_factor() as f32
+        } else {
+            scale_120 as f32 / 120.0
+        }
     }
 
     pub fn height(&self) -> u32 {
@@ -215,11 +273,13 @@ impl SurfaceData {
     }
 
     pub fn pixel_width(&self) -> i32 {
-        self.width.load(Ordering::Relaxed) as i32 * self.scale_factor()
+        let w = self.width.load(Ordering::Relaxed) * self.scale_120().0;
+        (w as i32 + 119) / 120
     }
 
     pub fn pixel_height(&self) -> i32 {
-        self.height.load(Ordering::Relaxed) as i32 * self.scale_factor()
+        let h = self.height.load(Ordering::Relaxed) * self.scale_120().0;
+        (h as i32 + 119) / 120
     }
 }
 
@@ -232,9 +292,12 @@ impl smithay_client_toolkit::compositor::CompositorHandler for State {
         new_factor: i32,
     ) {
         if let Some(data) = SurfaceData::try_from_wl(surf) {
-            surf.set_buffer_scale(new_factor);
-            if data.damage_full() {
-                self.request_draw();
+            // Only set the buffer scale if we aren't using viewporter
+            if data.extra.get().is_none() {
+                surf.set_buffer_scale(new_factor);
+                if data.damage_full() {
+                    self.request_draw();
+                }
             }
         }
     }
@@ -273,6 +336,9 @@ impl smithay_client_toolkit::shell::wlr_layer::LayerShellHandler for State {
         let data = SurfaceData::from_wl(ls.wl_surface());
         data.width.store(config.new_size.0, Ordering::Relaxed);
         data.height.store(config.new_size.1, Ordering::Relaxed);
+        if let Some((_, vp)) = data.extra.get() {
+            vp.set_destination(config.new_size.0 as i32, config.new_size.1 as i32);
+        }
         data.state.fetch_or(
             SurfaceData::CONFIGURED | SurfaceData::DAMAGED,
             Ordering::Relaxed,
@@ -641,6 +707,9 @@ impl smithay_client_toolkit::shell::xdg::popup::PopupHandler for State {
         let data = SurfaceData::from_wl(popup.wl_surface());
         data.width.store(config.width as u32, Ordering::Relaxed);
         data.height.store(config.height as u32, Ordering::Relaxed);
+        if let Some((_, vp)) = data.extra.get() {
+            vp.set_destination(config.width, config.height);
+        }
         data.state
             .fetch_or(SurfaceData::CONFIGURED, Ordering::Relaxed);
         if data.damage_full() {
@@ -702,6 +771,8 @@ impl WaylandClient {
             layer: LayerShell::bind(&globals, &queue)?,
             cursor_shape: CursorShapeManager::bind(&globals, &queue).ok(),
             wlr_dcm: SimpleGlobal::bind(&globals, &queue)?,
+            wp_fscale: SimpleGlobal::bind(&globals, &queue)?,
+            wp_viewport: SimpleGlobal::bind(&globals, &queue)?,
             xdg: XdgShell::bind(&globals, &queue)?,
 
             taps: Default::default(),
@@ -720,14 +791,45 @@ impl WaylandClient {
         self.io.flush.notify_one()
     }
 
-    pub fn create_surface(&self, scale: i32) -> WlSurface {
+    pub fn create_surface(&self, scale: Scale120) -> WlSurface {
         let sd = SurfaceData {
-            sctk: SctkSurfaceData::new(None, scale),
+            sctk: SctkSurfaceData::new(None, scale.to_buffer_scale()),
+            extra: OnceLock::new(),
+            scale_120: AtomicU32::new(0),
             height: AtomicU32::new(0),
             width: AtomicU32::new(0),
             state: AtomicU8::new(SurfaceData::NEW),
         };
-        self.compositor.create_surface_with_data(&self.queue, sd)
+        let surface = self.compositor.create_surface_with_data(&self.queue, sd);
+        if let (Ok(fsm), Ok(vpm)) = (self.wp_fscale.get(), self.wp_viewport.get()) {
+            let sd = SurfaceData::from_wl(&surface);
+            let fs = fsm.get_fractional_scale(&surface, &self.queue, surface.clone());
+            let vp = vpm.get_viewport(&surface, &self.queue, ());
+            sd.extra.set((fs, vp)).unwrap();
+        } else {
+            surface.set_buffer_scale(scale.0 as i32 / 120);
+        }
+        surface
+    }
+}
+
+impl wayland_client::Dispatch<WpFractionalScaleV1, WlSurface> for State {
+    fn event(
+        _: &mut State,
+        _: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        surface: &WlSurface,
+        _: &wayland_client::Connection,
+        _: &QueueHandle<State>,
+    ) {
+        match event {
+            wp_fractional_scale_v1::Event::PreferredScale { scale } => {
+                let sd = SurfaceData::from_wl(surface);
+                sd.scale_120.store(scale, Ordering::Relaxed);
+                sd.damage_full();
+            }
+            _ => {}
+        }
     }
 }
 
@@ -835,7 +937,8 @@ impl Popup {
                     .ls
                     .wl_surface()
                     .data::<SurfaceData>()
-                    .map_or(1, |d| d.scale_factor());
+                    .map(|d| d.scale_120())
+                    .unwrap_or_default();
                 Self::new(wayland, &ls, !bar.anchor_top, anchor, size, scale)
             }
             _ => unreachable!(),
@@ -848,7 +951,7 @@ impl Popup {
         prefer_top: bool,
         anchor: (i32, i32, i32, i32),
         size: (i32, i32),
-        scale: i32,
+        scale: Scale120,
     ) -> Self {
         use xdg_positioner::{Anchor, Gravity};
 
@@ -875,7 +978,6 @@ impl Popup {
         parent.get_popup(sctk.xdg_popup());
         sctk.xdg_surface().set_window_geometry(0, 0, size.0, size.1);
 
-        surf.set_buffer_scale(scale);
         surf.commit();
         Popup {
             surf,
@@ -892,7 +994,7 @@ impl Popup {
         wayland: &mut WaylandClient,
         ls_surf: &ZwlrLayerSurfaceV1,
         size: (i32, i32),
-        scale: i32,
+        scale: Scale120,
     ) {
         if self.sctk.xdg_popup().version() >= xdg_popup::REQ_REPOSITION_SINCE {
             use xdg_positioner::{Anchor, Gravity};

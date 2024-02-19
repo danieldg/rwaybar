@@ -79,7 +79,7 @@ impl Renderer {
 
         let pixel_width = surface_data.pixel_width() as u32;
         let pixel_height = surface_data.pixel_height() as u32;
-        let scale = surface_data.scale_factor() as f32;
+        let scale = surface_data.scale_factor();
         let render_xform = surface_data.scale_transform();
         let no_xform = tiny_skia::Transform::identity();
 

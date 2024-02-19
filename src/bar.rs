@@ -16,7 +16,7 @@ use crate::{
     render::{RenderSurface, Renderer},
     state::{DrawNotifyHandle, InterestMask, Runtime},
     util::{spawn_noerr, UID},
-    wayland::{Button, Popup, SurfaceData, SurfaceEvents, WaylandClient},
+    wayland::{Button, Popup, Scale120, SurfaceData, SurfaceEvents, WaylandClient},
 };
 
 #[derive(Debug)]
@@ -51,7 +51,7 @@ impl Bar {
         cfg: toml::Value,
         cfg_index: usize,
     ) -> Bar {
-        let scale = output_data.scale_factor;
+        let scale = Scale120::from_output(output_data.scale_factor);
         let layer = match cfg.get("layer").and_then(|v| v.as_str()) {
             Some("overlay") => Layer::Overlay,
             Some("bottom") => Layer::Bottom,
@@ -124,7 +124,6 @@ impl Bar {
             }
             ls.wl_surface().set_input_region(Some(&region.wl_region()));
         }
-        ls.wl_surface().set_buffer_scale(scale);
         ls.wl_surface().commit();
 
         Bar {
@@ -190,11 +189,11 @@ impl Bar {
                 self.popup = None;
             }
         }
-        let mut scale = 1;
+        let mut scale = Scale120::default();
         let popup = self.popup.as_mut().and_then(|popup| {
             let surface_data = SurfaceData::from_wl(&popup.wl.surf);
             if surface_data.start_render() {
-                scale = surface_data.scale_factor();
+                scale = surface_data.scale_120();
                 Some(popup)
             } else {
                 None
