@@ -173,6 +173,7 @@ impl Scale120 {
         Scale120(scale as u32 * 120)
     }
     pub fn to_buffer_scale(&self) -> i32 {
+        // Always round up; a 1.25 scale should request a x2 integer scale
         (self.0 as i32 + 119) / 120
     }
 }
@@ -274,12 +275,12 @@ impl SurfaceData {
 
     pub fn pixel_width(&self) -> i32 {
         let w = self.width.load(Ordering::Relaxed) * self.scale_120().0;
-        (w as i32 + 119) / 120
+        (w as i32 + 60) / 120
     }
 
     pub fn pixel_height(&self) -> i32 {
         let h = self.height.load(Ordering::Relaxed) * self.scale_120().0;
-        (h as i32 + 119) / 120
+        (h as i32 + 60) / 120
     }
 }
 
@@ -807,6 +808,7 @@ impl WaylandClient {
             let vp = vpm.get_viewport(&surface, &self.queue, ());
             sd.extra.set((fs, vp)).unwrap();
         } else {
+            debug_assert_eq!(scale.0 as i32 % 120, 0);
             surface.set_buffer_scale(scale.0 as i32 / 120);
         }
         surface
@@ -815,7 +817,7 @@ impl WaylandClient {
 
 impl wayland_client::Dispatch<WpFractionalScaleV1, WlSurface> for State {
     fn event(
-        _: &mut State,
+        state: &mut State,
         _: &WpFractionalScaleV1,
         event: wp_fractional_scale_v1::Event,
         surface: &WlSurface,
@@ -826,7 +828,9 @@ impl wayland_client::Dispatch<WpFractionalScaleV1, WlSurface> for State {
             wp_fractional_scale_v1::Event::PreferredScale { scale } => {
                 let sd = SurfaceData::from_wl(surface);
                 sd.scale_120.store(scale, Ordering::Relaxed);
-                sd.damage_full();
+                if sd.damage_full() {
+                    state.request_draw();
+                }
             }
             _ => {}
         }

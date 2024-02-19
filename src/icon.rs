@@ -226,7 +226,7 @@ pub fn render(ctx: &mut Render, name: &str) -> Result<(), ()> {
     let xsize = room.x * ctx.scale;
     let ysize = room.y * ctx.scale;
 
-    let tsize = ysize as u32;
+    let tsize = ysize.round() as u32;
     if f32::min(xsize, ysize) < 1.0 {
         return Err(());
     }
@@ -256,16 +256,21 @@ pub fn render(ctx: &mut Render, name: &str) -> Result<(), ()> {
                 .and_then(|file| OwnedImage::from_file(file, tsize, true))
         }) {
             Some(img) => {
-                ctx.render_pos.x = ctx.render_pos.x.ceil();
-                ctx.render_pos.y = ctx.render_pos.y.ceil();
                 let mut tl = ctx.render_pos;
                 tl.scale(ctx.scale);
-                // convert the sizes back to virtual pixels
-                let w = img.pixmap.width() as f32 / ctx.scale;
-                let h = img.pixmap.height() as f32 / ctx.scale;
+                tl.x = (tl.x - 0.01).ceil();
+                tl.y = (tl.y - 0.01).ceil();
+
                 ctx.queue.push_image(tl, img.pixmap.clone());
-                ctx.render_pos.x += w;
-                ctx.render_pos.y += h;
+
+                // Calculate the bottom-right pixel coordinate, then convert it to render space
+                let mut br = tl
+                    + tiny_skia::Point {
+                        x: img.pixmap.width() as f32,
+                        y: img.pixmap.height() as f32,
+                    };
+                br.scale(1. / ctx.scale);
+                ctx.render_pos = br;
                 Ok(())
             }
             None => Err(()),

@@ -481,12 +481,21 @@ impl RenderRect {
         scale: f32,
         mut fill: impl FnMut(tiny_skia::Rect),
     ) {
-        let Some(bbox) = self.bbox(scale) else {
-            return;
-        };
+        let l = self.bounds.left() * scale;
+        let t = self.bounds.top() * scale;
+        let r = self.bounds.right() * scale;
+        let b = self.bounds.bottom() * scale;
+
         for dbox in damage {
-            if let Some(rect) = bbox.intersect(dbox) {
-                fill(rect.to_rect());
+            if r <= dbox.left() as f32 || dbox.right() as f32 <= l {
+                continue;
+            }
+            let l = l.max(dbox.left() as f32);
+            let t = t.max(dbox.top() as f32);
+            let r = r.min(dbox.right() as f32);
+            let b = b.min(dbox.bottom() as f32);
+            if let Some(rect) = tiny_skia::Rect::from_ltrb(l, t, r, b) {
+                fill(rect);
             }
         }
     }
