@@ -2,7 +2,7 @@ use log::debug;
 use smithay_client_toolkit::{
     compositor::{CompositorState, SurfaceData as SctkSurfaceData},
     output::OutputState,
-    registry::{RegistryState, SimpleGlobal},
+    registry::{GlobalProxy, RegistryState},
     seat::{
         self,
         pointer::{
@@ -87,9 +87,9 @@ pub struct WaylandClient {
     pub seat: SeatState,
     pub shm: Shm,
     pub cursor_shape: Option<CursorShapeManager>,
-    pub wlr_dcm: SimpleGlobal<ZwlrDataControlManagerV1, 2>,
-    pub wp_fscale: SimpleGlobal<WpFractionalScaleManagerV1, 1>,
-    pub wp_viewport: SimpleGlobal<WpViewporter, 1>,
+    pub wlr_dcm: GlobalProxy<ZwlrDataControlManagerV1>,
+    pub wp_fscale: GlobalProxy<WpFractionalScaleManagerV1>,
+    pub wp_viewport: GlobalProxy<WpViewporter>,
     pub xdg: XdgShell,
 
     taps: Vec<TapState>,
@@ -771,9 +771,9 @@ impl WaylandClient {
             shm: Shm::bind(&globals, &queue)?,
             layer: LayerShell::bind(&globals, &queue)?,
             cursor_shape: CursorShapeManager::bind(&globals, &queue).ok(),
-            wlr_dcm: SimpleGlobal::bind(&globals, &queue)?,
-            wp_fscale: SimpleGlobal::bind(&globals, &queue)?,
-            wp_viewport: SimpleGlobal::bind(&globals, &queue)?,
+            wlr_dcm: globals.bind(&queue, 0..=2, ()).into(),
+            wp_fscale: globals.bind(&queue, 0..=1, ()).into(),
+            wp_viewport: globals.bind(&queue, 0..=1, ()).into(),
             xdg: XdgShell::bind(&globals, &queue)?,
 
             taps: Default::default(),
