@@ -122,7 +122,7 @@ struct Player {
 #[derive(Debug, Default)]
 struct MediaPlayer2 {
     players: Cell<Vec<Player>>,
-    interested: Cell<NotifierList>,
+    interested: NotifierList,
 }
 
 thread_local! {
@@ -155,7 +155,7 @@ impl MediaPlayer2 {
                         this.players.take_in(|players| {
                             players.retain(|player| {
                                 if *player.proxy.inner().destination() == *old {
-                                    this.interested.take().notify_data("mpris:remove");
+                                    this.interested.notify_data("mpris:remove");
                                     false
                                 } else {
                                     true
@@ -231,7 +231,7 @@ impl MediaPlayer2 {
         let playing = PlayState::parse(&proxy.playback_status().await?);
         let meta = proxy.metadata().await?;
 
-        self.interested.take().notify_data("mpris:add");
+        self.interested.notify_data("mpris:add");
         self.players.take_in(|players| {
             players.push(Player {
                 name_tail,
@@ -275,7 +275,7 @@ impl MediaPlayer2 {
                         _ => (),
                     }
                 }
-                self.interested.take().notify_data("mpris:props");
+                self.interested.notify_data("mpris:props");
             });
         }
         Ok(())
@@ -291,7 +291,7 @@ pub fn read_in<F: FnOnce(Value) -> R, R>(
 ) -> R {
     DATA.with(|cell| {
         let state = cell.get_or_init(MediaPlayer2::new);
-        state.interested.take_in(|i| i.add(rt));
+        state.interested.add(rt);
 
         state.players.take_in(|players| {
             let player;
@@ -384,7 +384,7 @@ pub fn read_in<F: FnOnce(Value) -> R, R>(
 pub fn read_focus_list<F: FnMut(bool, IterationItem)>(rt: &Runtime, mut f: F) {
     let players: Vec<_> = DATA.with(|cell| {
         let state = cell.get_or_init(MediaPlayer2::new);
-        state.interested.take_in(|i| i.add(rt));
+        state.interested.add(rt);
         state.players.take_in(|players| {
             players
                 .iter()

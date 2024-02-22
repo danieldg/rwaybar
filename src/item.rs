@@ -957,7 +957,7 @@ impl Item {
             }
             Module::FontTest { offset, interested } => {
                 use std::fmt::Write;
-                interested.take_in(|i| i.add(&ctx.runtime));
+                interested.add(&ctx.runtime);
                 let font = ctx.font.as_ref();
                 let glyphs = font.number_of_glyphs();
                 let offset = offset.get();

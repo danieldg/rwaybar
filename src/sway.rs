@@ -268,7 +268,7 @@ pub struct Mode {
 struct ModeInner {
     mode: Cell<String>,
     running: Cell<bool>,
-    interested: Cell<NotifierList>,
+    interested: NotifierList,
 }
 
 impl Mode {
@@ -277,7 +277,7 @@ impl Mode {
     }
 
     fn interest(&self, rt: &Runtime) {
-        self.value.interested.take_in(|i| i.add(rt));
+        self.value.interested.add(rt);
         if self.value.running.replace(true) {
             return;
         }
@@ -294,7 +294,7 @@ impl Mode {
                             msg["change"]
                                 .as_str()
                                 .map(|mode| mi.mode.set(mode.to_owned()));
-                            mi.interested.take().notify_data("sway:mode");
+                            mi.interested.notify_data("sway:mode");
                         }
                         _ => warn!("Ignoring invalid mode change message"),
                     }
@@ -315,7 +315,7 @@ impl Mode {
                     msg["name"]
                         .as_str()
                         .map(|mode| value.mode.set(mode.to_owned()));
-                    value.interested.take().notify_data("sway:mode");
+                    value.interested.notify_data("sway:mode");
                 }
                 _ => warn!("Ignoring invalid get_binding_state reply"),
             }
@@ -409,7 +409,7 @@ struct WorkspacesData {
     focus: Cell<String>,
     list: Cell<Vec<Rc<WorkspaceData>>>,
     running: Cell<bool>,
-    interested: Cell<NotifierList>,
+    interested: NotifierList,
 }
 
 #[derive(Debug)]
@@ -519,7 +519,7 @@ impl Workspace {
     }
 
     fn interest(&self, rt: &Runtime) {
-        self.value.interested.take_in(|i| i.add(rt));
+        self.value.interested.add(rt);
         if self.value.running.replace(true) {
             return;
         }
@@ -534,7 +534,7 @@ impl Workspace {
                     match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                         Ok(Ok(msg)) => {
                             value.parse_update(msg);
-                            value.interested.take().notify_data("sway:workspace");
+                            value.interested.notify_data("sway:workspace");
                         }
                         _ => warn!("Ignoring invalid workspace change message"),
                     }
@@ -570,7 +570,7 @@ impl Workspace {
                     }
                     list.sort_by(sway_sort_fn);
                     value.list.set(list);
-                    value.interested.take().notify_data("sway:workspace");
+                    value.interested.notify_data("sway:workspace");
                 }
                 _ => warn!("Ignoring invalid get_workspaces reply"),
             }
@@ -834,7 +834,7 @@ struct TreeItems {
 struct TreeInner {
     workspaces: Cell<Option<Vec<WorkspaceNode>>>,
     running: Cell<bool>,
-    interested: Cell<NotifierList>,
+    interested: NotifierList,
 }
 
 impl TreeInner {
@@ -843,7 +843,7 @@ impl TreeInner {
             match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                 Ok(Ok(msg)) => {
                     value.workspaces.set(Some(WorkspaceNode::parse_tree(msg)));
-                    value.interested.take().notify_data("sway:tree");
+                    value.interested.notify_data("sway:tree");
                 }
                 _ => warn!("Ignoring invalid get_binding_state reply"),
             }
@@ -918,7 +918,7 @@ impl Tree {
     }
 
     fn interest(&self, rt: &Runtime) {
-        self.value.interested.take_in(|i| i.add(rt));
+        self.value.interested.add(rt);
         if self.value.running.replace(true) {
             return;
         }
@@ -933,7 +933,7 @@ impl Tree {
                     match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                         Ok(Ok(msg)) => {
                             if msg["change"].as_str() == Some("title") {
-                                mi.interested.take().notify_data("sway:title");
+                                mi.interested.notify_data("sway:title");
                                 let id = msg["container"]["id"].as_u32().unwrap_or(!0);
                                 if let Some(new_title) = msg["container"]["name"].as_str() {
                                     if let Some(Node {

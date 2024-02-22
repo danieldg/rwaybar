@@ -124,41 +124,45 @@ impl DrawNotifyHandle {
     }
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct NotifierList(Option<Notifier>);
+#[derive(Debug, Default)]
+pub struct NotifierList {
+    inner: Cell<Option<Rc<NotifierInner>>>, // TODO just use a static
+    interest: Cell<InterestMask>,
+}
 
 impl NotifierList {
     /// Add the currently-rendering bar to this list
     ///
     /// The next call to notify_data will redraw the bar that was rendering when this was called.
-    pub fn add(&mut self, rt: &Runtime) {
-        if let Some(notifier) = &mut self.0 {
-            notifier.interest.0 |= rt.interest.get().0;
-        } else {
-            self.0 = Some(Notifier {
-                inner: rt.notify.clone(),
-                interest: rt.interest.get(),
-            });
-        }
+    pub fn add(&self, rt: &Runtime) {
+        self.interest
+            .set(InterestMask(self.interest.get().0 | rt.interest.get().0));
+        self.inner.set(Some(rt.notify.clone()));
     }
 
     /// Add all the items in `other` to this notifier, so they will also be marked dirty when this
     /// notifier is used.
-    pub fn merge(&mut self, other: &Self) {
-        if let Some(notifier) = &mut self.0 {
-            if let Some(other) = &other.0 {
-                notifier.interest.0 |= other.interest.0;
-            }
-        } else {
-            self.clone_from(other);
+    pub fn merge(&self, other: &Self) {
+        self.interest
+            .set(InterestMask(self.interest.get().0 | other.interest.get().0));
+        let mut inner = self.inner.take();
+        if inner.is_none() {
+            inner = other.inner.take_in(|i| i.clone());
         }
+        self.inner.set(inner);
     }
 
     /// Mark all items in this notifier list as dirty.
     ///
     /// Future calls to notify_data will do nothing until you add() bars again.
-    pub fn notify_data(&mut self, who: &str) {
-        self.0.take().map(|n| n.notify_data(who));
+    pub fn notify_data(&self, who: &str) {
+        if let Some(inner) = self.inner.take_in(|i| i.clone()) {
+            Notifier {
+                inner,
+                interest: self.interest.get(),
+            }
+            .notify_data(who);
+        }
     }
 }
 

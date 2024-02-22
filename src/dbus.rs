@@ -108,7 +108,7 @@ pub struct DbusValue {
     args: Box<[toml::Value]>,
     sig: Cell<Option<Rc<str>>>,
     value: RefCell<Option<OwnedValue>>,
-    interested: Cell<NotifierList>,
+    interested: NotifierList,
     watch: Cell<Option<RemoteHandle<()>>>,
 }
 
@@ -486,7 +486,7 @@ impl DbusValue {
         *self.value.borrow_mut() =
             Some(Variant::Structure(reply.body().deserialize()?).try_to_owned()?);
 
-        self.interested.take().notify_data("dbus-read");
+        self.interested.notify_data("dbus-read");
         Ok(())
     }
 
@@ -571,7 +571,7 @@ impl DbusValue {
     }
 
     pub fn read_in<F: FnOnce(Value) -> R, R>(&self, key: &str, rt: &Runtime, f: F) -> R {
-        self.interested.take_in(|i| i.add(rt));
+        self.interested.add(rt);
         let value = self.value.borrow();
         match value.as_deref() {
             Some(value) => Self::read_variant(value, key.split("."), rt, f),

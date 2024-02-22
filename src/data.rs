@@ -269,7 +269,7 @@ pub struct Periodic<T> {
 
 #[derive(Debug)]
 struct PeriodicInner<T> {
-    interested: Cell<NotifierList>,
+    interested: NotifierList,
     was_read: Cell<bool>,
     last_update: Cell<Option<Instant>>,
     timer: Cell<Option<RemoteHandle<()>>>,
@@ -281,7 +281,7 @@ impl<T: 'static> Periodic<T> {
         Periodic {
             period,
             shared: Rc::new(PeriodicInner {
-                interested: Cell::default(),
+                interested: Default::default(),
                 was_read: Cell::default(),
                 last_update: Cell::default(),
                 timer: Cell::default(),
@@ -306,7 +306,7 @@ impl<T: 'static> Periodic<T> {
         self._read_refresh(rt, move |n, t| {
             match (n, do_read(t)) {
                 (Some(notify), Some(reason)) => {
-                    notify.take().notify_data(reason);
+                    notify.notify_data(reason);
                 }
                 _ => {}
             }
@@ -327,7 +327,7 @@ impl<T: 'static> Periodic<T> {
 
     fn _read_refresh<F, Fut>(&self, rt: &Runtime, mut do_read: F)
     where
-        F: FnMut(Option<&Cell<NotifierList>>, &T) -> Option<Fut> + 'static,
+        F: FnMut(Option<&NotifierList>, &T) -> Option<Fut> + 'static,
         Fut: Future<Output = ()> + 'static,
     {
         let last_update = self.shared.last_update.get();
@@ -337,9 +337,7 @@ impl<T: 'static> Periodic<T> {
         }
 
         let now = Instant::now();
-        self.shared.interested.take_in(|notify| {
-            notify.add(rt);
-        });
+        self.shared.interested.add(rt);
         if let Some(last_update) = last_update {
             // Read a new values if we are currently redrawing and it's at least 90% of the
             // deadline.  This avoids waking up several times in a row to update each of a
@@ -439,7 +437,7 @@ pub enum Module {
     ExecJson {
         command: Box<str>,
         stdin: Cell<Option<ChildStdin>>,
-        value: Cell<Option<Rc<(Cell<JsonValue>, Cell<NotifierList>)>>>,
+        value: Cell<Option<Rc<(Cell<JsonValue>, NotifierList)>>>,
         handle: Cell<Option<RemoteHandle<()>>>,
     },
     Fade {
@@ -456,7 +454,7 @@ pub enum Module {
     },
     FontTest {
         offset: Cell<u16>,
-        interested: Cell<NotifierList>,
+        interested: NotifierList,
     },
     Formatted {
         format: Box<str>,
@@ -486,7 +484,7 @@ pub enum Module {
     List {
         value: Cell<usize>,
         choices: Box<[Box<str>]>,
-        interested: Cell<NotifierList>,
+        interested: NotifierList,
         wrap: bool,
     },
     #[cfg(feature = "dbus")]
@@ -534,7 +532,7 @@ pub enum Module {
     },
     Value {
         value: Cell<Value<'static>>,
-        interested: Cell<NotifierList>,
+        interested: NotifierList,
     },
 }
 
@@ -1590,7 +1588,7 @@ impl Module {
                     ""
                 })));
                 value.0.set(v);
-                value.1.take_in(|i| i.add(rt));
+                value.1.add(rt);
                 rv
             }
             Module::Formatted { format, tooltip } => match key {
@@ -1627,7 +1625,7 @@ impl Module {
                 interested,
                 ..
             } => {
-                interested.take_in(|i| i.add(rt));
+                interested.add(rt);
                 let i = value.get();
                 let v = choices.get(i).unwrap_or(&choices[0]);
                 f(Value::Borrow(v))
@@ -1753,7 +1751,7 @@ impl Module {
                 f(Value::Float(value.get() as f64 / 1000.0))
             }
             Module::Value { value, interested } => {
-                interested.take_in(|i| i.add(rt));
+                interested.add(rt);
                 value.take_in(|s| f(s.as_ref()))
             }
         }
@@ -1808,7 +1806,7 @@ impl Module {
                         return;
                     }
                 }
-                interested.take().notify_data("value");
+                interested.notify_data("value");
             }
             Module::Item { value: v } => v.take_in(|item| match item.as_ref() {
                 #[cfg(feature = "dbus")]
@@ -1863,7 +1861,7 @@ impl Module {
                         return;
                     }
                 }
-                interested.take().notify_data("value");
+                interested.notify_data("value");
             }
             #[cfg(feature = "dbus")]
             Module::MediaPlayer2 { target } => mpris::write(name, target, key, value, rt),
@@ -1876,7 +1874,7 @@ impl Module {
                 value: v,
                 interested,
             } if key == "" => {
-                interested.take().notify_data("value");
+                interested.notify_data("value");
                 v.set(value.into_owned());
             }
             _ => {
@@ -1918,14 +1916,14 @@ impl Module {
 
 #[derive(Debug, Default)]
 pub struct ClockState {
-    interested: Cell<NotifierList>,
+    interested: NotifierList,
     wake: Cell<Option<Instant>>,
     task: Cell<Option<RemoteHandle<()>>>,
 }
 
 impl ClockState {
     fn wake_at(self: &Rc<Self>, wake: Instant, rt: &Runtime) {
-        self.interested.take_in(|i| i.add(rt));
+        self.interested.add(rt);
         if matches!(self.wake.get(), Some(time) if time <= wake) {
             return;
         }
@@ -1934,7 +1932,7 @@ impl ClockState {
         self.wake.set(Some(wake));
         self.task.set(Some(spawn_handle("Clock tick", async move {
             tokio::time::sleep_until(wake.into()).await;
-            this.interested.take().notify_data("clock");
+            this.interested.notify_data("clock");
             this.wake.set(None);
             this.task.set(None);
             Ok(())
@@ -2014,7 +2012,7 @@ use std::error::Error;
 async fn do_exec_json(
     fd: i32,
     name: String,
-    value: Rc<(Cell<JsonValue>, Cell<NotifierList>)>,
+    value: Rc<(Cell<JsonValue>, NotifierList)>,
 ) -> Result<(), Box<dyn Error>> {
     let afd = AsyncFd::new(Fd(fd)).expect("Invalid FD from ChildStdin");
     let mut buffer: Vec<u8> = Vec::with_capacity(1024);
@@ -2083,7 +2081,7 @@ async fn do_exec_json(
                 buffer.drain(..eol + 1);
                 if let Some(json) = json {
                     value.0.set(json);
-                    value.1.take().notify_data("exec-json");
+                    value.1.notify_data("exec-json");
                 }
             }
         }

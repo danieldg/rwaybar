@@ -198,14 +198,14 @@ pub struct TrayItem {
     tooltip: Cell<Option<Rc<str>>>,
     inspection: Cell<Option<RemoteHandle<()>>>,
     menu: Cell<Option<Rc<TrayPopupMenu>>>,
-    interested: Cell<NotifierList>,
+    interested: NotifierList,
 }
 
 #[derive(Debug, Default)]
 struct Tray {
     reg_db: Cell<Vec<(String, bool)>>,
     items: Cell<Vec<Rc<TrayItem>>>,
-    interested: Cell<NotifierList>,
+    interested: NotifierList,
 }
 
 impl Tray {
@@ -537,7 +537,7 @@ fn do_del_item(item: String) {
         tray.items.take_in(|items| {
             items.retain(|item| &*item.owner != owner || &*item.path != path);
         });
-        tray.interested.take().notify_data("tray:item-remove");
+        tray.interested.notify_data("tray:item-remove");
     });
 }
 
@@ -610,7 +610,7 @@ impl TrayItem {
                     DATA.with(|cell| {
                         let tray = cell.get();
                         let tray = tray.as_ref().unwrap();
-                        tray.interested.take().notify_data("tray:item-status");
+                        tray.interested.notify_data("tray:item-status");
                     });
                 })),
                 "ToolTip" => match value {
@@ -651,7 +651,7 @@ impl TrayItem {
             }
         }
 
-        self.interested.take().notify_data("tray:update");
+        self.interested.notify_data("tray:update");
     }
 }
 
@@ -678,7 +678,7 @@ struct TrayPopupMenu {
     refresh: Cell<Option<RemoteHandle<()>>>,
     fresh: Cell<Option<Instant>>,
     items: Cell<Vec<MenuItem>>,
-    interested: Cell<NotifierList>,
+    interested: NotifierList,
 }
 
 #[derive(Debug, Default)]
@@ -830,7 +830,7 @@ impl TrayPopupMenu {
         let mut items = Vec::new();
         TrayPopupMenu::add_items(&mut items, contents.iter().map(|v| &**v), 0);
         self.items.set(items);
-        self.interested.take().notify_data("tray:menu");
+        self.interested.notify_data("tray:menu");
         self.fresh.set(Some(Instant::now()));
         self.refresh.set(None);
 
@@ -916,7 +916,7 @@ impl TrayPopup {
                 .set(Some(spawn_handle("Tray menu population", menu.refresh())));
         }
 
-        self.menu.interested.take_in(|i| i.add(ctx.runtime));
+        self.menu.interested.add(ctx.runtime);
 
         self.menu.items.take_in(|items| {
             if !items.is_empty() {
@@ -995,8 +995,7 @@ impl TrayPopup {
 pub fn show(ctx: &mut Render, rv: &mut EventSink, [passive, active, urgent]: [&Rc<Item>; 3]) {
     let items = DATA.with(|cell| {
         let tray = cell.get_or_init(Tray::init);
-        tray.interested
-            .take_in(|interest| interest.add(&ctx.runtime));
+        tray.interested.add(&ctx.runtime);
         tray.items
             .take_in(|items| items.iter().cloned().collect::<Vec<_>>())
     });
@@ -1044,7 +1043,7 @@ pub fn read_in<F: FnOnce(Value) -> R, R>(
     rt: &Runtime,
     f: F,
 ) -> R {
-    item.interested.take_in(|i| i.add(rt));
+    item.interested.add(rt);
     match key {
         "icon" => item.icon.take_in(|icon| {
             item.icon_path.take_in(|path| {

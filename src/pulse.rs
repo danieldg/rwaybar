@@ -78,7 +78,7 @@ struct PulseData {
     clients: Cell<Vec<(u32, String)>>,
     sink_ins: Cell<Vec<WireInfo>>,
     src_outs: Cell<Vec<WireInfo>>,
-    interested: Cell<NotifierList>,
+    interested: NotifierList,
 }
 
 thread_local! {
@@ -194,7 +194,7 @@ impl PulseData {
                 self.sinks.take_in(|sinks| {
                     sinks.retain(|info| info.index != idx);
                 });
-                self.interested.take().notify_data("pulse");
+                self.interested.notify_data("pulse");
             }
             (Some(Facility::Source), Some(Operation::New))
             | (Some(Facility::Source), Some(Operation::Changed)) => {
@@ -207,7 +207,7 @@ impl PulseData {
                 self.sources.take_in(|sources| {
                     sources.retain(|info| info.index != idx);
                 });
-                self.interested.take().notify_data("pulse");
+                self.interested.notify_data("pulse");
             }
             (Some(Facility::Client), Some(Operation::New))
             | (Some(Facility::Client), Some(Operation::Changed)) => {
@@ -220,7 +220,7 @@ impl PulseData {
                 self.clients.take_in(|clients| {
                     clients.retain(|info| info.0 != idx);
                 });
-                self.interested.take().notify_data("pulse");
+                self.interested.notify_data("pulse");
             }
             (Some(Facility::SinkInput), Some(Operation::New))
             | (Some(Facility::SinkInput), Some(Operation::Changed)) => {
@@ -233,7 +233,7 @@ impl PulseData {
                 self.sink_ins.take_in(|sink_ins| {
                     sink_ins.retain(|info| info.index != idx);
                 });
-                self.interested.take().notify_data("pulse");
+                self.interested.notify_data("pulse");
             }
             (Some(Facility::SourceOutput), Some(Operation::New))
             | (Some(Facility::SourceOutput), Some(Operation::Changed)) => {
@@ -246,14 +246,14 @@ impl PulseData {
                 self.src_outs.take_in(|src_outs| {
                     src_outs.retain(|info| info.index != idx);
                 });
-                self.interested.take().notify_data("pulse");
+                self.interested.notify_data("pulse");
             }
             _ => {}
         }
     }
 
     fn add_sink(&self, item: ListResult<&SinkInfo>) {
-        self.interested.take().notify_data("pulse");
+        self.interested.notify_data("pulse");
         match item {
             ListResult::Item(info) => {
                 let pi = PortInfo {
@@ -287,7 +287,7 @@ impl PulseData {
     }
 
     fn add_source(&self, item: ListResult<&SourceInfo>) {
-        self.interested.take().notify_data("pulse");
+        self.interested.notify_data("pulse");
         match item {
             ListResult::Item(info) => {
                 let pi = PortInfo {
@@ -321,7 +321,7 @@ impl PulseData {
     }
 
     fn add_client(&self, item: ListResult<&ClientInfo>) {
-        self.interested.take().notify_data("pulse");
+        self.interested.notify_data("pulse");
         match item {
             ListResult::Item(info) => {
                 self.clients.take_in(|clients| {
@@ -341,7 +341,7 @@ impl PulseData {
     }
 
     fn add_sink_input(&self, item: ListResult<&SinkInputInfo>) {
-        self.interested.take().notify_data("pulse");
+        self.interested.notify_data("pulse");
         match item {
             ListResult::Item(info) => {
                 self.sink_ins.take_in(|sink_ins| {
@@ -367,7 +367,7 @@ impl PulseData {
     }
 
     fn add_source_output(&self, item: ListResult<&SourceOutputInfo>) {
-        self.interested.take().notify_data("pulse");
+        self.interested.notify_data("pulse");
         match item {
             ListResult::Item(info) => {
                 self.src_outs.take_in(|src_outs| {
@@ -469,7 +469,7 @@ pub fn read_focus_list<F: FnMut(bool, IterationItem)>(rt: &Runtime, target: &str
 
     DATA.with(|cell| {
         let pulse = cell.get_or_init(PulseData::init);
-        pulse.interested.take_in(|interest| interest.add(&rt));
+        pulse.interested.add(&rt);
 
         if do_src || do_mon {
             let default_source = pulse.default_source.take_in(|v| v.clone());
@@ -521,7 +521,7 @@ pub fn read_in<F: FnOnce(Value) -> R, R>(
     }
     DATA.with(|cell| {
         let pulse = cell.get_or_init(PulseData::init);
-        pulse.interested.take_in(|interest| interest.add(&rt));
+        pulse.interested.add(&rt);
 
         pulse.with_target(target, |port, _is_sink, wires, clients| {
             let port = match port {
@@ -655,7 +655,7 @@ pub fn do_write(_name: &str, target: &str, mut key: &str, value: Value, _rt: &Ru
                                 None,
                             );
                         }
-                        pulse.interested.take().notify_data("pulse:write-volume");
+                        pulse.interested.notify_data("pulse:write-volume");
                     }
                     "mute" => {
                         let old = port.mute;
@@ -682,7 +682,7 @@ pub fn do_write(_name: &str, target: &str, mut key: &str, value: Value, _rt: &Ru
                             ctx.introspect()
                                 .set_source_mute_by_index(port.index, new, None);
                         }
-                        pulse.interested.take().notify_data("pulse:write-mute");
+                        pulse.interested.notify_data("pulse:write-mute");
                     }
                     _ => {
                         info!("Ignoring write to unknown key '{}'", target);

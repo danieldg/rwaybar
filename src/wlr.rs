@@ -1,7 +1,7 @@
 use crate::{
     data::Value,
     state::{NotifierList, Runtime, State},
-    util::{spawn, Cell},
+    util::spawn,
 };
 use std::{
     cell::RefCell,
@@ -23,7 +23,7 @@ enum OfferValue {
     Available,
     Running {
         data: oneshot::Receiver<Bytes>,
-        interested: Rc<Cell<NotifierList>>,
+        interested: Rc<NotifierList>,
     },
     Finished(Bytes),
     Failed,
@@ -164,7 +164,7 @@ fn set_seat_offer(seat: &WlSeat, contents: Option<ZwlrDataControlOfferV1>, selec
                         continue;
                     }
                 }
-                view.interested.take().notify_data("empty-clipboard");
+                view.interested.notify_data("empty-clipboard");
             }
             clips.remove(i);
             break;
@@ -183,7 +183,7 @@ pub struct ClipboardData {
     pub seat: Option<Box<str>>,
     pub mime_list: Vec<Box<str>>,
     pub selection: bool,
-    pub interested: Cell<NotifierList>,
+    pub interested: NotifierList,
 }
 
 impl ClipboardData {
@@ -225,7 +225,8 @@ impl ClipboardData {
                 use std::os::fd::AsFd;
                 contents.receive(String::from(&*offer.mime), tx.as_fd());
 
-                let interested = Rc::new(Cell::new(self.interested.take_in(|i| i.clone())));
+                let interested = Rc::new(NotifierList::default());
+                interested.merge(&self.interested);
                 offer.value = OfferValue::Running {
                     data: recv,
                     interested: interested.clone(),
@@ -249,13 +250,12 @@ impl ClipboardData {
                         }
                     }
                     drop(send.send(buf.into()));
-                    interested.take().notify_data("clipboard-data");
+                    interested.notify_data("clipboard-data");
                     Ok(())
                 });
             }
             OfferValue::Running { data, interested } => {
-                self.interested
-                    .take_in(|i| interested.take_in(|t| t.merge(i)));
+                interested.merge(&self.interested);
                 match data.try_recv() {
                     Ok(Some(v)) => {
                         offer.value = OfferValue::Finished(v);
@@ -278,7 +278,7 @@ impl ClipboardData {
         rt: &Runtime,
         f: F,
     ) -> R {
-        self.interested.take_in(|i| i.add(rt));
+        self.interested.add(rt);
         CLIPBOARDS.with(|clips| {
             let mut clips = clips.borrow_mut();
             let clips = clips.get_or_insert_with(|| start_dcm(rt));
