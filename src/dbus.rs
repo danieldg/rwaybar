@@ -4,18 +4,23 @@ use crate::{
     util,
     util::{spawn_noerr, Cell},
 };
+use async_once_cell::Lazy;
 use futures_channel::mpsc::{self, UnboundedSender};
 use futures_util::{future::RemoteHandle, StreamExt};
 use log::{error, info};
-use once_cell::unsync::OnceCell;
-use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc, task};
+use std::{
+    cell::{OnceCell, RefCell},
+    collections::HashMap,
+    fmt,
+    rc::Rc,
+};
 use zbus::{zvariant, Connection};
 use zvariant::{OwnedValue, Value as Variant};
 
 pub struct DBus {
     send: UnboundedSender<zbus::Message>,
 
-    bus: util::Cell<Result<Connection, Vec<task::Waker>>>,
+    bus: Lazy<zbus::Result<Connection>, RemoteHandle<zbus::Result<Connection>>>,
 }
 
 impl fmt::Debug for DBus {
@@ -38,51 +43,32 @@ impl DBus {
         SYSTEM.with(|s| s.get_or_init(|| Self::new(false)).clone())
     }
 
-    pub async fn connection(&self) -> Connection {
-        futures_util::future::poll_fn(|ctx| match self.bus.replace(Err(Vec::new())) {
-            Err(mut wakers) => {
-                let me = ctx.waker();
-                if !wakers.iter().any(|w| w.will_wake(me)) {
-                    wakers.push(me.clone());
-                }
-                self.bus.set(Err(wakers));
-                task::Poll::Pending
-            }
-            Ok(conn) => {
-                let rv = conn.clone();
-                self.bus.set(Ok(conn));
-                task::Poll::Ready(rv)
-            }
-        })
-        .await
+    pub async fn connection(&self) -> Result<&Connection, zbus::Error> {
+        (&self.bus).await.as_ref().map_err(Clone::clone)
     }
 
     fn new(is_session: bool) -> Rc<Self> {
         let (send, mut recv) = mpsc::unbounded();
-        let tb = Rc::new(DBus {
-            send,
-            bus: Cell::new(Err(Vec::new())),
-        });
-
-        let this = tb.clone();
-        util::spawn("DBus Sender", async move {
+        let (init, rh) = futures_util::FutureExt::remote_handle(async move {
             use zbus::conn::Builder;
-            let zbus = if is_session {
+            let builder = if is_session {
                 Builder::session()?
             } else {
                 Builder::system()?
             };
 
-            let zbus = zbus.internal_executor(false).build().await?;
-            match this.bus.replace(Ok(zbus.clone())) {
-                Ok(_) => unreachable!(),
-                Err(wakers) => {
-                    for waker in wakers {
-                        waker.wake();
-                    }
-                }
-            }
+            builder.internal_executor(false).build().await
+        });
 
+        let tb = Rc::new(DBus {
+            send,
+            bus: Lazy::new(rh),
+        });
+
+        let this = tb.clone();
+        util::spawn("DBus Sender", async move {
+            init.await;
+            let zbus = this.connection().await?;
             while let Some(msg) = recv.next().await {
                 zbus.send(&msg).await?;
             }
@@ -200,7 +186,7 @@ impl DbusValue {
                 let watch_method = watch_method.unwrap().to_owned();
                 let weak = Rc::downgrade(&rc);
                 let h = util::spawn_handle("DBus value watcher", async move {
-                    let zbus = dbus.connection().await;
+                    let zbus = dbus.connection().await?;
                     let mut stream = zbus::MessageStream::from(zbus);
                     while let Some(Ok(msg)) = stream.next().await {
                         if let Some(rc) = weak.upgrade() {
@@ -244,7 +230,7 @@ impl DbusValue {
                 let weak = Rc::downgrade(&rc);
 
                 let h = util::spawn_handle("DBus value watcher", async move {
-                    let zbus = dbus.connection().await;
+                    let zbus = dbus.connection().await?;
                     let mut stream = zbus::MessageStream::from(zbus);
                     while let Some(Ok(msg)) = stream.next().await {
                         let hdr = msg.header();
@@ -310,7 +296,7 @@ impl DbusValue {
     async fn try_call(self: Rc<Self>) -> zbus::Result<()> {
         use toml::value::Value;
         let dbus = &*self.bus;
-        let zbus = dbus.connection().await;
+        let zbus = dbus.connection().await?;
 
         let mut api = self.sig.take_in(|s| s.clone());
 

@@ -136,7 +136,7 @@ impl MediaPlayer2 {
         let mpris = rv.clone();
         util::spawn("MPRIS setup", async move {
             let dbus = DBus::get_session();
-            let zbus = dbus.connection().await;
+            let zbus = dbus.connection().await?;
 
             let bus = DBusProxy::builder(&zbus)
                 .cache_properties(zbus::CacheProperties::No)
@@ -201,7 +201,7 @@ impl MediaPlayer2 {
         let skip = "org.mpris.MediaPlayer2.".len();
         let name_tail: Rc<str> = bus_name[skip..].into();
         let dbus = DBus::get_session();
-        let zbus = dbus.connection().await;
+        let zbus = dbus.connection().await?;
         let owner = match owner {
             Some(owner) => owner,
             None => DBusProxy::builder(&zbus)

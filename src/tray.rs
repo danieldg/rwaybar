@@ -212,7 +212,7 @@ impl Tray {
     fn init() -> Tray {
         spawn("StatusNotifierWatcher", async move {
             let dbus = DBus::get_session();
-            let zbus = dbus.connection().await;
+            let zbus = dbus.connection().await?;
 
             zbus.object_server()
                 .at("/StatusNotifierWatcher", snw_kde::StatusNotifierWatcher)
@@ -230,7 +230,7 @@ impl Tray {
 
             spawn("StatusNotifierWatcher client remove watcher", async move {
                 let dbus = DBus::get_session();
-                let zbus = dbus.connection().await;
+                let zbus = dbus.connection().await?;
                 while let Some(noc) = names.next().await {
                     let event = noc.args()?;
                     let mut msgs = vec![];
@@ -382,7 +382,7 @@ async fn init_snw(is_kde: bool) -> Result<(), Box<dyn Error>> {
         "org.freedesktop.StatusNotifierWatcher"
     };
     let dbus = DBus::get_session();
-    let zbus = dbus.connection().await;
+    let zbus = dbus.connection().await?;
 
     // Registering this name is a nonsense part of the spec - should probably ignore it
     let name = format!("org.{}.StatusNotifierHost-{}", who, std::process::id());
@@ -465,7 +465,7 @@ async fn do_add_item(is_kde: bool, item: String) -> Result<(), Box<dyn Error>> {
     };
 
     let dbus = DBus::get_session();
-    let zbus = dbus.connection().await;
+    let zbus = dbus.connection().await?;
 
     let sni = StatusNotifierItemProxy::builder(&zbus)
         .destination(String::from(&*owner))?
@@ -555,7 +555,7 @@ impl TrayItem {
                 let this = Rc::downgrade(self);
                 spawn_handle("Tray item inspection", async move {
                     let dbus = DBus::get_session();
-                    let zbus = dbus.connection().await;
+                    let zbus = dbus.connection().await?;
                     let props = zbus
                         .call_method(
                             Some(&*owner),
@@ -762,7 +762,7 @@ impl TrayPopupMenu {
             .menu
             .get_or_try_init(async {
                 let dbus = DBus::get_session();
-                let zbus = dbus.connection().await;
+                let zbus = dbus.connection().await?;
                 DBusMenuProxy::builder(&zbus)
                     .destination(String::from(&*self.owner))?
                     .path(String::from(&*menu_path))?
