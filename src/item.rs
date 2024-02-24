@@ -67,10 +67,7 @@ impl ItemFormat {
         self.cfg.is_none()
     }
 
-    pub fn setup_ctx<'a, 'p: 'a, 'c>(
-        &self,
-        ctx: &'a mut Render<'p, 'c>,
-    ) -> (Formatting, Render<'a, 'c>) {
+    pub fn setup_ctx<'a, 'p: 'a>(&self, ctx: &'a mut Render<'p>) -> (Formatting, Render<'a>) {
         let z = toml::Value::Integer(0);
         let config = self.cfg.as_ref().unwrap_or(&z);
         let fmt = Formatting::expand(config, ctx.runtime);
@@ -129,22 +126,20 @@ impl ItemFormat {
             (font, size)
         });
 
-        let fg_rgba = Formatting::parse_rgba(get("fg"), get_f32("fg-alpha"));
-        let stroke_rgba =
-            Formatting::parse_rgba(get("text-outline"), get_f32("text-outline-alpha"));
-        let stroke_size = get_f32("text-outline-width");
+        let mut ctx = ctx.with_font(font);
+        ctx.font_size = font_size.unwrap_or(ctx.font_size);
 
-        let render = Render {
-            queue: &mut *ctx.queue,
-            align: ctx.align.merge(&align),
-            font: font.unwrap_or(&ctx.font),
-            font_size: font_size.unwrap_or(ctx.font_size),
-            font_color: fg_rgba.unwrap_or(ctx.font_color),
-            text_stroke: stroke_rgba.or(ctx.text_stroke),
-            text_stroke_size: stroke_size.or(ctx.text_stroke_size),
-            ..*ctx
-        };
-        (fmt, render)
+        ctx.align = ctx.align.merge(&align);
+
+        ctx.font_color =
+            Formatting::parse_rgba(get("fg"), get_f32("fg-alpha")).unwrap_or(ctx.font_color);
+
+        ctx.text_stroke =
+            Formatting::parse_rgba(get("text-outline"), get_f32("text-outline-alpha"))
+                .or(ctx.text_stroke);
+        ctx.text_stroke_size = get_f32("text-outline-width").or(ctx.text_stroke_size);
+
+        (fmt, ctx)
     }
 }
 

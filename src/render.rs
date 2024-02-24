@@ -48,10 +48,10 @@ impl Renderer {
         let mut queue = Queue {
             rect: vec![],
             image: vec![],
-            cache: &mut self.cache,
         };
         let mut ctx = Render {
             queue: &mut queue,
+            cache: &mut self.cache,
             render_extents: (
                 tiny_skia::Point::zero(),
                 tiny_skia::Point { x: 1.0, y: 1.0 },
@@ -91,12 +91,12 @@ impl Renderer {
         let mut queue = Queue {
             rect: vec![],
             image: vec![],
-            cache: &mut self.cache,
         };
         let font = &rt.fonts[0];
 
         let mut ctx = Render {
             queue: &mut queue,
+            cache: &mut self.cache,
             render_extents: (
                 tiny_skia::Point::zero(),
                 tiny_skia::Point {
@@ -139,8 +139,7 @@ impl Renderer {
             return rv;
         }
 
-        // We must destructure here to release the borrow of self.cache
-        let Queue { rect, image, .. } = queue;
+        let Queue { rect, image } = queue;
 
         // Drawing is done directly to the SHM region.  If must_clear is false, that region still
         // contains the prior frame, so we can avoid redrawing undamaged areas.
@@ -595,11 +594,9 @@ impl RenderImage {
 }
 
 #[derive(Debug)]
-pub struct Queue<'a> {
+pub struct Queue {
     rect: Vec<RenderRect>,
     image: Vec<RenderImage>,
-
-    pub cache: &'a mut RenderCache,
 }
 
 #[derive(Debug)]
@@ -608,7 +605,7 @@ pub struct QueueMark {
     image: usize,
 }
 
-impl Queue<'_> {
+impl Queue {
     pub fn push_rect(&mut self, bounds: tiny_skia::Rect, color: tiny_skia::Color) {
         self.rect.push(RenderRect { bounds, color });
     }
@@ -650,8 +647,9 @@ impl Queue<'_> {
 }
 
 /// State available to an [Item][crate::item::Item] render function
-pub struct Render<'a, 'c> {
-    pub queue: &'a mut Queue<'c>,
+pub struct Render<'a> {
+    pub queue: &'a mut Queue,
+    pub cache: &'a mut RenderCache,
 
     pub scale: f32,
 
@@ -701,11 +699,21 @@ impl Group {
     }
 }
 
-impl<'a, 'c> Render<'a, 'c> {
-    pub fn with_err_name<'b>(&'b mut self, name: &'b str) -> Render<'b, 'c> {
+impl<'a> Render<'a> {
+    pub fn with_err_name<'b>(&'b mut self, name: &'b str) -> Render<'b> {
         Render {
             queue: &mut *self.queue,
+            cache: &mut *self.cache,
             err_name: name,
+            ..*self
+        }
+    }
+
+    pub fn with_font<'b>(&'b mut self, font: Option<&'b FontMapped>) -> Render<'b> {
+        Render {
+            queue: &mut *self.queue,
+            cache: &mut *self.cache,
+            font: font.unwrap_or(&self.font),
             ..*self
         }
     }

@@ -237,7 +237,6 @@ pub fn render(ctx: &mut Render, name: Box<str>) -> Result<(), ()> {
     }
 
     let img = ctx
-        .queue
         .cache
         .icon
         .entry((name, tsize))

@@ -474,7 +474,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
 
     /* try */
     match (|| {
-        let ti = ctx.queue.cache.text.get_mut(&key)?;
+        let ti = ctx.cache.text.get_mut(&key)?;
         let mut text_size = ti.text_size;
 
         let mut add_clip = false;
@@ -682,7 +682,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
     ctx.queue.push_image(pixmap_tl, pixmap.clone());
 
     text_size.scale(scale);
-    ctx.queue.cache.text.insert(
+    ctx.cache.text.insert(
         key,
         TextImage {
             text_size,
