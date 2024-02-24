@@ -1,17 +1,11 @@
 use crate::render::Render;
 use std::{
-    cell::RefCell,
-    collections::HashMap,
     fs::{self, File},
     io,
     path::{Component, PathBuf},
     sync::Arc,
 };
 use tiny_skia::Transform;
-
-thread_local! {
-    static CACHE : RefCell<HashMap<(String, u32), Option<OwnedImage>>> = Default::default();
-}
 
 #[derive(Debug, Clone)]
 pub struct OwnedImage {
@@ -232,7 +226,7 @@ where
     Ok(None)
 }
 
-pub fn render(ctx: &mut Render, name: &str) -> Result<(), ()> {
+pub fn render(ctx: &mut Render, name: Box<str>) -> Result<(), ()> {
     let room = ctx.render_extents.1 - ctx.render_pos;
     let xsize = room.x * ctx.scale;
     let ysize = room.y * ctx.scale;
@@ -242,32 +236,36 @@ pub fn render(ctx: &mut Render, name: &str) -> Result<(), ()> {
         return Err(());
     }
 
-    CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        match cache.entry((name.into(), tsize)).or_insert_with(|| {
+    let img = ctx
+        .queue
+        .cache
+        .icon
+        .entry((name, tsize))
+        .or_insert_with_key(|(name, _)| {
             open_icon(&ctx.runtime.xdg, name, tsize)
                 .ok()
                 .and_then(|file| OwnedImage::from_file(file, tsize, true))
-        }) {
-            Some(img) => {
-                let mut tl = ctx.render_pos;
-                tl.scale(ctx.scale);
-                tl.x = (tl.x - 0.01).ceil();
-                tl.y = (tl.y - 0.01).ceil();
+        })
+        .as_ref()
+        .ok_or(())?
+        .pixmap
+        .clone();
 
-                ctx.queue.push_image(tl, img.pixmap.clone());
+    // Align the top-left corner to the pixel grid
+    let mut tl = ctx.render_pos;
+    tl.scale(ctx.scale);
+    tl.x = (tl.x - 0.01).ceil();
+    tl.y = (tl.y - 0.01).ceil();
 
-                // Calculate the bottom-right pixel coordinate, then convert it to render space
-                let mut br = tl
-                    + tiny_skia::Point {
-                        x: img.pixmap.width() as f32,
-                        y: img.pixmap.height() as f32,
-                    };
-                br.scale(1. / ctx.scale);
-                ctx.render_pos = br;
-                Ok(())
-            }
-            None => Err(()),
-        }
-    })
+    // Calculate the bottom-right pixel coordinate, then convert it to render space
+    let mut br = tiny_skia::Point {
+        x: tl.x + img.width() as f32,
+        y: tl.y + img.height() as f32,
+    };
+    br.scale(1. / ctx.scale);
+    ctx.render_pos = br;
+
+    ctx.queue.push_image(tl, img);
+
+    Ok(())
 }

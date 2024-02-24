@@ -1106,7 +1106,7 @@ impl Item {
             } => {
                 let markup = self.format.markup;
                 let name = ctx.runtime.format_or(name, ctx.err_name).into_text();
-                match icon::render(ctx, &name) {
+                match icon::render(ctx, name.into()) {
                     Ok(()) => {}
                     Err(()) => {
                         let value = ctx.runtime.format_or(fallback, ctx.err_name).into_owned();

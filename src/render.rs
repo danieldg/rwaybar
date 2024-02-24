@@ -1,5 +1,6 @@
 use crate::{
     font::{FontMapped, RenderKey, TextImage},
+    icon::OwnedImage,
     state::Runtime,
     wayland::{SurfaceData, WaylandClient},
 };
@@ -7,7 +8,7 @@ use log::error;
 use smithay_client_toolkit::shm::slot::{Slot, SlotPool};
 use std::{
     borrow::Cow,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     hash::{Hash, Hasher},
     sync::Arc,
     time,
@@ -422,14 +423,16 @@ impl RenderSurface {
 /// TODO make private
 #[derive(Debug)]
 pub struct RenderCache {
-    pub text: std::collections::HashMap<RenderKey, TextImage>,
+    pub text: HashMap<RenderKey, TextImage>,
+    pub icon: HashMap<(Box<str>, u32), Option<OwnedImage>>,
     last_expire: time::Instant,
 }
 
 impl RenderCache {
     pub fn new() -> Self {
         Self {
-            text: Default::default(),
+            text: HashMap::new(),
+            icon: HashMap::new(),
             last_expire: time::Instant::now(),
         }
     }
