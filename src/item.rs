@@ -917,6 +917,7 @@ impl Item {
                 let max_center_width = width - left_size - right_size;
 
                 if max_center_width <= 0.0 {
+                    ctx.render_pos = clip.1;
                     // don't render the center if there's no room at all
                     return;
                 }
@@ -958,8 +959,9 @@ impl Item {
                     },
                 );
 
-                cent_ev.offset_clamp(cent_offset, cent_offset, cent_offset + cent_size);
+                cent_ev.offset_clamp(cent_offset - x0, cent_offset, cent_offset + cent_size);
                 rv.merge(cent_ev);
+                ctx.render_pos = clip.1;
             }
             Module::Fade {
                 items,
