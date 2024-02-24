@@ -41,7 +41,7 @@ xml-rs = "*"
 # GUI
 png = "0.17"
 resvg = { version = "0.40", default-features = false }
-smithay-client-toolkit = { version = "0.18.1", default-features = false, git = "https://github.com/Smithay/client-toolkit.git", branch = "v0.18.1" }
+smithay-client-toolkit = { version = "0.18.1", default-features = false }
 #smithay-client-toolkit = { version = "*", default-features = false, path = "../smithay-client-toolkit" }
 tiny-skia = "0.11"
 ttf-parser = "*"
