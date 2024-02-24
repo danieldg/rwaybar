@@ -38,11 +38,7 @@ impl Renderer {
         }
     }
 
-    pub fn render_dummy<R>(
-        &mut self,
-        rt: &mut Runtime,
-        render: impl FnOnce(&mut Render) -> R,
-    ) -> R {
+    pub fn render_dummy<R>(&mut self, rt: &Runtime, render: impl FnOnce(&mut Render) -> R) -> R {
         let font = &rt.fonts[0];
 
         let mut queue = Queue {
@@ -75,7 +71,7 @@ impl Renderer {
 
     pub fn render<R>(
         &mut self,
-        rt: &mut Runtime,
+        rt: &Runtime,
         surface: &WlSurface,
         data: &mut RenderSurface,
         render: impl FnOnce(&mut Render) -> R,
@@ -143,7 +139,7 @@ impl Renderer {
 
         // Drawing is done directly to the SHM region.  If must_clear is false, that region still
         // contains the prior frame, so we can avoid redrawing undamaged areas.
-        let (canvas, must_clear, finalize) = self.render_be_rgba(data, &mut rt.wayland, surface);
+        let (canvas, must_clear, finalize) = self.render_be_rgba(data, &rt.wayland, surface);
         let mut canvas = tiny_skia::PixmapMut::from_bytes(canvas, pixel_width, pixel_height)
             .expect("Bad canvas size?");
 
