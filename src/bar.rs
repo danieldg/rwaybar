@@ -225,7 +225,7 @@ impl Bar {
 }
 
 impl SurfaceEvents for Bar {
-    fn hover(&mut self, (x, y): (f64, f64), runtime: &mut Runtime) {
+    fn hover(&mut self, (x, y): (f64, f64), runtime: &mut Runtime, render: &mut Renderer) {
         if let Some((min_x, max_x, desc)) = self.sink.get_hover(x as f32, y as f32) {
             if let Some(popup) = &mut self.popup {
                 if x < popup.wl.anchor.0 as f64
@@ -247,7 +247,7 @@ impl SurfaceEvents for Bar {
             );
 
             runtime.items.insert("bar".into(), self.item.clone());
-            let size = Renderer::render_dummy(runtime, |ctx| desc.render_popup(ctx));
+            let size = render.render_dummy(runtime, |ctx| desc.render_popup(ctx));
             if size.0 <= 0 || size.1 <= 0 {
                 return;
             }
@@ -282,7 +282,7 @@ impl SurfaceEvents for Bar {
 }
 
 impl SurfaceEvents for BarPopup {
-    fn hover(&mut self, _: (f64, f64), _: &mut Runtime) {
+    fn hover(&mut self, _: (f64, f64), _: &mut Runtime, _: &mut Renderer) {
         self.vanish = None;
     }
 

@@ -37,13 +37,17 @@ impl Renderer {
         }
     }
 
-    pub fn render_dummy<R>(rt: &mut Runtime, render: impl FnOnce(&mut Render) -> R) -> R {
+    pub fn render_dummy<R>(
+        &mut self,
+        rt: &mut Runtime,
+        render: impl FnOnce(&mut Render) -> R,
+    ) -> R {
         let font = &rt.fonts[0];
 
         let mut queue = Queue {
             rect: vec![],
             image: vec![],
-            cache: None,
+            cache: &mut self.cache,
         };
         let mut ctx = Render {
             queue: &mut queue,
@@ -86,7 +90,7 @@ impl Renderer {
         let mut queue = Queue {
             rect: vec![],
             image: vec![],
-            cache: Some(&mut self.cache),
+            cache: &mut self.cache,
         };
         let font = &rt.fonts[0];
 
@@ -592,7 +596,7 @@ pub struct Queue<'a> {
     rect: Vec<RenderRect>,
     image: Vec<RenderImage>,
 
-    pub cache: Option<&'a mut RenderCache>,
+    pub cache: &'a mut RenderCache,
 }
 
 #[derive(Debug)]

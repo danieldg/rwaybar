@@ -434,7 +434,7 @@ fn to_color_u32(color: Color) -> u32 {
 }
 
 impl RenderKey {
-    fn new(ctx: &Render, text: &str) -> Option<Self> {
+    fn new(ctx: &Render, text: &str) -> Self {
         let pixel_x = ctx.render_pos.x * ctx.scale;
         let pixel_y = ctx.render_pos.y * ctx.scale;
         let xi = get_subpixel_key(pixel_x);
@@ -443,7 +443,7 @@ impl RenderKey {
         let text_stroke_size_milli = ctx.text_stroke.map_or(0, |_| {
             (ctx.text_stroke_size.unwrap_or(1.0) * ctx.scale * 1000.0).round() as u32
         });
-        Some(RenderKey {
+        RenderKey {
             x_offset_subpix: xi,
             y_offset_subpix: yi,
             font: ctx.font.uid,
@@ -454,7 +454,7 @@ impl RenderKey {
             text_stroke_size_milli,
 
             text: text.into(),
-        })
+        }
     }
 }
 
@@ -470,14 +470,11 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
     let clip_h = ctx.render_extents.1.y - ctx.render_extents.0.y;
     let clip_w_px = clip_w * scale;
 
-    let mut key = None;
-    if ctx.queue.cache.is_some() {
-        key = RenderKey::new(ctx, text);
-    }
+    let key = RenderKey::new(ctx, text);
 
     /* try */
     match (|| {
-        let ti = ctx.queue.cache.as_mut()?.text.get_mut(key.as_ref()?)?;
+        let ti = ctx.queue.cache.text.get_mut(&key)?;
         let mut text_size = ti.text_size;
 
         let mut add_clip = false;
@@ -684,17 +681,15 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
 
     ctx.queue.push_image(pixmap_tl, pixmap.clone());
 
-    if let Some(key) = key {
-        text_size.scale(scale);
-        ctx.queue.cache.as_mut().unwrap().text.insert(
-            key,
-            TextImage {
-                text_size,
-                clip_w_px,
-                origin_offset,
-                pixmap,
-                last_used: Instant::now(),
-            },
-        );
-    }
+    text_size.scale(scale);
+    ctx.queue.cache.text.insert(
+        key,
+        TextImage {
+            text_size,
+            clip_w_px,
+            origin_offset,
+            pixmap,
+            last_used: Instant::now(),
+        },
+    );
 }

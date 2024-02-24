@@ -54,6 +54,7 @@ use wayland_protocols_wlr::{
 };
 
 use crate::{
+    render::Renderer,
     state::{OutputsReadyCallback, Runtime, State},
     util,
 };
@@ -425,18 +426,18 @@ impl PointerHandler for State {
                             .set_cursor(&self.runtime.wayland, &pointer, serial);
                     }
 
-                    self.dispatch_surface_event(&event.surface, |surf, rt| {
-                        surf.hover(event.position, rt);
+                    self.dispatch_surface_event(&event.surface, |surf, rt, rd| {
+                        surf.hover(event.position, rt, rd);
                     });
                 }
                 Leave { .. } => {
-                    self.dispatch_surface_event(&event.surface, |surf, rt| {
+                    self.dispatch_surface_event(&event.surface, |surf, rt, _| {
                         surf.no_hover(rt);
                     });
                 }
                 Motion { .. } => {
-                    self.dispatch_surface_event(&event.surface, |surf, rt| {
-                        surf.hover(event.position, rt);
+                    self.dispatch_surface_event(&event.surface, |surf, rt, rd| {
+                        surf.hover(event.position, rt, rd);
                     });
                 }
                 Press { button, .. } => {
@@ -559,8 +560,8 @@ impl smithay_client_toolkit::seat::touch::TouchHandler for State {
         id: i32,
         (x, y): (f64, f64),
     ) {
-        self.dispatch_surface_event(&surface, |surf, rt| {
-            surf.hover((x, y), rt);
+        self.dispatch_surface_event(&surface, |surf, rt, rd| {
+            surf.hover((x, y), rt, rd);
         });
         self.runtime.wayland.taps.push(TapState {
             touch: touch.clone(),
@@ -589,7 +590,7 @@ impl smithay_client_toolkit::seat::touch::TouchHandler for State {
             .position(|tap| tap.touch == *touch && tap.id == id)
         {
             let tap = self.runtime.wayland.taps.remove(i);
-            self.dispatch_surface_event(&tap.surface, |surf, rt| {
+            self.dispatch_surface_event(&tap.surface, |surf, rt, _| {
                 surf.no_hover(rt);
                 surf.button((tap.x, tap.y), Button::Tap, rt);
             });
@@ -614,8 +615,8 @@ impl smithay_client_toolkit::seat::touch::TouchHandler for State {
             }
         }
         if let Some(surf) = surf {
-            self.dispatch_surface_event(&surf, |surf, rt| {
-                surf.hover((x, y), rt);
+            self.dispatch_surface_event(&surf, |surf, rt, rd| {
+                surf.hover((x, y), rt, rd);
             });
         }
     }
@@ -651,7 +652,7 @@ impl smithay_client_toolkit::seat::touch::TouchHandler for State {
             }
         });
         for surface in surfaces {
-            self.dispatch_surface_event(&surface, |surf, rt| {
+            self.dispatch_surface_event(&surface, |surf, rt, _| {
                 surf.no_hover(rt);
             });
         }
@@ -732,8 +733,8 @@ impl smithay_client_toolkit::shell::xdg::popup::PopupHandler for State {
 }
 
 pub trait SurfaceEvents {
-    fn hover(&mut self, pos: (f64, f64), rt: &mut Runtime) {
-        let _ = (pos, rt);
+    fn hover(&mut self, pos: (f64, f64), rt: &mut Runtime, render: &mut Renderer) {
+        let _ = (pos, rt, render);
     }
     fn no_hover(&mut self, rt: &mut Runtime) {
         let _ = rt;
@@ -902,15 +903,15 @@ impl State {
     fn dispatch_surface_event(
         &mut self,
         surf: &WlSurface,
-        mut f: impl FnMut(&mut dyn SurfaceEvents, &mut Runtime),
+        mut f: impl FnMut(&mut dyn SurfaceEvents, &mut Runtime, &mut Renderer),
     ) {
         for bar in &mut self.bars {
             if surf == bar.ls.wl_surface() {
-                f(bar, &mut self.runtime);
+                f(bar, &mut self.runtime, &mut self.renderer);
             }
             if let Some(popup) = &mut bar.popup {
                 if *surf == popup.wl.surf {
-                    f(popup, &mut self.runtime);
+                    f(popup, &mut self.runtime, &mut self.renderer);
                 }
             }
         }
