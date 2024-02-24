@@ -34,10 +34,11 @@ impl InterestMask {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Notifier {
-    inner: Rc<NotifierInner>,
-    interest: InterestMask,
+thread_local! {
+    static NOTIFY: NotifierInner = NotifierInner {
+        waker: Cell::new(None),
+        state: Cell::new(NotifyState::Idle),
+    };
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -51,47 +52,6 @@ enum NotifyState {
 struct NotifierInner {
     waker: Cell<Option<task::Waker>>,
     state: Cell<NotifyState>,
-}
-
-impl Notifier {
-    pub fn notify_data(&self, who: &str) {
-        debug!(
-            "{} triggered refresh on {}",
-            who,
-            (0..32)
-                .filter_map(|i| {
-                    let v = (self.interest.0 >> (2 * i)) & 3;
-                    if v != 0 {
-                        use std::fmt::Write;
-                        let mut r = String::new();
-                        for (i, c) in b"BP".iter().enumerate() {
-                            if v & (1 << i) != 0 {
-                                r.push(*c as char)
-                            }
-                        }
-                        write!(r, "{i}").unwrap();
-                        Some(r)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        let mut interest = self.interest;
-        match self.inner.state.get() {
-            NotifyState::Idle => {
-                self.inner.waker.take().map(|w| w.wake());
-            }
-            NotifyState::DrawOnly => {
-                // already woken, and no added items
-            }
-            NotifyState::NewData(mask) => {
-                interest.0 |= mask.0;
-            }
-        }
-        self.inner.state.set(NotifyState::NewData(interest));
-    }
 }
 
 impl NotifierInner {
@@ -109,24 +69,20 @@ impl NotifierInner {
 }
 
 #[derive(Debug, Clone)]
-pub struct DrawNotifyHandle {
-    inner: Rc<NotifierInner>,
-}
+pub struct DrawNotifyHandle {}
 
 impl DrawNotifyHandle {
-    pub fn new(rt: &Runtime) -> Self {
-        let inner = rt.notify.clone();
-        Self { inner }
+    pub fn new(_: &Runtime) -> Self {
+        Self {}
     }
 
     pub fn notify_draw_only(&self) {
-        self.inner.notify_draw_only();
+        NOTIFY.with(|notify| notify.notify_draw_only());
     }
 }
 
 #[derive(Debug, Default)]
 pub struct NotifierList {
-    inner: Cell<Option<Rc<NotifierInner>>>, // TODO just use a static
     interest: Cell<InterestMask>,
 }
 
@@ -137,7 +93,6 @@ impl NotifierList {
     pub fn add(&self, rt: &Runtime) {
         self.interest
             .set(InterestMask(self.interest.get().0 | rt.interest.get().0));
-        self.inner.set(Some(rt.notify.clone()));
     }
 
     /// Add all the items in `other` to this notifier, so they will also be marked dirty when this
@@ -145,24 +100,50 @@ impl NotifierList {
     pub fn merge(&self, other: &Self) {
         self.interest
             .set(InterestMask(self.interest.get().0 | other.interest.get().0));
-        let mut inner = self.inner.take();
-        if inner.is_none() {
-            inner = other.inner.take_in(|i| i.clone());
-        }
-        self.inner.set(inner);
     }
 
     /// Mark all items in this notifier list as dirty.
     ///
     /// Future calls to notify_data will do nothing until you add() bars again.
     pub fn notify_data(&self, who: &str) {
-        if let Some(inner) = self.inner.take_in(|i| i.clone()) {
-            Notifier {
-                inner,
-                interest: self.interest.get(),
+        let mut interest = self.interest.take();
+        debug!(
+            "{} triggered refresh on {}",
+            who,
+            (0..32)
+                .filter_map(|i| {
+                    let v = (interest.0 >> (2 * i)) & 3;
+                    if v != 0 {
+                        use std::fmt::Write;
+                        let mut r = String::new();
+                        for (i, c) in b"BP".iter().enumerate() {
+                            if v & (1 << i) != 0 {
+                                r.push(*c as char)
+                            }
+                        }
+                        write!(r, "{i}").unwrap();
+                        Some(r)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        NOTIFY.with(|notify| {
+            match notify.state.get() {
+                NotifyState::Idle => {
+                    notify.waker.take().map(|w| w.wake());
+                }
+                NotifyState::DrawOnly => {
+                    // already woken, and no added items
+                }
+                NotifyState::NewData(mask) => {
+                    interest.0 |= mask.0;
+                }
             }
-            .notify_data(who);
-        }
+            notify.state.set(NotifyState::NewData(interest))
+        });
     }
 }
 
@@ -174,7 +155,6 @@ pub struct Runtime {
     pub items: HashMap<Rc<str>, Rc<Item>>,
     pub wayland: WaylandClient,
     item_var: Rc<Item>,
-    notify: Rc<NotifierInner>,
     interest: Cell<InterestMask>,
     read_depth: Cell<u8>,
 }
@@ -318,10 +298,6 @@ pub struct State {
 
 impl State {
     pub fn new(wayland: WaylandClient) -> Result<Rc<RefCell<Self>>, Box<dyn Error>> {
-        let notify_inner = Rc::new(NotifierInner {
-            waker: Cell::new(None),
-            state: Cell::new(NotifyState::Idle),
-        });
         log::debug!("State::new");
 
         let mut state = Self {
@@ -333,7 +309,6 @@ impl State {
                 fonts: Vec::new(),
                 items: Default::default(),
                 item_var: Item::new_current_item(),
-                notify: notify_inner.clone(),
                 interest: Cell::new(InterestMask(0)),
                 read_depth: Cell::new(0),
                 wayland,
@@ -350,11 +325,14 @@ impl State {
         spawn_noerr(async move {
             loop {
                 poll_fn(|ctx| {
-                    notify_inner.waker.set(Some(ctx.waker().clone()));
-                    match notify_inner.state.get() {
-                        NotifyState::Idle => task::Poll::Pending,
-                        _ => task::Poll::Ready(()),
-                    }
+                    NOTIFY.with(|notify| {
+                        if notify.state.get() == NotifyState::Idle {
+                            notify.waker.set(Some(ctx.waker().clone()));
+                            task::Poll::Pending
+                        } else {
+                            task::Poll::Ready(())
+                        }
+                    })
                 })
                 .await;
                 let mut state = state.borrow_mut();
@@ -453,7 +431,7 @@ impl State {
                 v.data.init(k, &self.runtime, None);
             }
         }
-        self.runtime.notify.full_redraw();
+        NOTIFY.with(|notify| notify.full_redraw());
 
         self.bars.clear();
         for output in self.runtime.wayland.output.outputs() {
@@ -485,12 +463,12 @@ impl State {
     /// throttled.  This should be called after damaging a surface in some way unrelated to the
     /// items on the surface, such as by receiving a configure or scale event from the compositor.
     pub fn request_draw(&mut self) {
-        self.runtime.notify.notify_draw_only();
+        NOTIFY.with(|notify| notify.notify_draw_only());
     }
 
     fn set_data(&mut self) {
         // Propagate new_data notifications to all bar dirty fields
-        let dirty_mask = match self.runtime.notify.state.replace(NotifyState::Idle) {
+        let dirty_mask = match NOTIFY.with(|notify| notify.state.replace(NotifyState::Idle)) {
             NotifyState::Idle => return,
             NotifyState::DrawOnly => return,
             NotifyState::NewData(d) => d.0,
@@ -499,7 +477,6 @@ impl State {
         for (i, bar) in (0..31).chain(iter::repeat(31)).zip(&mut self.bars) {
             let mask = (dirty_mask >> (2 * i)) & 3;
             if mask & 1 != 0 {
-                // TODO split damage left/right/center
                 SurfaceData::from_wl(bar.ls.wl_surface()).damage_full();
             }
             if mask & 2 != 0 {
