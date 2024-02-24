@@ -694,7 +694,15 @@ impl Group {
     }
 }
 
-impl Render<'_, '_> {
+impl<'a, 'c> Render<'a, 'c> {
+    pub fn with_err_name<'b>(&'b mut self, name: &'b str) -> Render<'b, 'c> {
+        Render {
+            queue: &mut *self.queue,
+            err_name: name,
+            ..*self
+        }
+    }
+
     pub fn group(&self) -> Group {
         Group {
             origin: self.render_pos,

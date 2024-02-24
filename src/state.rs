@@ -171,7 +171,7 @@ impl NotifierList {
 pub struct Runtime {
     pub xdg: xdg::BaseDirectories,
     pub fonts: Vec<FontMapped>,
-    pub items: HashMap<String, Rc<Item>>,
+    pub items: HashMap<Rc<str>, Rc<Item>>,
     pub wayland: WaylandClient,
     item_var: Rc<Item>,
     notify: Rc<NotifierInner>,
@@ -332,7 +332,7 @@ impl State {
                 xdg: xdg::BaseDirectories::new()?,
                 fonts: Vec::new(),
                 items: Default::default(),
-                item_var: Rc::new(Module::new_current_item().into()),
+                item_var: Item::new_current_item(),
                 notify: notify_inner.clone(),
                 interest: Cell::new(InterestMask(0)),
                 read_depth: Cell::new(0),
@@ -410,8 +410,8 @@ impl State {
                     }
                     None
                 }
-                _ => {
-                    let key = key.to_owned();
+                key => {
+                    let key = key.into();
                     let value = Rc::new(Item::from_item_list(&key, value));
                     Some((key, value))
                 }

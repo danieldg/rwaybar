@@ -2,7 +2,7 @@
 #[cfg(feature = "dbus")]
 use crate::tray;
 use crate::{
-    data::{BarData, ItemReference, IterationItem, Module, ModuleContext, Value},
+    data::{BarData, ItemReference, IterationItem, Module, Value},
     event::EventSink,
     font::render_font_item,
     icon,
@@ -17,6 +17,7 @@ use tiny_skia::{Color, Point};
 /// A visible item in a bar
 #[derive(Debug)]
 pub struct Item {
+    pub name: Rc<str>,
     pub format: ItemFormat,
     pub data: Module,
     events: EventSink,
@@ -512,35 +513,93 @@ impl Formatting {
     }
 }
 
-impl From<Module> for Item {
-    fn from(data: Module) -> Self {
-        Self {
+/// The context of a parsed item, used to disambiguate strings
+#[derive(Debug, Clone)]
+pub struct ModuleContext<'a> {
+    pub parent: &'a Rc<str>,
+    pub prefer_ref: bool,
+}
+
+impl ModuleContext<'_> {
+    pub fn with_ref_preferred(&self) -> ModuleContext {
+        // Source
+        ModuleContext {
+            parent: &self.parent,
+            prefer_ref: true,
+        }
+    }
+
+    pub fn with_text_preferred(&self) -> ModuleContext {
+        ModuleContext {
+            parent: &self.parent,
+            prefer_ref: false,
+        }
+    }
+
+    pub fn item_from(&self, data: Module) -> Item {
+        Item {
+            name: self.parent.clone(),
             format: ItemFormat::default(),
             events: EventSink::default(),
             data,
         }
     }
+
+    pub fn item_from_value(&self, value: &toml::Value) -> Item {
+        if value.as_str().is_some() {
+            return Item {
+                data: Module::from_toml_in(value, self.clone()),
+                format: ItemFormat::default(),
+                events: EventSink::default(),
+                name: self.parent.clone(),
+            };
+        }
+
+        Item::from_item_list(&self.parent, value)
+    }
+
+    pub fn opt_item_from_key(&self, cfg: &toml::Value, key: &'static str) -> Option<Item> {
+        cfg.get(key).map(|value| {
+            let r: Rc<str> = format!("{}.{key}", self.parent).into();
+            if value.as_str().is_some() {
+                return Item {
+                    data: Module::from_toml_in(
+                        value,
+                        ModuleContext {
+                            parent: &r,
+                            prefer_ref: true,
+                        },
+                    ),
+                    format: ItemFormat::default(),
+                    events: EventSink::default(),
+                    name: r,
+                };
+            }
+
+            Item::from_item_list(&r, value)
+        })
+    }
+
+    pub fn item_from_key(&self, cfg: &toml::Value, key: &'static str) -> Item {
+        self.opt_item_from_key(cfg, key).unwrap_or_else(|| Item {
+            name: format!("{}.{key}", self.parent).into(),
+            format: ItemFormat::default(),
+            events: EventSink::default(),
+            data: Module::parse_error(format!("Value '{}.{key}' not found", self.parent)),
+        })
+    }
 }
 
 impl Item {
-    pub fn none() -> Self {
-        Self {
-            format: ItemFormat::default(),
-            events: EventSink::default(),
-            data: Module::parse_error(""),
-        }
-    }
-
     pub fn new_bar(cfg: toml::Value) -> Self {
-        let left = Rc::new(cfg.get("left").map_or_else(Item::none, Item::from_toml_ref));
-        let right = Rc::new(
-            cfg.get("right")
-                .map_or_else(Item::none, Item::from_toml_ref),
-        );
-        let center = Rc::new(
-            cfg.get("center")
-                .map_or_else(Item::none, Item::from_toml_ref),
-        );
+        let bar = "bar".into();
+        let ctx = ModuleContext {
+            parent: &bar,
+            prefer_ref: true,
+        };
+        let left = Rc::new(ctx.item_from_key(&cfg, "left"));
+        let right = Rc::new(ctx.item_from_key(&cfg, "right"));
+        let center = Rc::new(ctx.item_from_key(&cfg, "center"));
         let mut tooltips = cfg
             .get("tooltips")
             .map_or_else(ItemFormat::default, ItemFormat::from_toml);
@@ -560,6 +619,7 @@ impl Item {
         }
 
         Item {
+            name: "bar".into(),
             events: EventSink::from_toml(&cfg),
             format: ItemFormat::from_toml(&cfg),
             data: Module::Bar {
@@ -571,35 +631,75 @@ impl Item {
         }
     }
 
-    pub fn from_toml_ref(value: &toml::Value) -> Self {
-        if value.as_str().is_some() {
-            return Module::from_toml_in(value, ModuleContext::Source).into();
+    pub fn new_unresolved(text: &Rc<str>) -> Rc<Self> {
+        Rc::new(Item {
+            name: text.clone(),
+            format: ItemFormat::default(),
+            events: EventSink::default(),
+            data: Module::new_format(&**text),
+        })
+    }
+
+    pub fn new_current_item() -> Rc<Self> {
+        Rc::new(Item {
+            name: "item".into(),
+            format: ItemFormat::default(),
+            events: EventSink::default(),
+            data: Module::new_current_item(),
+        })
+    }
+
+    pub fn new_child_item(&self, name: &str, data: Module) -> Self {
+        Item {
+            name: format!("{}.{name}", self.name).into(),
+            format: ItemFormat::default(),
+            events: EventSink::default(),
+            data,
         }
-
-        Self::from_item_list("<ref>", value)
     }
 
-    pub fn from_toml_format(value: &toml::Value) -> Self {
-        Self::from_item_list("<ref>", value)
-    }
-
-    pub fn from_item_list(key: &str, value: &toml::Value) -> Self {
+    pub fn from_item_list(key: &Rc<str>, value: &toml::Value) -> Self {
         if let Some(array) = value.as_array() {
-            return Module::Group {
-                items: array.iter().map(Item::from_toml_ref).map(Rc::new).collect(),
-                condition: None,
-                tooltip: None,
-                spacing: "".into(),
-                vertical: false,
-            }
-            .into();
+            return Item {
+                name: key.clone(),
+                format: ItemFormat::default(),
+                events: EventSink::default(),
+
+                data: Module::Group {
+                    items: array
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| {
+                            ModuleContext {
+                                parent: &format!("{key}[{i}]").into(),
+                                prefer_ref: true,
+                            }
+                            .item_from_value(v)
+                        })
+                        .map(Rc::new)
+                        .collect(),
+                    condition: None,
+                    tooltip: None,
+                    spacing: "".into(),
+                    vertical: false,
+                },
+            };
         }
 
-        let data = Module::from_toml_in(value, ModuleContext::Item);
+        let data = Module::from_toml_in(
+            value,
+            ModuleContext {
+                parent: key,
+                prefer_ref: false,
+            },
+        );
         if let Module::ParseError { msg } = &data {
-            error!("Error parsing {key}: {msg}");
+            if let Some(msg) = msg.take() {
+                error!("Error parsing {key}: {msg}");
+            }
         }
         Item {
+            name: key.clone(),
             events: EventSink::from_toml(value),
             format: ItemFormat::from_toml(value),
             data,
@@ -615,11 +715,15 @@ impl Item {
         let mut rv = self.events.clone();
 
         if self.format.is_trivial() {
-            self.render_inner(parent_ctx, &mut rv);
+            let mut ctx = parent_ctx.with_err_name(&self.name);
+            self.render_inner(&mut ctx, &mut rv);
+            let pos = ctx.render_pos;
+            parent_ctx.render_pos = pos;
             return rv;
         }
 
         let (format, mut ctx) = self.format.setup_ctx(parent_ctx);
+        ctx.err_name = &self.name;
         if format.is_boring() {
             self.render_inner(&mut ctx, &mut rv);
             let pos = ctx.render_pos;
@@ -1004,7 +1108,7 @@ impl Item {
                     Ok(()) => {}
                     Err(()) => {
                         let value = ctx.runtime.format_or(fallback, ctx.err_name).into_owned();
-                        let mut item: Item = Module::new_value(value).into();
+                        let mut item = self.new_child_item("icon", Module::new_value(value));
                         item.format.markup = markup;
                         Rc::new(item).render(ctx);
                     }

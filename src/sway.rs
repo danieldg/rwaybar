@@ -1,7 +1,7 @@
 use crate::{
     data::{IterationItem, Value},
     event::EventSink,
-    item::Item,
+    item::{Item, ModuleContext},
     render::{Group, Render},
     state::{NotifierList, Runtime},
     util::{spawn_noerr, Cell},
@@ -872,34 +872,16 @@ impl TreeInner {
 }
 
 impl Tree {
-    pub fn from_toml(config: &toml::Value) -> Self {
+    pub fn from_toml(config: &toml::Value, ctx: ModuleContext) -> Self {
         let items = TreeItems {
-            pre_workspace: config
-                .get("pre-workspace")
-                .map(Item::from_toml_ref)
-                .map(Rc::new),
-            pre_node: config.get("pre-node").map(Item::from_toml_ref).map(Rc::new),
-            window: config.get("window").map(Item::from_toml_ref).map(Rc::new),
-            post_node: config
-                .get("post-node")
-                .map(Item::from_toml_ref)
-                .map(Rc::new),
-            pre_floats: config
-                .get("pre-floats")
-                .map(Item::from_toml_ref)
-                .map(Rc::new),
-            pre_float: config
-                .get("pre-float")
-                .map(Item::from_toml_ref)
-                .map(Rc::new),
-            post_float: config
-                .get("post-float")
-                .map(Item::from_toml_ref)
-                .map(Rc::new),
-            post_workspace: config
-                .get("post-workspace")
-                .map(Item::from_toml_ref)
-                .map(Rc::new),
+            pre_workspace: ctx.opt_item_from_key(config, "pre-workspace").map(Rc::new),
+            pre_node: ctx.opt_item_from_key(config, "pre-node").map(Rc::new),
+            window: ctx.opt_item_from_key(config, "window").map(Rc::new),
+            post_node: ctx.opt_item_from_key(config, "post-node").map(Rc::new),
+            pre_floats: ctx.opt_item_from_key(config, "pre-floats").map(Rc::new),
+            pre_float: ctx.opt_item_from_key(config, "pre-float").map(Rc::new),
+            post_float: ctx.opt_item_from_key(config, "post-float").map(Rc::new),
+            post_workspace: ctx.opt_item_from_key(config, "post-workspace").map(Rc::new),
         };
         let output = config
             .get("output")

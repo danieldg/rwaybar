@@ -8,7 +8,7 @@ use crate::pulse;
 #[cfg(feature = "dbus")]
 use crate::tray;
 use crate::{
-    item::{Item, ItemFormat},
+    item::{Item, ItemFormat, ModuleContext},
     state::{NotifierList, Runtime},
     sway,
     util::{glob_expand, spawn_handle, spawn_noerr, toml_to_f64, toml_to_string, Cell, Fd},
@@ -225,7 +225,7 @@ impl<'a> From<String> for Value<'a> {
 
 #[derive(Debug, Clone)]
 pub enum ItemReference {
-    New(Box<str>),
+    New(Rc<str>),
     Looped,
     Found(Weak<Item>),
     NotFound(Rc<Item>),
@@ -242,7 +242,7 @@ impl ItemReference {
                 }
                 None => {
                     debug!("Unresolved reference to item '{name}', interpreting as text");
-                    let item = Rc::new(Item::from(Module::new_format(name)));
+                    let item = Item::new_unresolved(&name);
                     let rv = f(Some(&item));
                     me = ItemReference::NotFound(item);
                     rv
@@ -498,7 +498,7 @@ pub enum Module {
         values: Box<[Box<str>]>,
     },
     ParseError {
-        msg: Cow<'static, str>,
+        msg: Cell<Option<Cow<'static, str>>>,
     },
     #[cfg(feature = "pulse")]
     Pulse {
@@ -580,12 +580,6 @@ impl PartialEq for IterationItem {
             _ => false,
         }
     }
-}
-
-/// The context of a parsed item, used to disambiguate strings
-pub enum ModuleContext {
-    Source,
-    Item,
 }
 
 impl Module {
@@ -708,7 +702,7 @@ impl Module {
                 );
                 Module::Disk { poll }
             }
-            Some("eval") => Self::new_eval(value),
+            Some("eval") => Self::new_eval(value, ctx),
             Some("exec-json") => {
                 let command = match value.get("command").and_then(|v| v.as_str()) {
                     Some(cmd) => cmd.into(),
@@ -729,15 +723,15 @@ impl Module {
                     .filter_map(Option::as_deref)
                     .filter_map(|v| v.as_array())
                     .flatten()
-                    .map(Item::from_toml_ref)
+                    .map(|v| ctx.item_from_value(v))
                     .map(Rc::new)
                     .collect::<Vec<_>>();
                 if items.is_empty() {
                     return Module::parse_error("At least one item is required");
                 }
-                let tooltip = value
-                    .get("tooltip")
-                    .map(Item::from_toml_format)
+                let tooltip = ctx
+                    .with_text_preferred()
+                    .opt_item_from_key(value, "tooltip")
                     .map(Rc::new);
                 let dir = match value.get("dir").and_then(toml::Value::as_str) {
                     None | Some("right") => b'r',
@@ -747,9 +741,9 @@ impl Module {
                     _ => return Module::parse_error("Invalid 'dir'"),
                 };
                 let value = if value.get("expr").is_some() {
-                    Box::new(Self::new_eval(value))
+                    Box::new(Self::new_eval(value, ctx))
                 } else if let Some(item) = value.get("value") {
-                    Box::new(Self::from_toml_in(item, ModuleContext::Source))
+                    Box::new(Self::from_toml_in(item, ctx.with_ref_preferred()))
                 } else {
                     return Module::parse_error("'value' or 'expr' is required");
                 };
@@ -762,7 +756,7 @@ impl Module {
             }
             Some("focus-list") => {
                 let source = match value.get("source") {
-                    Some(s) => Box::new(Module::from_toml_in(s, ModuleContext::Source)),
+                    Some(s) => Box::new(Module::from_toml_in(s, ctx.with_ref_preferred())),
                     None => {
                         return Module::parse_error("A source is required for focus-list");
                     }
@@ -770,14 +764,9 @@ impl Module {
                 let spacing = toml_to_string(value.get("spacing"))
                     .unwrap_or_default()
                     .into();
-                let others = Rc::new(
-                    value
-                        .get("item")
-                        .map_or_else(Item::none, Item::from_toml_ref),
-                );
-                let focused = value
-                    .get("focused-item")
-                    .map(Item::from_toml_ref)
+                let others = Rc::new(ctx.item_from_key(value, "item"));
+                let focused = ctx
+                    .opt_item_from_key(value, "focused-item")
                     .map(Rc::new)
                     .unwrap_or_else(|| others.clone());
 
@@ -801,20 +790,22 @@ impl Module {
                         ""
                     })
                     .into();
-                let tooltip = value
-                    .get("tooltip")
-                    .map(Item::from_toml_format)
+                let tooltip = ctx
+                    .with_text_preferred()
+                    .opt_item_from_key(value, "tooltip")
                     .map(Rc::new);
+
                 Module::Formatted { format, tooltip }
             }
             Some("group") => {
                 let spacing = toml_to_string(value.get("spacing"))
                     .unwrap_or_default()
                     .into();
-                let tooltip = value
-                    .get("tooltip")
-                    .map(Item::from_toml_format)
+                let tooltip = ctx
+                    .with_text_preferred()
+                    .opt_item_from_key(value, "tooltip")
                     .map(Rc::new);
+
                 let condition = toml_to_string(value.get("condition")).map(Into::into);
                 let vertical = match value.get("orientation").and_then(|v| v.as_str()) {
                     Some("vertical") | Some("v") => true,
@@ -829,7 +820,14 @@ impl Module {
                     .filter_map(Option::as_deref)
                     .filter_map(|v| v.as_array())
                     .flatten()
-                    .map(Item::from_toml_ref)
+                    .enumerate()
+                    .map(|(i, v)| {
+                        ModuleContext {
+                            parent: &format!("{}[{i}]", ctx.parent).into(),
+                            prefer_ref: true,
+                        }
+                        .item_from_value(v)
+                    })
                     .map(Rc::new)
                     .collect();
 
@@ -902,7 +900,7 @@ impl Module {
                 let min = toml_to_string(value.get("min")).unwrap_or_default().into();
                 let max = toml_to_string(value.get("max")).unwrap_or_default().into();
                 let src = match value.get("src").or_else(|| value.get("source")) {
-                    Some(item) => Box::new(Module::from_toml_in(item, ModuleContext::Source)),
+                    Some(item) => Box::new(Module::from_toml_in(item, ctx.with_ref_preferred())),
                     None => {
                         return Module::parse_error("Meter requires a source expression");
                     }
@@ -1017,13 +1015,13 @@ impl Module {
                 Module::ReadFile { on_err, poll }
             }
             Some("sway-mode") => Module::SwayMode(sway::Mode::from_toml(value)),
-            Some("sway-tree") => Module::SwayTree(sway::Tree::from_toml(value)),
+            Some("sway-tree") => Module::SwayTree(sway::Tree::from_toml(value, ctx)),
             Some("sway-workspace") => Module::SwayWorkspace(sway::Workspace::from_toml(value)),
             Some("switch") => {
                 let format = if let Some(item) = value.get("format") {
-                    Box::new(Module::from_toml_in(item, ModuleContext::Item))
+                    Box::new(Module::from_toml_in(item, ctx.with_text_preferred()))
                 } else if let Some(item) = value.get("source") {
-                    Box::new(Module::from_toml_in(item, ModuleContext::Source))
+                    Box::new(Module::from_toml_in(item, ctx.with_ref_preferred()))
                 } else {
                     return Module::parse_error("'switch' requires a 'format' or 'source' item");
                 };
@@ -1111,24 +1109,16 @@ impl Module {
                 Module::Thermal { poll, label }
             }
             Some("tray") => {
-                let active = Rc::new(value.get("item").map(Item::from_toml_ref).unwrap_or_else(
-                    || {
-                        Module::Icon {
-                            name: "{item.icon}".into(),
-                            fallback: "{item.title}".into(),
-                            tooltip: "".into(),
-                        }
-                        .into()
-                    },
-                ));
-                let passive = Rc::new(
-                    value
-                        .get("passive")
-                        .map_or_else(Item::none, Item::from_toml_ref),
-                );
-                let urgent = value
-                    .get("urgent")
-                    .map(Item::from_toml_ref)
+                let active = Rc::new(ctx.opt_item_from_key(value, "item").unwrap_or_else(|| {
+                    ctx.item_from(Module::Icon {
+                        name: "{item.icon}".into(),
+                        fallback: "{item.title}".into(),
+                        tooltip: "".into(),
+                    })
+                }));
+                let passive = Rc::new(ctx.item_from_key(value, "passive"));
+                let urgent = ctx
+                    .opt_item_from_key(value, "urgent")
                     .map(Rc::new)
                     .unwrap_or_else(|| active.clone());
                 Module::Tray {
@@ -1143,24 +1133,27 @@ impl Module {
             Some(t) => Module::parse_error(format!("Unknown module type '{t}'")),
             None => {
                 if let Some(value) = value.as_str() {
-                    match ctx {
-                        ModuleContext::Source if value.contains('{') => Module::Formatted {
+                    if ctx.prefer_ref && value.contains('{') {
+                        Module::Formatted {
                             format: value.into(),
                             tooltip: None,
-                        },
-                        ModuleContext::Source => Module::ItemReference {
+                        }
+                    } else if ctx.prefer_ref {
+                        Module::ItemReference {
                             value: Cell::new(ItemReference::New(value.into())),
-                        },
-                        ModuleContext::Item => Module::Formatted {
+                        }
+                    } else {
+                        Module::Formatted {
                             format: value.into(),
                             tooltip: None,
-                        },
+                        }
                     }
                 } else if let Some(format) = value.get("format").and_then(|v| v.as_str()) {
-                    let tooltip = value
-                        .get("tooltip")
-                        .map(Item::from_toml_format)
+                    let tooltip = ctx
+                        .with_text_preferred()
+                        .opt_item_from_key(value, "tooltip")
                         .map(Rc::new);
+
                     Module::Formatted {
                         format: format.into(),
                         tooltip,
@@ -1188,7 +1181,7 @@ impl Module {
         }
     }
 
-    pub fn new_eval(value: &toml::Value) -> Self {
+    pub fn new_eval(value: &toml::Value, ctx: ModuleContext) -> Self {
         match value
             .get("expr")
             .and_then(|v| v.as_str())
@@ -1202,7 +1195,7 @@ impl Module {
                     }
                     match value.get(ident) {
                         Some(value) => {
-                            let value = Module::from_toml_in(value, ModuleContext::Source);
+                            let value = Module::from_toml_in(value, ctx.with_ref_preferred());
                             vars.push((ident.into(), value));
                         }
                         None => {
@@ -1653,7 +1646,12 @@ impl Module {
                 };
                 f(rt.format_or(&expr, &name))
             }
-            Module::ParseError { .. } => f(Value::Null),
+            Module::ParseError { msg } => {
+                if let Some(msg) = msg.take() {
+                    log::debug!("{msg}");
+                }
+                f(Value::Null)
+            }
             #[cfg(feature = "pulse")]
             Module::Pulse { target } => pulse::read_in(name, target, key, rt, f),
             Module::ReadFile { on_err, poll } => {
@@ -1884,7 +1882,9 @@ impl Module {
     }
 
     pub fn parse_error(msg: impl Into<Cow<'static, str>>) -> Self {
-        Module::ParseError { msg: msg.into() }
+        Module::ParseError {
+            msg: Cell::new(Some(msg.into())),
+        }
     }
 
     pub fn new_current_item() -> Self {
