@@ -24,6 +24,7 @@ pub struct BarPopup {
     pub wl: Popup,
     desc: PopupDesc,
     vanish: Option<Instant>,
+    render: RenderSurface,
 }
 
 /// A single taskbar on a single output
@@ -202,7 +203,7 @@ impl Bar {
 
         runtime.set_interest_mask(mask.bar_region(2));
         if let Some(popup) = popup {
-            let new_size = renderer.render(runtime, &popup.wl.surf, &mut self.render, |ctx| {
+            let new_size = renderer.render(runtime, &popup.wl.surf, &mut popup.render, |ctx| {
                 popup.desc.render_popup(ctx)
             });
 
@@ -211,6 +212,7 @@ impl Bar {
                 || new_size.0 + 10 < popup.wl.req_size.0
                 || new_size.1 + 10 < popup.wl.req_size.1
             {
+                popup.render = RenderSurface::new();
                 match self.ls.kind() {
                     smithay_client_toolkit::shell::wlr_layer::SurfaceKind::Wlr(ls) => {
                         popup.wl.resize(&mut runtime.wayland, &ls, new_size, scale);
@@ -255,6 +257,7 @@ impl SurfaceEvents for Bar {
                 wl: Popup::on_bar(&mut runtime.wayland, self, anchor, size),
                 desc,
                 vanish: None,
+                render: RenderSurface::new(),
             };
             self.popup = Some(popup);
         }
