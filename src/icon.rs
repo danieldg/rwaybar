@@ -118,9 +118,24 @@ impl OwnedImage {
     }
 }
 
-fn open_icon(xdg: &xdg::BaseDirectories, name: &str, target_size: u32) -> io::Result<PathBuf> {
+fn open_icon(xdg: &xdg::BaseDirectories, name: &str, target_size: u32) -> io::Result<File> {
     if name.contains('/') {
-        return Ok(PathBuf::from(name.to_owned()));
+        match File::open(&name) {
+            Ok(file) => return Ok(file),
+            _ => {}
+        }
+        let mut path = PathBuf::from(name.to_owned());
+        path.as_mut_os_string().push(".svg");
+        match File::open(&path) {
+            Ok(file) => return Ok(file),
+            _ => {}
+        }
+        path.set_extension("svg");
+        match File::open(&path) {
+            Ok(file) => return Ok(file),
+            _ => {}
+        }
+        return Err(io::ErrorKind::NotFound.into());
     }
 
     // return paths in order from highest to lowest priority, unlike how the xdg crate does it
@@ -136,16 +151,12 @@ fn open_icon(xdg: &xdg::BaseDirectories, name: &str, target_size: u32) -> io::Re
         // would turn into "org.atheme.svg" instead of "org.atheme.audacious.svg"
         path.as_mut_os_string().push(".svg");
         match File::open(&path) {
-            Ok(_) => {
-                return Some(path);
-            }
+            Ok(f) => return Some(f),
             Err(_) => {}
         }
         path.set_extension("png");
         match File::open(&path) {
-            Ok(_) => {
-                return Some(path);
-            }
+            Ok(f) => return Some(f),
             Err(_) => {}
         }
         None
@@ -236,23 +247,6 @@ pub fn render(ctx: &mut Render, name: &str) -> Result<(), ()> {
         match cache.entry((name.into(), tsize)).or_insert_with(|| {
             open_icon(&ctx.runtime.xdg, name, tsize)
                 .ok()
-                .and_then(|mut path| {
-                    match File::open(&path) {
-                        Ok(file) => return Some(file),
-                        _ => {}
-                    }
-                    path.as_mut_os_string().push(".svg");
-                    match File::open(&path) {
-                        Ok(file) => return Some(file),
-                        _ => {}
-                    }
-                    path.set_extension("svg");
-                    match File::open(&path) {
-                        Ok(file) => return Some(file),
-                        _ => {}
-                    }
-                    None
-                })
                 .and_then(|file| OwnedImage::from_file(file, tsize, true))
         }) {
             Some(img) => {
