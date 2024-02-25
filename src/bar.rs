@@ -212,10 +212,9 @@ impl Bar {
                 || new_size.0 + 10 < popup.wl.req_size.0
                 || new_size.1 + 10 < popup.wl.req_size.1
             {
-                popup.render = RenderSurface::new();
                 match self.ls.kind() {
                     smithay_client_toolkit::shell::wlr_layer::SurfaceKind::Wlr(ls) => {
-                        popup.wl.resize(&mut runtime.wayland, &ls, new_size, scale);
+                        popup.wl.resize(&runtime.wayland, &ls, new_size, scale);
                     }
                     _ => unreachable!(),
                 }
@@ -253,8 +252,10 @@ impl SurfaceEvents for Bar {
             }
             let desc = desc.clone();
 
+            let wl = Popup::on_layer(&runtime.wayland, &self.ls, !self.anchor_top, anchor, size);
+
             let popup = BarPopup {
-                wl: Popup::on_bar(&mut runtime.wayland, self, anchor, size),
+                wl,
                 desc,
                 vanish: None,
                 render: RenderSurface::new(),

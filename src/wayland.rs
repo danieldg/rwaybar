@@ -814,6 +814,30 @@ impl WaylandClient {
         }
         surface
     }
+
+    pub fn create_positioner(
+        &self,
+        prefer_top: bool,
+        anchor: (i32, i32, i32, i32),
+        size: (i32, i32),
+    ) -> XdgPositioner {
+        use xdg_positioner::{Anchor, Gravity};
+        let pos = XdgPositioner::new(&self.xdg).unwrap();
+
+        pos.set_size(size.0, size.1);
+        pos.set_anchor_rect(anchor.0, anchor.1, anchor.2, anchor.3);
+        pos.set_offset(0, 0);
+        if prefer_top {
+            pos.set_anchor(Anchor::Top);
+            pos.set_gravity(Gravity::Top);
+        } else {
+            pos.set_anchor(Anchor::Bottom);
+            pos.set_gravity(Gravity::Bottom);
+        }
+        pos.set_constraint_adjustment(0xF); // allow moving but not resizing
+
+        pos
+    }
 }
 
 impl wayland_client::Dispatch<WpFractionalScaleV1, WlSurface> for State {
@@ -921,7 +945,6 @@ impl State {
 /// An [xdg_popup::XdgPopup] with associated information
 #[derive(Debug)]
 pub struct Popup {
-    pub queue: QueueHandle<State>,
     pub surf: WlSurface,
     pub sctk: popup::Popup,
     pub anchor: (i32, i32, i32, i32),
@@ -930,51 +953,36 @@ pub struct Popup {
 }
 
 impl Popup {
-    pub fn on_bar(
-        wayland: &mut WaylandClient,
-        bar: &crate::bar::Bar,
+    pub fn on_layer(
+        wayland: &WaylandClient,
+        sctk_ls: &sctk_layer::LayerSurface,
+        prefer_top: bool,
         anchor: (i32, i32, i32, i32),
         size: (i32, i32),
     ) -> Popup {
-        match bar.ls.kind() {
+        match sctk_ls.kind() {
             sctk_layer::SurfaceKind::Wlr(ls) => {
-                let scale = bar
-                    .ls
+                let scale = sctk_ls
                     .wl_surface()
                     .data::<SurfaceData>()
                     .map(|d| d.scale_120())
                     .unwrap_or_default();
-                Self::new(wayland, &ls, !bar.anchor_top, anchor, size, scale)
+                Self::new(wayland, &ls, prefer_top, anchor, size, scale)
             }
             _ => unreachable!(),
         }
     }
 
     pub fn new(
-        wayland: &mut WaylandClient,
+        wayland: &WaylandClient,
         parent: &ZwlrLayerSurfaceV1,
         prefer_top: bool,
         anchor: (i32, i32, i32, i32),
         size: (i32, i32),
         scale: Scale120,
     ) -> Self {
-        use xdg_positioner::{Anchor, Gravity};
-
         let surf = wayland.create_surface(scale);
-
-        let pos = XdgPositioner::new(&wayland.xdg).unwrap();
-
-        pos.set_size(size.0, size.1);
-        pos.set_anchor_rect(anchor.0, anchor.1, anchor.2, anchor.3);
-        pos.set_offset(0, 0);
-        if prefer_top {
-            pos.set_anchor(Anchor::Top);
-            pos.set_gravity(Gravity::Top);
-        } else {
-            pos.set_anchor(Anchor::Bottom);
-            pos.set_gravity(Gravity::Bottom);
-        }
-        pos.set_constraint_adjustment(0xF); // allow moving but not resizing
+        let pos = wayland.create_positioner(prefer_top, anchor, size);
 
         let sctk =
             popup::Popup::from_surface(None, &pos, &wayland.queue, surf.clone(), &wayland.xdg)
@@ -987,7 +995,6 @@ impl Popup {
         Popup {
             surf,
             sctk,
-            queue: wayland.queue.clone(),
             anchor,
             req_size: size,
             prefer_top,
@@ -996,30 +1003,19 @@ impl Popup {
 
     pub fn resize(
         &mut self,
-        wayland: &mut WaylandClient,
+        wayland: &WaylandClient,
         ls_surf: &ZwlrLayerSurfaceV1,
         size: (i32, i32),
         scale: Scale120,
     ) {
         if self.sctk.xdg_popup().version() >= xdg_popup::REQ_REPOSITION_SINCE {
-            use xdg_positioner::{Anchor, Gravity};
+            let pos = wayland.create_positioner(self.prefer_top, self.anchor, size);
+            self.sctk.xdg_popup().reposition(&pos, 0);
+
             self.sctk
                 .xdg_surface()
                 .set_window_geometry(0, 0, size.0, size.1);
-            let pos = XdgPositioner::new(&wayland.xdg).unwrap();
 
-            pos.set_size(size.0, size.1);
-            pos.set_anchor_rect(self.anchor.0, self.anchor.1, self.anchor.2, self.anchor.3);
-            pos.set_offset(0, 0);
-            if self.prefer_top {
-                pos.set_anchor(Anchor::Top);
-                pos.set_gravity(Gravity::Top);
-            } else {
-                pos.set_anchor(Anchor::Bottom);
-                pos.set_gravity(Gravity::Bottom);
-            }
-            pos.set_constraint_adjustment(0xF); // allow moving but not resizing
-            self.sctk.xdg_popup().reposition(&pos, 0);
             self.req_size = size;
         } else {
             // can't resize; emulate by destroying and re-creating.
