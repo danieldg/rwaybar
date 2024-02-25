@@ -225,6 +225,10 @@ impl SurfaceData {
         }
     }
 
+    pub fn deconfigure(&self) {
+        self.state.store(SurfaceData::NEW, Ordering::Relaxed)
+    }
+
     /// After calling start_render, we discovered that the damage didn't actually do anything, so
     /// we aborted the render.  Remove the throttle bit since we didn't actually submit a frame
     /// callback.
@@ -1009,6 +1013,10 @@ impl Popup {
         scale: Scale120,
     ) {
         if self.sctk.xdg_popup().version() >= xdg_popup::REQ_REPOSITION_SINCE {
+            // Block rendering until the resize request has gone through
+            let surface_data = SurfaceData::from_wl(&self.surf);
+            surface_data.deconfigure();
+
             let pos = wayland.create_positioner(self.prefer_top, self.anchor, size);
             self.sctk.xdg_popup().reposition(&pos, 0);
 

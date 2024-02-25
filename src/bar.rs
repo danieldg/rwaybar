@@ -182,6 +182,7 @@ impl Bar {
                     }
                 }
                 self.sink = new_sink;
+                true
             });
         }
 
@@ -203,22 +204,26 @@ impl Bar {
 
         runtime.set_interest_mask(mask.bar_region(2));
         if let Some(popup) = popup {
-            let new_size = renderer.render(runtime, &popup.wl.surf, &mut popup.render, |ctx| {
-                popup.desc.render_popup(ctx)
-            });
+            let surf = popup.wl.surf.clone();
+            renderer.render(runtime, &surf, &mut popup.render, |ctx| {
+                let new_size = popup.desc.render_popup(ctx);
 
-            if new_size.0 > popup.wl.req_size.0
-                || new_size.1 > popup.wl.req_size.1
-                || new_size.0 + 10 < popup.wl.req_size.0
-                || new_size.1 + 10 < popup.wl.req_size.1
-            {
-                match self.ls.kind() {
-                    smithay_client_toolkit::shell::wlr_layer::SurfaceKind::Wlr(ls) => {
-                        popup.wl.resize(&runtime.wayland, &ls, new_size, scale);
+                if new_size.0 > popup.wl.req_size.0
+                    || new_size.1 > popup.wl.req_size.1
+                    || new_size.0 + 10 < popup.wl.req_size.0
+                    || new_size.1 + 10 < popup.wl.req_size.1
+                {
+                    // Abort drawing the frame and request a resize instead
+                    match self.ls.kind() {
+                        smithay_client_toolkit::shell::wlr_layer::SurfaceKind::Wlr(ls) => {
+                            popup.wl.resize(&runtime.wayland, &ls, new_size, scale);
+                            return false;
+                        }
+                        _ => unreachable!(),
                     }
-                    _ => unreachable!(),
                 }
-            }
+                true
+            });
         }
     }
 }

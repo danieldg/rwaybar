@@ -69,13 +69,13 @@ impl Renderer {
         render(&mut ctx)
     }
 
-    pub fn render<R>(
+    pub fn render(
         &mut self,
         rt: &Runtime,
         surface: &WlSurface,
         data: &mut RenderSurface,
-        render: impl FnOnce(&mut Render) -> R,
-    ) -> R {
+        render: impl FnOnce(&mut Render) -> bool,
+    ) {
         let surface_data = SurfaceData::from_wl(surface);
 
         let pixel_width = surface_data.pixel_width() as u32;
@@ -114,7 +114,10 @@ impl Renderer {
             text_stroke_size: None,
             runtime: rt,
         };
-        let rv = render(&mut ctx);
+
+        if !render(&mut ctx) {
+            return;
+        }
 
         let mut damage = data.diff_contents(&queue, scale);
 
@@ -132,7 +135,7 @@ impl Renderer {
             // This happens when a wakeup didn't actually cause the displayed data to change. For
             // example, a load or temperature value can easily remain constant.
             surface_data.undo_damage();
-            return rv;
+            return;
         }
 
         let Queue { rect, image } = queue;
@@ -203,7 +206,6 @@ impl Renderer {
             surface.damage_buffer(r.x(), r.y(), r.width() as _, r.height() as _);
         }
         surface.commit();
-        rv
     }
 
     fn render_be_rgba(
