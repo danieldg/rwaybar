@@ -622,6 +622,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         let stroke_paint = tiny_skia::Paint {
             shader: tiny_skia::Shader::SolidColor(rgba),
             anti_alias: true,
+            colorspace: tiny_skia::ColorSpace::Gamma2,
             ..tiny_skia::Paint::default()
         };
         let stroke = tiny_skia::Stroke {
@@ -638,6 +639,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
                 let paint = tiny_skia::Paint {
                     shader: tiny_skia::Shader::SolidColor(color),
                     anti_alias: true,
+                    colorspace: tiny_skia::ColorSpace::Gamma2,
                     ..tiny_skia::Paint::default()
                 };
                 canvas.fill_path(
@@ -661,6 +663,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
                 let paint = tiny_skia::Paint {
                     shader: tiny_skia::Shader::SolidColor(color),
                     anti_alias: true,
+                    colorspace: tiny_skia::ColorSpace::Gamma2,
                     ..tiny_skia::Paint::default()
                 };
                 canvas.fill_path(

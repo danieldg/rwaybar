@@ -171,6 +171,7 @@ impl Renderer {
             let paint = tiny_skia::Paint {
                 shader: tiny_skia::Shader::SolidColor(rect.color),
                 anti_alias: true,
+                colorspace: tiny_skia::ColorSpace::Gamma2,
                 ..Default::default()
             };
             if must_clear {
@@ -192,6 +193,7 @@ impl Renderer {
                     1.0,
                     tiny_skia::Transform::from_translate(x, y),
                 ),
+                colorspace: tiny_skia::ColorSpace::Gamma2,
                 ..Default::default()
             };
 

@@ -76,14 +76,19 @@ impl OwnedImage {
         let px_width = (self.pixmap.width() as f32 * scale).ceil() as u32;
         let mut pixmap = tiny_skia::Pixmap::new(px_width, height).unwrap();
 
-        pixmap.draw_pixmap(
-            0,
-            0,
-            self.as_ref(),
-            &tiny_skia::PixmapPaint {
-                opacity: 1.0,
+        pixmap.fill_rect(
+            tiny_skia::Rect::from_ltrb(0.0, 0.0, px_width as _, height as _).unwrap(),
+            &tiny_skia::Paint {
+                shader: tiny_skia::Pattern::new(
+                    self.as_ref(),
+                    tiny_skia::SpreadMode::Pad,
+                    tiny_skia::FilterQuality::Bicubic,
+                    1.0,
+                    Transform::default(),
+                ),
                 blend_mode: tiny_skia::BlendMode::Source,
-                quality: tiny_skia::FilterQuality::Bicubic,
+                colorspace: tiny_skia::ColorSpace::Gamma2,
+                ..Default::default()
             },
             xform,
             None,
