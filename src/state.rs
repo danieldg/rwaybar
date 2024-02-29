@@ -107,6 +107,9 @@ impl NotifierList {
     /// Future calls to notify_data will do nothing until you add() bars again.
     pub fn notify_data(&self, who: &str) {
         let mut interest = self.interest.take();
+        if interest.0 == 0 {
+            return;
+        }
         debug!(
             "{} triggered refresh on {}",
             who,
