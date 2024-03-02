@@ -9,6 +9,7 @@ use crate::pulse;
 use crate::tray;
 use crate::{
     item::{Item, ItemFormat, ModuleContext},
+    pipewire,
     state::{NotifierList, Runtime},
     sway,
     util::{glob_expand, spawn_handle, spawn_noerr, toml_to_f64, toml_to_string, Cell, Fd},
@@ -500,6 +501,9 @@ pub enum Module {
     ParseError {
         msg: Cell<Option<Cow<'static, str>>>,
     },
+    Pipewire {
+        target: Box<str>,
+    },
     #[cfg(feature = "pulse")]
     Pulse {
         target: Box<str>,
@@ -555,6 +559,9 @@ pub enum IterationItem {
     MediaPlayer2 {
         target: Rc<str>,
     },
+    Pipewire {
+        target: Rc<str>,
+    },
     #[cfg(feature = "pulse")]
     Pulse {
         target: Rc<str>,
@@ -571,6 +578,7 @@ impl PartialEq for IterationItem {
         match (self, rhs) {
             #[cfg(feature = "dbus")]
             (MediaPlayer2 { target: a }, MediaPlayer2 { target: b }) => Rc::ptr_eq(a, b),
+            (Pipewire { target: a }, Pipewire { target: b }) => Rc::ptr_eq(a, b),
             #[cfg(feature = "pulse")]
             (Pulse { target: a }, Pulse { target: b }) => Rc::ptr_eq(a, b),
             (SwayWorkspace(a), SwayWorkspace(b)) => Rc::ptr_eq(a, b),
@@ -946,6 +954,12 @@ impl Module {
             Some("mpris") => {
                 let target = toml_to_string(value.get("name")).unwrap_or_default().into();
                 Module::MediaPlayer2 { target }
+            }
+            Some("pipewire") => {
+                let target = toml_to_string(value.get("target"))
+                    .unwrap_or_default()
+                    .into();
+                Module::Pipewire { target }
             }
             #[cfg(feature = "pulse")]
             Some("pulse") => {
@@ -1600,6 +1614,9 @@ impl Module {
                 Some(IterationItem::MediaPlayer2 { target }) => {
                     mpris::read_in(name, target, key, rt, f)
                 }
+                Some(IterationItem::Pipewire { target }) => {
+                    pipewire::read_in(name, target, key, rt, f)
+                }
                 #[cfg(feature = "pulse")]
                 Some(IterationItem::Pulse { target }) => pulse::read_in(name, target, key, rt, f),
                 Some(IterationItem::SwayWorkspace(data)) => data.read_in(key, rt, f),
@@ -1652,6 +1669,7 @@ impl Module {
                 }
                 f(Value::Null)
             }
+            Module::Pipewire { target } => pipewire::read_in(name, target, key, rt, f),
             #[cfg(feature = "pulse")]
             Module::Pulse { target } => pulse::read_in(name, target, key, rt, f),
             Module::ReadFile { on_err, poll } => {
@@ -1811,6 +1829,9 @@ impl Module {
                 Some(IterationItem::MediaPlayer2 { target }) => {
                     mpris::write(name, target, key, value, rt)
                 }
+                Some(IterationItem::Pipewire { target }) => {
+                    pipewire::do_write(name, target, key, value, rt)
+                }
                 #[cfg(feature = "pulse")]
                 Some(IterationItem::Pulse { target }) => {
                     pulse::do_write(name, target, key, value, rt)
@@ -1863,6 +1884,7 @@ impl Module {
             }
             #[cfg(feature = "dbus")]
             Module::MediaPlayer2 { target } => mpris::write(name, target, key, value, rt),
+            Module::Pipewire { target } => pipewire::do_write(name, target, key, value, rt),
             #[cfg(feature = "pulse")]
             Module::Pulse { target } => pulse::do_write(name, target, key, value, rt),
             Module::SwayMode(_) => sway::write(value, rt),
@@ -1899,6 +1921,7 @@ impl Module {
             #[cfg(feature = "dbus")]
             Module::MediaPlayer2 { .. } => mpris::read_focus_list(rt, f),
             Module::SwayWorkspace(ws) => ws.read_focus_list(rt, f),
+            Module::Pipewire { target } => pipewire::read_focus_list(rt, target, f),
             #[cfg(feature = "pulse")]
             Module::Pulse { target } => pulse::read_focus_list(rt, target, f),
             Module::ItemReference { value } => {

@@ -220,7 +220,7 @@ bg-alpha = 0.3
 spacing = 15
 padding = "0 0 4 0"
 margin = "0 0 0 -10"
-items = ["playing", "players", "pulse-spk", "pulse-mic", "tray", "weather", "hdd", "bat", "cpu"]
+items = ["playing", "players", "pw-spk", "pw-mic", "tray", "weather", "hdd", "bat", "cpu"]
 
 [music]
 type = "mpris"
@@ -267,21 +267,27 @@ tooltip = "{item.player.name}: {item.title}"
 margin = "0 4 4 4"
 on-click = { "send" = "item", "format" = "Play" }
 
-[pulse-spk]
-type = 'pulse'
-target = 'sink'
-# Instead of the default, you can specify a particular sink:
-# target = 'sink:alsa_output.pci-0000_00_1f.3.analog-stereo'
-# "pactl list" will show the available names
-on-click-middle = { send = "pulse-spk.mute", format = "toggle" }
-on-scroll-up = { send = "pulse-spk.volume", format = '+5%' }
-on-scroll-down = { send = "pulse-spk.volume", format = '-5%' }
-
-[pulse-mic]
+[pw-spk]
 type = 'focus-list'
-source = { type = 'pulse', target = 'sources' }
+source = { type = 'pipewire', target = 'sinks' }
+on-click-middle = { send = "item.mute", format = "toggle" }
+on-scroll-up = { send = "item.volume", format = '+5%' }
+on-scroll-down = { send = "item.volume", format = '-5%' }
 
-[pulse-mic.item]
+# The default text of a pipewire item is its volume (including a % sign).
+[pw-spk.item]
+format = '{item}'
+tooltip = '{item.tooltip}'
+on-click-middle = { send = "item.mute", format = "toggle" }
+on-scroll-up = { send = "item.volume", format = '+5%' }
+on-scroll-down = { send = "item.volume", format = '-5%' }
+
+# This shows one icon for each microphone-like device
+[pw-mic]
+type = 'focus-list'
+source = { type = 'pipewire', target = 'sources' }
+
+[pw-mic.item]
 format = '{mic-s}'
 tooltip = '{item.tooltip}'
 markup = true
@@ -289,14 +295,19 @@ on-click-middle = { send = "item.mute", format = "toggle" }
 on-scroll-up = { send = "item.volume", format = '+5%' }
 on-scroll-down = { send = "item.volume", format = '-5%' }
 
+# This uses two properties of the device to switch between four icons,
+# indicating if the device is muted or if something is recording.  A lighter
+# green is used if recording a muted mic.
 [mic-s]
 type = 'switch'
-format = '{item.mute}'
-default = "{item.volume}<span color='#ff8888'></span>"
+format = '{item.mute}-{item.active}'
+default = "<span color='#ff8888'></span>"
 
 [mic-s.cases]
-0 = "<span color='#88ff88'></span>"
-1 = ""
+0-0 = ""
+0-1 = "<span color='#88ff88'></span>"
+1-0 = ""
+1-1 = "<span color='#ccffcc'></span>"
 
 [tray]
 type = "tray"
@@ -463,4 +474,4 @@ fg = "white"
 bg = "black"
 bg-alpha = "0.2"
 spacing = 15
-items = ["players", "weather", "tray", "pulse-mic", "hdd", "cpu" ]
+items = ["players", "weather", "tray", "pw-spk", "pw-mic", "hdd", "cpu" ]

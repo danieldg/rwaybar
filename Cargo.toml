@@ -15,7 +15,7 @@ panic = 'abort'
 lto = true
 
 [features]
-default = ['pulse', 'dbus']
+default = ['dbus']
 dbus = []
 pulse = ['libpulse-binding', 'libpulse-tokio']
 

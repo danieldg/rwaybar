@@ -86,7 +86,7 @@ Key | Value | Details
 `border-color` | `red` or `#ff0000` | Border color (without transparency)
 `fg` | `red` or `#ff0000` | Foreground color (without transparency)
 `fg-alpha` | 0.7 (70% opaque) | Foreground opacity
-`font` | A font name and size | 
+`font` | A font name and size |
 `halign` | `20%` | Horizontal alignment (only used when min-width is present)
 `margin` | `1 2 3 4` (pixels) | Margin width for the top, right, bottom, and left sides.  Like CSS, you can omit some of the values if they are the same.
 `max-width` | `30%` or `40` (pixels) | Minimum width for this block.  If the contents are larger, they will be cropped.
@@ -262,7 +262,7 @@ Function | Argument | Description
 ---------|----------|-------------
 `float` | Any | Convert the value to a number
 `int` | Any | Convert the value to an integer
-`get` | String | Read a value from a named block, for example `get("disk.percent-used")` 
+`get` | String | Read a value from a named block, for example `get("disk.percent-used")`
 
 ## exec-json
 
@@ -411,7 +411,45 @@ For all actions, the target of the action is either the player specified in the 
 
 `Next` | `Previous` | `Pause` | `PlayPause` | `Stop` | `Play` | `Raise` | `Quit`
 
+## pipewire
+
+Note: while pipewire supports more than audio, most applications that stream
+video still open the camera device directly, bypassing pipewire.
+
+#### When used as a normal item
+
+Key | Expanded | Default | Details
+----|----------|---------|--------
+`target` | No | `""` | A device name (`device.name` in `pw-dump`, or the `name` below).
+
+#### Values
+
+Key | Sample |Details
+----|--------|-------
+`active` | `1` | boolean; `1` means something is playing or recording
+`device` | `Built-in Audio` | A human-readable description of the device
+`mute` | `0` | boolean; `1` means muted
+`name` | `alsa_card.pci-0000_00_1f.3` | The name of the device and route (usable in `target` declarations)
+`route` | `HDMI 2` | A human-readable description of the route (part of the device)
+`text` | `80%` | Textual representation of the volume
+`tooltip` | | A verbose description of the volume, route, and a list of clients and volumes.
+`volume` | `80.41828` | Volume as a decimal percentage
+
+#### When used as a focus-list source
+
+The `target` key must be one of the following values for use as focus-list:
+
+Value | Listed items
+------|-------------
+`inputs` or `sources` | Source devices (microphones)
+`outputs` or `sinks` | Sink devices (speakers)
+`all` | All devices
+
+Items of the focus-list have the same values as listed above.
+
 ## pulse
+
+This requires the `pulse` feature to be enabled.
 
 #### When used as a normal item
 

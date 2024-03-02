@@ -10,6 +10,7 @@ mod icon;
 mod item;
 #[cfg(feature = "dbus")]
 mod mpris;
+mod pipewire;
 #[cfg(feature = "pulse")]
 mod pulse;
 mod render;
