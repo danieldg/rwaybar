@@ -349,6 +349,11 @@ Key | Expanded | Default | Details
 `fallback` | Yes | -- | The string to display if no icon is found
 `tooltip` | Yes | "" | The tooltip to display when hovering over the icon
 
+Icon names can either be a full path to a PNG or SVG image, or a name stem that
+is searched for in the XDG `pixmap` and `icons` directories (usually under
+`~/.local/share/` and `/usr/share/`).  They will be scaled to the height of the
+available space.
+
 ## list
 
 An item whose value can be selected from a list by actions.  This can be used
@@ -626,7 +631,7 @@ default, but are displayed if a `passive` block is present.
 #### Item values
 
 Key | Value
-----|----------|---------|--------
+----|----------
 `icon` | The path or name of the icon, suitable for passing to an `icon` block as name
 `id` | The ID of this icon, which is suitable to identify specific icons in a `switch` block
 `title` | The title of the item, shown in the menu/tooltip
