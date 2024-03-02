@@ -81,6 +81,7 @@ impl<T> Cell<T> {
 }
 
 impl<T: Default> Cell<T> {
+    #[inline(always)]
     pub fn take_in<F: FnOnce(&mut T) -> R, R>(&self, f: F) -> R {
         let mut t = self.0.take();
         let rv = f(&mut t);
@@ -90,6 +91,7 @@ impl<T: Default> Cell<T> {
 }
 
 impl<T> Cell<Option<T>> {
+    #[inline(always)]
     pub fn take_in_some<F: FnOnce(&mut T) -> R, R>(&self, f: F) -> Option<R> {
         let mut t = self.0.take();
         let rv = t.as_mut().map(f);

@@ -964,9 +964,10 @@ impl Item {
                 dir,
                 tooltip,
             } => {
-                let value = value.read_in(ctx.err_name, "", &ctx.runtime, |v| {
-                    v.parse_f32().unwrap_or(0.0)
-                });
+                let value = value
+                    .read_to_owned(ctx.err_name, "", &ctx.runtime)
+                    .parse_f32()
+                    .unwrap_or(0.0);
                 if let Some(item) = tooltip {
                     rv.add_tooltip(PopupDesc::RenderItem {
                         item: item.clone(),
