@@ -961,7 +961,7 @@ impl Tree {
     }
 
     pub fn render(&self, ctx: &mut Render, ev: &mut EventSink) {
-        let mut group = ctx.group();
+        let mut group = ctx.item_group();
         let items = &self.items;
         let output = self
             .output

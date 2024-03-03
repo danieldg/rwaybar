@@ -41,10 +41,7 @@ impl Renderer {
     pub fn render_dummy<R>(&mut self, rt: &Runtime, render: impl FnOnce(&mut Render) -> R) -> R {
         let font = &rt.fonts[0];
 
-        let mut queue = Queue {
-            rect: vec![],
-            image: vec![],
-        };
+        let mut queue = Queue { items: vec![] };
         let mut ctx = Render {
             queue: &mut queue,
             cache: &mut self.cache,
@@ -81,13 +78,9 @@ impl Renderer {
         let pixel_width = surface_data.pixel_width() as u32;
         let pixel_height = surface_data.pixel_height() as u32;
         let scale = surface_data.scale_factor();
-        let render_xform = surface_data.scale_transform();
         let no_xform = tiny_skia::Transform::identity();
 
-        let mut queue = Queue {
-            rect: vec![],
-            image: vec![],
-        };
+        let mut queue = Queue { items: vec![] };
         let font = &rt.fonts[0];
 
         let mut ctx = Render {
@@ -119,7 +112,7 @@ impl Renderer {
             return;
         }
 
-        let mut damage = data.diff_contents(&queue, scale);
+        let mut damage = data.diff_contents(&queue);
 
         let everything = tiny_skia::IntRect::from_xywh(0, 0, pixel_width, pixel_height).unwrap();
 
@@ -138,19 +131,11 @@ impl Renderer {
             return;
         }
 
-        let Queue { rect, image } = queue;
-
         // Drawing is done directly to the SHM region.  If must_clear is false, that region still
         // contains the prior frame, so we can avoid redrawing undamaged areas.
         let (canvas, must_clear, finalize) = self.render_be_rgba(data, &rt.wayland, surface);
         let mut canvas = tiny_skia::PixmapMut::from_bytes(canvas, pixel_width, pixel_height)
             .expect("Bad canvas size?");
-
-        let draw_damage = if must_clear {
-            std::array::from_ref(&everything) as &[_]
-        } else {
-            &damage
-        };
 
         if must_clear {
             canvas.fill(tiny_skia::Color::TRANSPARENT);
@@ -164,43 +149,35 @@ impl Renderer {
             }
         }
 
-        for rect in &rect {
-            if rect.bounds.width() <= 0.0 {
-                continue;
-            }
+        for item in &queue.items {
             let paint = tiny_skia::Paint {
-                shader: tiny_skia::Shader::SolidColor(rect.color),
+                shader: match &item.contents {
+                    &RenderContents::Color(color) => tiny_skia::Shader::SolidColor(color),
+                    RenderContents::Image {
+                        top_left: tiny_skia::Point { x, y },
+                        pixels,
+                    } => tiny_skia::Pattern::new(
+                        pixels.as_ref().as_ref(),
+                        tiny_skia::SpreadMode::Pad,
+                        tiny_skia::FilterQuality::Nearest,
+                        1.0,
+                        tiny_skia::Transform::from_translate(*x, *y),
+                    ),
+                    RenderContents::Empty => continue,
+                },
                 anti_alias: true,
                 colorspace: tiny_skia::ColorSpace::Gamma2,
                 ..Default::default()
             };
             if must_clear {
-                canvas.fill_rect(rect.bounds, &paint, render_xform, None);
+                canvas.fill_rect(item.pixel_box, &paint, no_xform, None);
             } else {
-                rect.for_damage(&damage, scale, |rect| {
+                item.for_damage(&damage, |rect| {
                     canvas.fill_rect(rect, &paint, no_xform, None)
                 });
             }
         }
 
-        for img in &image {
-            let tiny_skia::Point { x, y } = img.top_left;
-            let paint = tiny_skia::Paint {
-                shader: tiny_skia::Pattern::new(
-                    img.pixels.as_ref().as_ref(),
-                    tiny_skia::SpreadMode::Pad,
-                    tiny_skia::FilterQuality::Nearest,
-                    1.0,
-                    tiny_skia::Transform::from_translate(x, y),
-                ),
-                colorspace: tiny_skia::ColorSpace::Gamma2,
-                ..Default::default()
-            };
-
-            img.for_damage(&draw_damage, |rect| {
-                canvas.fill_rect(rect, &paint, no_xform, None);
-            });
-        }
         finalize(canvas.data_mut());
         surface.frame(&rt.wayland.queue, surface.clone());
 
@@ -289,8 +266,7 @@ impl Renderer {
 /// Render state bound to a bar
 #[derive(Debug)]
 pub struct RenderSurface {
-    rect: HashSet<RenderRect>,
-    image: HashSet<RenderImage>,
+    rect: HashSet<RenderItem>,
     size: (i32, i32),
 
     slot: Option<Slot>,
@@ -300,7 +276,6 @@ impl RenderSurface {
     pub fn new() -> Self {
         Self {
             rect: HashSet::new(),
-            image: HashSet::new(),
             size: (0, 0),
             slot: None,
         }
@@ -375,29 +350,19 @@ impl RenderSurface {
     /// In order to avoid making a ton of small regions, merge any regions within 7 pixels of each
     /// other.  This also ignores the Y coordinate when determining what to merge, because most
     /// damage occupies the full height of the bar anyway.
-    fn diff_contents(&mut self, queue: &Queue, scale: f32) -> Vec<tiny_skia::IntRect> {
+    fn diff_contents(&mut self, queue: &Queue) -> Vec<tiny_skia::IntRect> {
         let mut dmg = Vec::new();
 
-        for rect in &queue.rect {
-            if !self.rect.remove(&rect) {
-                if let Some(bbox) = rect.bbox(scale) {
+        for item in &queue.items {
+            if !self.rect.remove(&item) {
+                if let Some(bbox) = item.bbox() {
                     dmg.push(bbox);
                 }
             }
         }
-        dmg.extend(self.rect.drain().filter_map(|e| e.bbox(scale)));
+        dmg.extend(self.rect.drain().filter_map(|e| e.bbox()));
 
-        for img in &queue.image {
-            if !self.image.remove(&img) {
-                if let Some(bbox) = img.bbox() {
-                    dmg.push(bbox);
-                }
-            }
-        }
-        dmg.extend(self.image.drain().filter_map(|e| e.bbox()));
-
-        self.rect.extend(queue.rect.iter().cloned());
-        self.image.extend(queue.image.iter().cloned());
+        self.rect.extend(queue.items.iter().cloned());
 
         // This could also consider y-coordinates, but that's harder
         dmg.sort_by_key(|r| r.x());
@@ -449,48 +414,90 @@ impl RenderCache {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
-struct RenderRect {
-    bounds: tiny_skia::Rect,
-    color: tiny_skia::Color,
+#[derive(Debug, Clone)]
+enum RenderContents {
+    Color(tiny_skia::Color),
+    Image {
+        top_left: tiny_skia::Point,
+        pixels: Arc<tiny_skia::Pixmap>,
+    },
+    Empty,
 }
 
-impl Hash for RenderRect {
+#[derive(Debug, Clone, PartialEq)]
+struct RenderItem {
+    pixel_box: tiny_skia::Rect,
+    contents: RenderContents,
+}
+
+impl Hash for RenderItem {
     fn hash<H: Hasher>(&self, h: &mut H) {
-        h.write_u32(self.bounds.left().to_bits());
-        h.write_u32(self.bounds.top().to_bits());
-        h.write_u32(self.bounds.right().to_bits());
-        h.write_u32(self.bounds.bottom().to_bits());
-        h.write_u32(self.color.red().to_bits());
-        h.write_u32(self.color.green().to_bits());
-        h.write_u32(self.color.blue().to_bits());
-        h.write_u32(self.color.alpha().to_bits());
+        h.write_u32(self.pixel_box.left().to_bits());
+        h.write_u32(self.pixel_box.top().to_bits());
+        h.write_u32(self.pixel_box.right().to_bits());
+        h.write_u32(self.pixel_box.bottom().to_bits());
+        match &self.contents {
+            RenderContents::Color(color) => {
+                h.write_u8(0);
+                h.write_u32(color.red().to_bits());
+                h.write_u32(color.green().to_bits());
+                h.write_u32(color.blue().to_bits());
+                h.write_u32(color.alpha().to_bits());
+            }
+            RenderContents::Image { top_left, pixels } => {
+                h.write_u8(1);
+                h.write_usize(Arc::as_ptr(pixels) as _);
+                h.write_u32(top_left.x.to_bits());
+                h.write_u32(top_left.y.to_bits());
+            }
+            RenderContents::Empty => h.write_u8(2),
+        }
     }
 }
 
-impl Eq for RenderRect {}
+impl PartialEq for RenderContents {
+    fn eq(&self, r: &Self) -> bool {
+        use RenderContents::*;
+        match (self, r) {
+            (Color(a), Color(b)) => a == b,
+            (
+                Image {
+                    pixels: a,
+                    top_left: x,
+                },
+                Image {
+                    pixels: b,
+                    top_left: y,
+                },
+            ) => Arc::as_ptr(a) == Arc::as_ptr(b) && x == y,
+            (Empty, Empty) => true,
+            _ => false,
+        }
+    }
+}
 
-impl RenderRect {
-    /// Return the pixel bounding box of this rect, or None if it's a 0-pixel rect
-    fn bbox(&self, scale: f32) -> Option<tiny_skia::IntRect> {
+impl Eq for RenderItem {}
+
+impl RenderItem {
+    /// Return the pixel bounding box of this rect, or None if it's empty
+    fn bbox(&self) -> Option<tiny_skia::IntRect> {
+        if self.contents == RenderContents::Empty {
+            return None;
+        }
+        // XXX self.pixel_box.round_out() is currently wrong
         tiny_skia::IntRect::from_ltrb(
-            (self.bounds.left() * scale).floor() as i32,
-            (self.bounds.top() * scale).floor() as i32,
-            (self.bounds.right() * scale).ceil() as i32,
-            (self.bounds.bottom() * scale).ceil() as i32,
+            self.pixel_box.left().floor() as i32,
+            self.pixel_box.top().floor() as i32,
+            self.pixel_box.right().ceil() as i32,
+            self.pixel_box.bottom().ceil() as i32,
         )
     }
 
-    fn for_damage(
-        &self,
-        damage: &[tiny_skia::IntRect],
-        scale: f32,
-        mut fill: impl FnMut(tiny_skia::Rect),
-    ) {
-        let l = self.bounds.left() * scale;
-        let t = self.bounds.top() * scale;
-        let r = self.bounds.right() * scale;
-        let b = self.bounds.bottom() * scale;
+    fn for_damage(&self, damage: &[tiny_skia::IntRect], mut fill: impl FnMut(tiny_skia::Rect)) {
+        let l = self.pixel_box.left();
+        let t = self.pixel_box.top();
+        let r = self.pixel_box.right();
+        let b = self.pixel_box.bottom();
 
         for dbox in damage {
             if r <= dbox.left() as f32 || dbox.right() as f32 <= l {
@@ -507,148 +514,19 @@ impl RenderRect {
     }
 }
 
-#[derive(Debug, Clone)]
-struct RenderImage {
-    /// Pixel coordinates; should be integers to avoid blurring
-    top_left: tiny_skia::Point,
-    pixels: Arc<tiny_skia::Pixmap>,
-    /// LTRB in pixel coordinates
-    crop: [f32; 4],
-}
-
-impl Hash for RenderImage {
-    fn hash<H: Hasher>(&self, h: &mut H) {
-        h.write_usize(Arc::as_ptr(&self.pixels) as _);
-        h.write_u32(self.top_left.x.to_bits());
-        h.write_u32(self.top_left.y.to_bits());
-        // it's very unlikely to have two images with the same pixmap, only differing in crop
-    }
-}
-
-impl Eq for RenderImage {}
-
-impl PartialEq for RenderImage {
-    fn eq(&self, r: &Self) -> bool {
-        Arc::as_ptr(&self.pixels) == Arc::as_ptr(&r.pixels)
-            && self.top_left == r.top_left
-            && ((self.crop[0].is_nan() && r.crop[0].is_nan()) || self.crop == r.crop)
-    }
-}
-
-impl RenderImage {
-    /// Return the pixel bounding box of this rect, or None if it has been cropped to nothing
-    fn bbox(&self) -> Option<tiny_skia::IntRect> {
-        let tiny_skia::Point { x, y } = self.top_left;
-        let w = self.pixels.width();
-        let h = self.pixels.height();
-        let ibox = tiny_skia::IntRect::from_xywh(x.floor() as i32, y.floor() as i32, w, h)?;
-        if self.crop[0].is_nan() {
-            Some(ibox)
-        } else {
-            let cbox = tiny_skia::IntRect::from_ltrb(
-                self.crop[0].floor() as i32,
-                self.crop[1].floor() as i32,
-                self.crop[2].ceil() as i32,
-                self.crop[3].ceil() as i32,
-            )?;
-            cbox.intersect(&ibox)
-        }
-    }
-
-    fn cbox(&self) -> Option<tiny_skia::Rect> {
-        let tiny_skia::Point { x, y } = self.top_left;
-        let w = self.pixels.width() as f32;
-        let h = self.pixels.height() as f32;
-        if self.crop[0].is_nan() {
-            tiny_skia::Rect::from_xywh(x, y, w, h)
-        } else {
-            tiny_skia::Rect::from_ltrb(
-                self.crop[0].max(x),
-                self.crop[1].max(y),
-                self.crop[2].min(x + w),
-                self.crop[3].min(y + h),
-            )
-        }
-    }
-
-    fn for_damage(&self, damage: &[tiny_skia::IntRect], mut fill: impl FnMut(tiny_skia::Rect)) {
-        let Some(cbox) = self.cbox() else {
-            return;
-        };
-
-        for dbox in damage {
-            let dbox = dbox.to_rect();
-            // Faster check for non-overlap, which would make the rect None
-            if cbox.right() <= dbox.left() || dbox.right() <= cbox.left() {
-                continue;
-            }
-            let l = cbox.left().max(dbox.left());
-            let t = cbox.top().max(dbox.top());
-            let r = cbox.right().min(dbox.right());
-            let b = cbox.bottom().min(dbox.bottom());
-            if let Some(rect) = tiny_skia::Rect::from_ltrb(l, t, r, b) {
-                fill(rect);
-            }
-        }
-    }
-}
-
 #[derive(Debug)]
-pub struct Queue {
-    rect: Vec<RenderRect>,
-    image: Vec<RenderImage>,
+struct Queue {
+    items: Vec<RenderItem>,
 }
 
 #[derive(Debug)]
 pub struct QueueMark {
-    rect: usize,
-    image: usize,
-}
-
-impl Queue {
-    pub fn push_rect(&mut self, bounds: tiny_skia::Rect, color: tiny_skia::Color) {
-        self.rect.push(RenderRect { bounds, color });
-    }
-
-    pub fn push_image(&mut self, top_left: tiny_skia::Point, pixels: Arc<tiny_skia::Pixmap>) {
-        self.push_image_clip(top_left, pixels, [f32::NAN; 4]);
-    }
-
-    pub fn push_image_clip(
-        &mut self,
-        top_left: tiny_skia::Point,
-        pixels: Arc<tiny_skia::Pixmap>,
-        crop: [f32; 4],
-    ) {
-        if top_left.x.fract() != 0.0 || top_left.y.fract() != 0.0 {
-            log::debug!("Found fractional image coordinates ({top_left:?})");
-        }
-        self.image.push(RenderImage {
-            top_left,
-            pixels,
-            crop,
-        });
-    }
-
-    pub fn start_group(&self) -> QueueMark {
-        QueueMark {
-            rect: self.rect.len(),
-            image: self.image.len(),
-        }
-    }
-
-    pub fn swap_rect_ordering(&mut self, a: &QueueMark, b: &QueueMark) {
-        let len = self.rect.len() - b.rect;
-        if a.rect == b.rect || len == 0 {
-            return;
-        }
-        self.rect[a.rect..].rotate_right(len);
-    }
+    pos: usize,
 }
 
 /// State available to an [Item][crate::item::Item] render function
 pub struct Render<'a> {
-    pub queue: &'a mut Queue,
+    queue: &'a mut Queue,
     pub cache: &'a mut RenderCache,
 
     pub scale: f32,
@@ -718,59 +596,107 @@ impl<'a> Render<'a> {
         }
     }
 
-    pub fn group(&self) -> Group {
+    pub fn item_group(&self) -> Group {
         Group {
             origin: self.render_pos,
             bounds: self.render_pos,
         }
     }
 
-    pub fn translate_group(&mut self, mark: &QueueMark, mut xlate: tiny_skia::Point) {
-        let bb = tiny_skia::NonZeroRect::from_xywh(xlate.x, xlate.y, 1., 1.).unwrap();
-        for rect in &mut self.queue.rect[mark.rect..] {
-            rect.bounds = rect.bounds.bbox_transform(bb);
+    pub fn push_rect(&mut self, bounds: tiny_skia::Rect, color: tiny_skia::Color) {
+        let scale = self.scale;
+        let l = bounds.left() * scale;
+        let t = bounds.top() * scale;
+        let r = bounds.right() * scale;
+        let b = bounds.bottom() * scale;
+        if let Some(pixel_box) = tiny_skia::Rect::from_ltrb(l, t, r, b) {
+            self.queue.items.push(RenderItem {
+                pixel_box,
+                contents: RenderContents::Color(color),
+            });
         }
-        xlate.scale(self.scale);
-        if xlate.x.fract() != 0.0 || xlate.y.fract() != 0.0 {
-            log::debug!("Found fractional-pixel translation ({xlate:?})");
+    }
+
+    pub fn push_image(&mut self, top_left: tiny_skia::Point, pixels: Arc<tiny_skia::Pixmap>) {
+        if let Some(bounds) = tiny_skia::Rect::from_xywh(
+            top_left.x,
+            top_left.y,
+            pixels.width() as f32,
+            pixels.height() as f32,
+        ) {
+            self.push_image_clip(top_left, pixels, bounds);
         }
-        for img in &mut self.queue.image[mark.image..] {
-            img.top_left += xlate;
-            img.crop[0] += xlate.x;
-            img.crop[1] += xlate.y;
-            img.crop[2] += xlate.x;
-            img.crop[3] += xlate.y;
+    }
+
+    pub fn push_image_clip(
+        &mut self,
+        top_left: tiny_skia::Point,
+        pixels: Arc<tiny_skia::Pixmap>,
+        pixel_box: tiny_skia::Rect,
+    ) {
+        if top_left.x.fract() != 0.0 || top_left.y.fract() != 0.0 {
+            log::debug!("Found fractional image coordinates ({top_left:?})");
+        }
+        self.queue.items.push(RenderItem {
+            contents: RenderContents::Image { top_left, pixels },
+            pixel_box,
+        });
+    }
+
+    pub fn start_group(&self) -> QueueMark {
+        QueueMark {
+            pos: self.queue.items.len(),
+        }
+    }
+
+    /// This moves all items pushed after (b) behind all items pushed between (a) and (b)
+    pub fn swap_after_marks(&mut self, a: &QueueMark, b: &QueueMark) {
+        let len = self.queue.items.len() - b.pos;
+        if a.pos == b.pos || len == 0 {
+            return;
+        }
+        self.queue.items[a.pos..].rotate_right(len);
+    }
+
+    pub fn ceil_to_pixel(&self, x: f32) -> f32 {
+        (x * self.scale - 0.01).ceil() / self.scale
+    }
+
+    pub fn round_to_pixel(&self, x: f32) -> f32 {
+        (x * self.scale).round() / self.scale
+    }
+
+    pub fn translate_group_x(&mut self, mark: &QueueMark, x: f32) {
+        let x = x * self.scale;
+
+        let bb = tiny_skia::NonZeroRect::from_xywh(x, 0.0, 1., 1.).unwrap();
+        for item in &mut self.queue.items[mark.pos..] {
+            item.pixel_box = item.pixel_box.bbox_transform(bb);
+            if let RenderContents::Image { top_left, .. } = &mut item.contents {
+                top_left.x += x;
+            }
         }
     }
 
     pub fn crop_range(&mut self, a: &QueueMark, b: &QueueMark, mut crop: [f32; 4]) {
-        for rect in &mut self.queue.rect[a.rect..b.rect] {
+        for x in &mut crop {
+            *x *= self.scale;
+        }
+        for item in &mut self.queue.items[a.pos..b.pos] {
             let ltrb = [
-                rect.bounds.left(),
-                rect.bounds.top(),
-                rect.bounds.right(),
-                rect.bounds.bottom(),
+                item.pixel_box.left(),
+                item.pixel_box.top(),
+                item.pixel_box.right(),
+                item.pixel_box.bottom(),
             ];
-            rect.bounds = tiny_skia::Rect::from_ltrb(
+            match tiny_skia::Rect::from_ltrb(
                 ltrb[0].max(crop[0]),
                 ltrb[1].max(crop[1]),
                 ltrb[2].min(crop[2]),
                 ltrb[3].min(crop[3]),
-            )
-            .or_else(|| tiny_skia::Rect::from_ltrb(0., 0., 0., 0.))
-            .unwrap();
-        }
-        for x in &mut crop {
-            *x *= self.scale;
-        }
-        for img in &mut self.queue.image[a.image..b.image] {
-            if img.crop[0].is_nan() {
-                img.crop = crop;
-            } else {
-                img.crop[0] = img.crop[0].max(crop[0]);
-                img.crop[1] = img.crop[1].max(crop[1]);
-                img.crop[2] = img.crop[2].min(crop[2]);
-                img.crop[3] = img.crop[3].min(crop[3]);
+            ) {
+                Some(rect) => item.pixel_box = rect,
+                None => item.contents = RenderContents::Empty,
             }
         }
     }

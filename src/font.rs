@@ -519,11 +519,13 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         ti.last_used = Instant::now();
         ctx.render_pos += text_size;
         if add_clip {
-            let r = pixmap_tl.x + clip_w_px;
-            let crop = [0., 0., r, f32::MAX];
-            ctx.queue.push_image_clip(pixmap_tl, img, crop);
+            if let Some(bounds) =
+                tiny_skia::Rect::from_xywh(pixmap_tl.x, pixmap_tl.y, clip_w_px, img.height() as f32)
+            {
+                ctx.push_image_clip(pixmap_tl, img, bounds);
+            }
         } else {
-            ctx.queue.push_image(pixmap_tl, img);
+            ctx.push_image(pixmap_tl, img);
         }
 
         Some(())
@@ -682,7 +684,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
 
     let pixmap = Arc::new(pixmap);
 
-    ctx.queue.push_image(pixmap_tl, pixmap.clone());
+    ctx.push_image(pixmap_tl, pixmap.clone());
 
     text_size.scale(scale);
     ctx.cache.text.insert(

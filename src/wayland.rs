@@ -245,11 +245,6 @@ impl SurfaceData {
         prev == SurfaceData::NEED_RENDER & !SurfaceData::DAMAGED
     }
 
-    pub fn scale_transform(&self) -> tiny_skia::Transform {
-        let scale = self.scale_factor();
-        tiny_skia::Transform::from_scale(scale as f32, scale as f32)
-    }
-
     pub fn scale_120(&self) -> Scale120 {
         let scale_120 = self.scale_120.load(Ordering::Relaxed);
         if scale_120 == 0 {

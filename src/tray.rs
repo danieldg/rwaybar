@@ -923,7 +923,7 @@ impl TrayPopup {
                 if let Some(rect) =
                     tiny_skia::Rect::from_xywh(xbase, ctx.render_pos.y + 4.0, width - xbase, 2.0)
                 {
-                    ctx.queue.push_rect(rect, tiny_skia::Color::WHITE);
+                    ctx.push_rect(rect, tiny_skia::Color::WHITE);
                 }
 
                 ctx.render_pos.y += 9.0;
@@ -940,7 +940,7 @@ impl TrayPopup {
                         width - indent - 5.0,
                         1.0,
                     ) {
-                        ctx.queue.push_rect(rect, tiny_skia::Color::WHITE);
+                        ctx.push_rect(rect, tiny_skia::Color::WHITE);
                     }
 
                     ctx.render_pos.y += 7.0;
@@ -999,7 +999,7 @@ pub fn show(ctx: &mut Render, rv: &mut EventSink, [passive, active, urgent]: [&R
         tray.items
             .take_in(|items| items.iter().cloned().collect::<Vec<_>>())
     });
-    let mut group = ctx.group();
+    let mut group = ctx.item_group();
 
     for tray_item in items {
         let render = tray_item.status.take_in(|s| match &**s {

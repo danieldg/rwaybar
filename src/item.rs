@@ -390,7 +390,7 @@ impl Formatting {
             }
         }
 
-        let mark = ctx.queue.start_group();
+        let mark = ctx.start_group();
         ctx.render_pos = start_pos;
         ctx.render_extents = inner_clip;
 
@@ -415,15 +415,9 @@ impl Formatting {
             let expand = min_width - child_render_width;
             match ctx.align.horiz {
                 Some(f) => {
-                    inner_x_offset = expand * f;
+                    inner_x_offset = ctx.round_to_pixel(expand * f);
 
-                    ctx.translate_group(
-                        &mark,
-                        Point {
-                            x: inner_x_offset,
-                            y: 0.,
-                        },
-                    );
+                    ctx.translate_group_x(&mark, inner_x_offset);
                 }
                 _ => {
                     // defaults to left align
@@ -447,7 +441,7 @@ impl Formatting {
             };
 
         if format.bg_rgba.is_some() || format.border.is_some() {
-            let end_mark = ctx.queue.start_group();
+            let end_mark = ctx.start_group();
 
             use tiny_skia::Rect;
             let mut bg_clip = (start_pos, end_pos);
@@ -462,7 +456,7 @@ impl Formatting {
                 if let Some(rect) =
                     Rect::from_ltrb(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x, bg_clip.1.y)
                 {
-                    ctx.queue.push_rect(rect, rgba);
+                    ctx.push_rect(rect, rgba);
                 }
             }
 
@@ -474,7 +468,7 @@ impl Formatting {
                     Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x - bg_clip.0.x, t)
                 {
                     // top edge, no corners
-                    ctx.queue.push_rect(rect, rgba);
+                    ctx.push_rect(rect, rgba);
                 }
 
                 bg_clip.0.x -= l;
@@ -482,14 +476,14 @@ impl Formatting {
                     Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, l, bg_clip.1.y - bg_clip.0.y)
                 {
                     // left edge + top-left corner
-                    ctx.queue.push_rect(rect, rgba);
+                    ctx.push_rect(rect, rgba);
                 }
 
                 if let Some(rect) =
                     Rect::from_xywh(bg_clip.1.x, bg_clip.0.y, r, bg_clip.1.y - bg_clip.0.y)
                 {
                     // right edge + top-right corner
-                    ctx.queue.push_rect(rect, rgba);
+                    ctx.push_rect(rect, rgba);
                 }
 
                 bg_clip.1.x += r;
@@ -497,11 +491,12 @@ impl Formatting {
                     Rect::from_xywh(bg_clip.0.x, bg_clip.1.y, bg_clip.1.x - bg_clip.0.x, b)
                 {
                     // bottom edge + both corners
-                    ctx.queue.push_rect(rect, rgba);
+                    ctx.push_rect(rect, rgba);
                 }
             }
 
-            ctx.queue.swap_rect_ordering(&mark, &end_mark);
+            // The background and borders go *behind* the item
+            ctx.swap_after_marks(&mark, &end_mark);
         }
 
         (outer_pos, inner_x_offset, start_pos.x, end_pos.x)
@@ -799,7 +794,7 @@ impl Item {
                         }
                     }
                 }
-                let mut group = ctx.group();
+                let mut group = ctx.item_group();
                 let spacing = ctx
                     .runtime
                     .format(spacing)
@@ -842,7 +837,7 @@ impl Item {
                     .and_then(|s| s.parse_f32())
                     .unwrap_or(0.0);
                 let item_var = ctx.runtime.get_item_var();
-                let mut group = ctx.group();
+                let mut group = ctx.item_group();
                 let prev = item_var.replace(None);
                 source.read_focus_list(ctx.runtime, |focus, item| {
                     item_var.set(Some(item.clone()));
@@ -876,83 +871,58 @@ impl Item {
                 // Region 3 is "center"
                 let clip = ctx.render_extents;
                 let width = clip.1.x - ctx.render_pos.x;
-                let left_size;
 
-                {
-                    let mut left_ev = left.render(ctx);
-                    left_size = ctx.render_pos.x.ceil();
-                    left_ev.offset_clamp(0.0, 0.0, left_size);
+                let mut left_ev = left.render(ctx);
+                let left_size = ctx.render_pos.x;
+                left_ev.offset_clamp(0.0, 0.0, left_size);
+                rv.merge(left_ev);
 
-                    rv.merge(left_ev);
-                }
+                ctx.render_pos = clip.0;
+                let mark = ctx.start_group();
+                let mut right_ev = right.render(ctx);
+                let right_size = ctx.ceil_to_pixel(ctx.render_pos.x);
 
-                let right_size;
-                {
-                    ctx.render_pos = clip.0;
-
-                    let mark = ctx.queue.start_group();
-                    let mut right_ev = right.render(ctx);
-
-                    right_size = ctx.render_pos.x.ceil();
-
-                    let right_offset = clip.1.x - right_size;
-
-                    ctx.translate_group(
-                        &mark,
-                        Point {
-                            x: right_offset,
-                            y: 0.,
-                        },
-                    );
-
-                    right_ev.offset_clamp(right_offset, right_offset, clip.1.x);
-                    rv.merge(right_ev);
-                }
+                let right_offset = clip.1.x - right_size;
+                ctx.translate_group_x(&mark, right_offset);
+                right_ev.offset_clamp(right_offset, right_offset, clip.1.x);
+                rv.merge(right_ev);
 
                 let max_center_width = width - left_size - right_size;
 
-                if max_center_width <= 0.0 {
+                if max_center_width < 1.0 {
                     ctx.render_pos = clip.1;
                     // don't render the center if there's no room at all
                     return;
                 }
 
-                // Given the size of the center item, find where to put the left edge
-                let calc_center = |cent_size| {
-                    let max_side = (width - cent_size) / 2.0;
-                    let total_room = width - (left_size + right_size + cent_size);
-                    if total_room <= 0.0 {
-                        // no gaps at all; just put it at the start of the middle region
-                        left_size
-                    } else if left_size > max_side {
-                        // left side is too long to properly center; put it just to the right of that
-                        left_size
-                    } else if right_size > max_side {
-                        // right side is too long to properly center; put it just to the left of that
-                        width - right_size - cent_size
-                    } else {
-                        // Actually center the center module
-                        max_side
-                    }
-                };
-
-                let mark = ctx.queue.start_group();
-                let x0 = clip.1.x - max_center_width;
+                let mark = ctx.start_group();
+                let x0 = ctx.round_to_pixel(clip.1.x - max_center_width);
                 ctx.render_pos.x = x0;
                 ctx.render_pos.y = clip.0.y;
 
                 let mut cent_ev = center.render(ctx);
-                let cent_size = (ctx.render_pos.x - x0).ceil();
+                let cent_size = ctx.ceil_to_pixel(ctx.render_pos.x - x0);
 
-                let cent_offset = calc_center(cent_size).floor();
+                // If the center region was actually centered, how large could each of the two sides be?
+                let max_side = (width - cent_size) / 2.0;
+                let total_room = width - (left_size + right_size + cent_size);
 
-                ctx.translate_group(
-                    &mark,
-                    Point {
-                        x: cent_offset - x0,
-                        y: 0.,
-                    },
-                );
+                let cent_offset = if total_room <= 0.0 {
+                    // no gaps at all; just put it at the start of the middle region
+                    left_size
+                } else if left_size > max_side {
+                    // left side is too long to properly center; put it just to the right of that
+                    left_size
+                } else if right_size > max_side {
+                    // right side is too long to properly center; put it just to the left of that
+                    width - right_size - cent_size
+                } else {
+                    // Actually center the center module
+                    max_side
+                };
+                let cent_offset = ctx.round_to_pixel(cent_offset);
+
+                ctx.translate_group_x(&mark, cent_offset - x0);
 
                 cent_ev.offset_clamp(cent_offset - x0, cent_offset, cent_offset + cent_size);
                 rv.merge(cent_ev);
@@ -995,17 +965,17 @@ impl Item {
 
                 let origin = ctx.render_pos;
 
-                let mark1 = ctx.queue.start_group();
+                let mark1 = ctx.start_group();
                 let mut ev1 = items[base].render(ctx);
                 let end1 = ctx.render_pos;
 
                 ctx.render_pos = origin;
 
-                let mark2 = ctx.queue.start_group();
+                let mark2 = ctx.start_group();
                 let mut ev2 = items[base + 1].render(ctx);
                 let end2 = ctx.render_pos;
 
-                let mark3 = ctx.queue.start_group();
+                let mark3 = ctx.start_group();
 
                 let bb_l = origin.x;
                 let bb_r = end1.x.max(end2.x);

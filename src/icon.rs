@@ -269,7 +269,7 @@ pub fn render(ctx: &mut Render, name: Box<str>) -> Result<(), ()> {
     br.scale(1. / ctx.scale);
     ctx.render_pos = br;
 
-    ctx.queue.push_image(tl, img);
+    ctx.push_image(tl, img);
 
     Ok(())
 }
