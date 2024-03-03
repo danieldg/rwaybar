@@ -985,28 +985,27 @@ impl Item {
                 let rb_b = end1.y.max(end2.y);
                 let voff = (rb_b - rb_t) * value;
 
-                let bb_t = ctx.render_extents.0.y;
-                let bb_b = ctx.render_extents.1.y;
-
                 ctx.render_pos.x = bb_r;
                 ctx.render_pos.y = rb_b;
 
-                let (mut bb1, mut bb2) = ([bb_l, bb_t, bb_r, bb_b], [bb_l, bb_t, bb_r, bb_b]);
+                let inf = f32::INFINITY;
+                let mut bb1 = [-inf, -inf, inf, inf];
+                let mut bb2 = [-inf, -inf, inf, inf];
 
                 match dir {
                     b'r' => {
-                        ev1.offset_clamp(0.0, bb_l + hoff, bb_r);
+                        ev1.offset_clamp(0.0, bb_l + hoff, inf);
                         rv.merge(ev1);
-                        ev2.offset_clamp(0.0, bb_l, bb_l + hoff);
+                        ev2.offset_clamp(0.0, -inf, bb_l + hoff);
                         rv.merge(ev2);
 
                         bb1[0] = bb_l + hoff;
                         bb2[2] = bb_l + hoff;
                     }
                     b'l' => {
-                        ev2.offset_clamp(0.0, bb_r - hoff, bb_r);
+                        ev2.offset_clamp(0.0, bb_r - hoff, inf);
                         rv.merge(ev2);
-                        ev1.offset_clamp(0.0, bb_l, bb_r - hoff);
+                        ev1.offset_clamp(0.0, -inf, bb_r - hoff);
                         rv.merge(ev1);
                         bb1[2] = bb_r - hoff;
                         bb2[0] = bb_r - hoff;
