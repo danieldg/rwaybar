@@ -992,6 +992,59 @@ impl Item {
                 let mut bb1 = [-inf, -inf, inf, inf];
                 let mut bb2 = [-inf, -inf, inf, inf];
 
+                // Ideally, for the border pixel, if the fractional length of the border is
+                // (0 < x < 1), then the value should be:
+                //
+                //   s1 = p1 * (1 - x)
+                //   sa1 = p1a * (1 - x)
+                //   s2 = p2 * x
+                //   sa2 = p2a * x
+                //
+                //   s = s1 + s2
+                //     = p1 * (1 - x) + p2 * x
+                //   sa = sa1 + sa2
+                //      = p1a * (1 - x) + p2a * x
+                //   r = d * (1 - sa) + s
+                //     = d * (1 - sa1 - sa2) + s1 + s2
+                //   ra = da * (1 - sa) + sa
+                //      = da * (1 - sa1 - sa2) + sa1 + sa2
+                //
+                // If we just draw the pixels blindly by cropping both, then:
+                //   step 1: draw (p1) at (1 - x) * p1a opacity
+                //   step 2: draw (p2) at (x) * p2a opacity
+                //
+                //   r1 = d * (1 - sa1) + s1
+                //   ra1 = da * (1 - sa1) + sa1
+                //   r2 = r1 * (1 - sa2) + s2
+                //      = d * (1 - sa1) * (1 - sa2) + s1 * (1 - sa2) + s2
+                //
+                //   ra2 = ra1 * (1 - sa2) + sa2
+                //       = da * (1 - sa1) * (1 - sa2) + sa1 * (1 - sa2) + sa2
+                //
+                // This loses a lot of the color contribution of the lower image.  The color
+                // difference is most noticeable in fully opaque white regions, which become 75%
+                // white when x = 0.5.
+                //
+                // If we draw the lower image across the whole border pixel, we get:
+                //
+                //   r1 = d * (1 - p1a) + p1
+                //   ra1 = da * (1 - p1a) + p1a
+                //   r2 = r1 * (1 - sa2) + s2
+                //      = d * (1 - p1a) * (1 - sa2) + p1 * (1 - sa2) + s2
+                //      = d * (1 - p1a) * (1 - sa2) + s1 * (1 - p2a * x) / (1 - x) + s2
+                //
+                //   ra2 = ra1 * (1 - sa2) + sa2
+                //       = da * (1 - p1a) * (1 - sa2) + p1a * (1 - sa2) + sa2
+                //
+                // For fully opaque pixels (p1a = p2a = 1), this simplifies to the correct:
+                //   r2 = s1 + s2
+                //   ra2 = 1
+                // regardless of the value of x. The edge (p2a = 1, p1a = 0) is also correct:
+                //   r2 = d * (1 - sa2) + s2
+                //   ra2 = da * (1 - sa2) + sa2
+                //
+                // Other opacities are still incorrect, however these two are the common case for a
+                // 'meter' that fills from transparency as the value increases.
                 match dir {
                     b'r' => {
                         ev1.offset_clamp(0.0, bb_l + hoff, inf);
@@ -999,7 +1052,7 @@ impl Item {
                         ev2.offset_clamp(0.0, -inf, bb_l + hoff);
                         rv.merge(ev2);
 
-                        bb1[0] = bb_l + hoff;
+                        bb1[0] = ctx.floor_to_pixel(bb_l + hoff);
                         bb2[2] = bb_l + hoff;
                     }
                     b'l' => {
@@ -1007,17 +1060,17 @@ impl Item {
                         rv.merge(ev2);
                         ev1.offset_clamp(0.0, -inf, bb_r - hoff);
                         rv.merge(ev1);
-                        bb1[2] = bb_r - hoff;
+                        bb1[2] = ctx.ceil_to_pixel(bb_r - hoff);
                         bb2[0] = bb_r - hoff;
                     }
                     b'd' => {
                         rv.merge(ev1);
-                        bb1[1] = rb_t + voff;
+                        bb1[1] = ctx.floor_to_pixel(rb_t + voff);
                         bb2[3] = rb_t + voff;
                     }
                     b'u' => {
                         rv.merge(ev1);
-                        bb1[3] = rb_b - voff;
+                        bb1[3] = ctx.ceil_to_pixel(rb_b - voff);
                         bb2[1] = rb_b - voff;
                     }
                     _ => unreachable!(),

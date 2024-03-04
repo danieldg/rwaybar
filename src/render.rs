@@ -658,6 +658,10 @@ impl<'a> Render<'a> {
         self.queue.items[a.pos..].rotate_right(len);
     }
 
+    pub fn floor_to_pixel(&self, x: f32) -> f32 {
+        (x * self.scale + 0.01).floor() / self.scale
+    }
+
     pub fn ceil_to_pixel(&self, x: f32) -> f32 {
         (x * self.scale - 0.01).ceil() / self.scale
     }
