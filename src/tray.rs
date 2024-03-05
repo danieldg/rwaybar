@@ -4,7 +4,7 @@ use crate::{
     event::EventSink,
     font::render_font_item,
     item::{Item, PopupDesc},
-    render::Render,
+    render::{Rect, Render},
     state::{NotifierList, Runtime},
     util::{spawn, spawn_handle, Cell},
     wayland::Button,
@@ -920,11 +920,8 @@ impl TrayPopup {
 
         self.menu.items.take_in(|items| {
             if !items.is_empty() {
-                if let Some(rect) =
-                    tiny_skia::Rect::from_xywh(xbase, ctx.render_pos.y + 4.0, width - xbase, 2.0)
-                {
-                    ctx.push_rect(rect, tiny_skia::Color::WHITE);
-                }
+                let rect = Rect::from_xywh(xbase, ctx.render_pos.y + 4.0, width - xbase, 2.0);
+                ctx.push_rect(rect, tiny_skia::Color::WHITE);
 
                 ctx.render_pos.y += 9.0;
             }
@@ -934,14 +931,13 @@ impl TrayPopup {
                 }
                 let indent = xbase + item.depth as f32 * 20.0;
                 if item.is_sep {
-                    if let Some(rect) = tiny_skia::Rect::from_xywh(
+                    let rect = Rect::from_xywh(
                         indent + 3.0,
                         ctx.render_pos.y + 3.0,
                         width - indent - 5.0,
                         1.0,
-                    ) {
-                        ctx.push_rect(rect, tiny_skia::Color::WHITE);
-                    }
+                    );
+                    ctx.push_rect(rect, tiny_skia::Color::WHITE);
 
                     ctx.render_pos.y += 7.0;
                 } else {

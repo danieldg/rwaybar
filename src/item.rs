@@ -6,7 +6,7 @@ use crate::{
     event::EventSink,
     font::render_font_item,
     icon,
-    render::{Align, Render, Width},
+    render::{Align, Rect, Render, Width},
     state::Runtime,
     wayland::Button,
 };
@@ -443,7 +443,6 @@ impl Formatting {
         if format.bg_rgba.is_some() || format.border.is_some() {
             let end_mark = ctx.start_group();
 
-            use tiny_skia::Rect;
             let mut bg_clip = (start_pos, end_pos);
             if let Some((t, r, b, l)) = format.padding {
                 bg_clip.0.x -= l;
@@ -453,46 +452,31 @@ impl Formatting {
             }
 
             if let Some(rgba) = format.bg_rgba {
-                if let Some(rect) =
-                    Rect::from_ltrb(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x, bg_clip.1.y)
-                {
-                    ctx.push_rect(rect, rgba);
-                }
+                let rect = Rect::from_ltrb(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x, bg_clip.1.y);
+                ctx.push_rect(rect, rgba);
             }
 
             if let Some((t, r, b, l)) = format.border {
                 let rgba = format.border_rgba.unwrap_or(ctx.font_color);
 
                 bg_clip.0.y -= t;
-                if let Some(rect) =
-                    Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x - bg_clip.0.x, t)
-                {
-                    // top edge, no corners
-                    ctx.push_rect(rect, rgba);
-                }
+                let rect = Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, bg_clip.1.x - bg_clip.0.x, t);
+                // top edge, no corners
+                ctx.push_rect(rect, rgba);
 
                 bg_clip.0.x -= l;
-                if let Some(rect) =
-                    Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, l, bg_clip.1.y - bg_clip.0.y)
-                {
-                    // left edge + top-left corner
-                    ctx.push_rect(rect, rgba);
-                }
+                let rect = Rect::from_xywh(bg_clip.0.x, bg_clip.0.y, l, bg_clip.1.y - bg_clip.0.y);
+                // left edge + top-left corner
+                ctx.push_rect(rect, rgba);
 
-                if let Some(rect) =
-                    Rect::from_xywh(bg_clip.1.x, bg_clip.0.y, r, bg_clip.1.y - bg_clip.0.y)
-                {
-                    // right edge + top-right corner
-                    ctx.push_rect(rect, rgba);
-                }
+                let rect = Rect::from_xywh(bg_clip.1.x, bg_clip.0.y, r, bg_clip.1.y - bg_clip.0.y);
+                // right edge + top-right corner
+                ctx.push_rect(rect, rgba);
 
                 bg_clip.1.x += r;
-                if let Some(rect) =
-                    Rect::from_xywh(bg_clip.0.x, bg_clip.1.y, bg_clip.1.x - bg_clip.0.x, b)
-                {
-                    // bottom edge + both corners
-                    ctx.push_rect(rect, rgba);
-                }
+                let rect = Rect::from_xywh(bg_clip.0.x, bg_clip.1.y, bg_clip.1.x - bg_clip.0.x, b);
+                // bottom edge + both corners
+                ctx.push_rect(rect, rgba);
             }
 
             // The background and borders go *behind* the item
@@ -989,8 +973,8 @@ impl Item {
                 ctx.render_pos.y = rb_b;
 
                 let inf = f32::INFINITY;
-                let mut bb1 = [-inf, -inf, inf, inf];
-                let mut bb2 = [-inf, -inf, inf, inf];
+                let mut bb1 = Rect::infinite();
+                let mut bb2 = Rect::infinite();
 
                 // Ideally, for the border pixel, if the fractional length of the border is
                 // (0 < x < 1), then the value should be:
@@ -1052,26 +1036,26 @@ impl Item {
                         ev2.offset_clamp(0.0, -inf, bb_l + hoff);
                         rv.merge(ev2);
 
-                        bb1[0] = ctx.floor_to_pixel(bb_l + hoff);
-                        bb2[2] = bb_l + hoff;
+                        bb1.left = ctx.floor_to_pixel(bb_l + hoff);
+                        bb2.right = bb_l + hoff;
                     }
                     b'l' => {
                         ev2.offset_clamp(0.0, bb_r - hoff, inf);
                         rv.merge(ev2);
                         ev1.offset_clamp(0.0, -inf, bb_r - hoff);
                         rv.merge(ev1);
-                        bb1[2] = ctx.ceil_to_pixel(bb_r - hoff);
-                        bb2[0] = bb_r - hoff;
+                        bb1.right = ctx.ceil_to_pixel(bb_r - hoff);
+                        bb2.left = bb_r - hoff;
                     }
                     b'd' => {
                         rv.merge(ev1);
-                        bb1[1] = ctx.floor_to_pixel(rb_t + voff);
-                        bb2[3] = rb_t + voff;
+                        bb1.top = ctx.floor_to_pixel(rb_t + voff);
+                        bb2.bottom = rb_t + voff;
                     }
                     b'u' => {
                         rv.merge(ev1);
-                        bb1[3] = ctx.ceil_to_pixel(rb_b - voff);
-                        bb2[1] = rb_b - voff;
+                        bb1.bottom = ctx.ceil_to_pixel(rb_b - voff);
+                        bb2.top = rb_b - voff;
                     }
                     _ => unreachable!(),
                 }

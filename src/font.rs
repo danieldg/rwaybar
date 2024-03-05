@@ -1,4 +1,10 @@
-use crate::{icon::OwnedImage, item::Formatting, render::Render, state::Runtime, util::UID};
+use crate::{
+    icon::OwnedImage,
+    item::Formatting,
+    render::{Rect, Render},
+    state::Runtime,
+    util::UID,
+};
 use log::info;
 use std::{fs::File, io, path::PathBuf, sync::Arc, time::Instant};
 use tiny_skia::{Color, Point, Transform};
@@ -519,11 +525,8 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         ti.last_used = Instant::now();
         ctx.render_pos += text_size;
         if add_clip {
-            if let Some(bounds) =
-                tiny_skia::Rect::from_xywh(pixmap_tl.x, pixmap_tl.y, clip_w_px, img.height() as f32)
-            {
-                ctx.push_image_clip(pixmap_tl, img, bounds);
-            }
+            let bounds = Rect::from_xywh(pixmap_tl.x, pixmap_tl.y, clip_w_px, img.height() as f32);
+            ctx.push_image_clip(pixmap_tl, img, bounds);
         } else {
             ctx.push_image(pixmap_tl, img);
         }

@@ -114,14 +114,11 @@ impl Renderer {
 
         let mut damage = data.diff_contents(&queue);
 
-        let everything = tiny_skia::IntRect::from_xywh(0, 0, pixel_width, pixel_height).unwrap();
+        let everything = Rect::from_u32_wh(pixel_width, pixel_height);
 
-        damage.retain_mut(|dmg| match dmg.intersect(&everything) {
-            Some(i) => {
-                *dmg = i;
-                true
-            }
-            None => false,
+        damage.retain_mut(|dmg| {
+            *dmg = dmg.intersect(everything);
+            dmg.is_valid()
         });
 
         if damage.is_empty() {
@@ -145,7 +142,9 @@ impl Renderer {
                 ..Default::default()
             };
             for rect in &damage {
-                canvas.fill_rect(rect.to_rect(), &paint, no_xform, None);
+                if let Some(rect) = rect.to_skia() {
+                    canvas.fill_rect(rect, &paint, no_xform, None);
+                }
             }
         }
 
@@ -163,14 +162,15 @@ impl Renderer {
                         1.0,
                         tiny_skia::Transform::from_translate(*x, *y),
                     ),
-                    RenderContents::Empty => continue,
                 },
                 anti_alias: true,
                 colorspace: tiny_skia::ColorSpace::Gamma2,
                 ..Default::default()
             };
             if must_clear {
-                canvas.fill_rect(item.pixel_box, &paint, no_xform, None);
+                if let Some(rect) = item.pixel_box.to_skia() {
+                    canvas.fill_rect(rect, &paint, no_xform, None);
+                }
             } else {
                 item.for_damage(&damage, |rect| {
                     canvas.fill_rect(rect, &paint, no_xform, None)
@@ -182,7 +182,7 @@ impl Renderer {
         surface.frame(&rt.wayland.queue, surface.clone());
 
         for r in damage {
-            surface.damage_buffer(r.x(), r.y(), r.width() as _, r.height() as _);
+            surface.damage_buffer(r.left as _, r.top as _, r.width() as _, r.height() as _);
         }
         surface.commit();
     }
@@ -350,7 +350,7 @@ impl RenderSurface {
     /// In order to avoid making a ton of small regions, merge any regions within 7 pixels of each
     /// other.  This also ignores the Y coordinate when determining what to merge, because most
     /// damage occupies the full height of the bar anyway.
-    fn diff_contents(&mut self, queue: &Queue) -> Vec<tiny_skia::IntRect> {
+    fn diff_contents(&mut self, queue: &Queue) -> Vec<Rect> {
         let mut dmg = Vec::new();
 
         for item in &queue.items {
@@ -362,20 +362,20 @@ impl RenderSurface {
         }
         dmg.extend(self.rect.drain().filter_map(|e| e.bbox()));
 
-        self.rect.extend(queue.items.iter().cloned());
+        self.rect.extend(
+            queue
+                .items
+                .iter()
+                .filter(|i| i.pixel_box.is_valid())
+                .cloned(),
+        );
 
         // This could also consider y-coordinates, but that's harder
-        dmg.sort_by_key(|r| r.x());
+        dmg.sort_by(|a, b| a.left.total_cmp(&b.left));
         dmg.dedup_by(|b, a| {
-            let dup = a.right() + 7 > b.left();
+            let dup = a.right + 7.0 > b.left;
             if dup {
-                *a = tiny_skia::IntRect::from_ltrb(
-                    a.left().min(b.left()),
-                    a.top().min(b.top()),
-                    a.right().max(b.right()),
-                    a.bottom().max(b.bottom()),
-                )
-                .unwrap();
+                *a = a.join(b);
             }
             dup
         });
@@ -421,21 +421,23 @@ enum RenderContents {
         top_left: tiny_skia::Point,
         pixels: Arc<tiny_skia::Pixmap>,
     },
-    Empty,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 struct RenderItem {
-    pixel_box: tiny_skia::Rect,
+    /// The bounding box on this item
+    ///
+    /// Note: this might be an invalid rect; if so, don't draw this item at all.
+    pixel_box: Rect,
     contents: RenderContents,
 }
 
 impl Hash for RenderItem {
     fn hash<H: Hasher>(&self, h: &mut H) {
-        h.write_u32(self.pixel_box.left().to_bits());
-        h.write_u32(self.pixel_box.top().to_bits());
-        h.write_u32(self.pixel_box.right().to_bits());
-        h.write_u32(self.pixel_box.bottom().to_bits());
+        h.write_u32(self.pixel_box.left.to_bits());
+        h.write_u32(self.pixel_box.top.to_bits());
+        h.write_u32(self.pixel_box.right.to_bits());
+        h.write_u32(self.pixel_box.bottom.to_bits());
         match &self.contents {
             RenderContents::Color(color) => {
                 h.write_u8(0);
@@ -450,7 +452,6 @@ impl Hash for RenderItem {
                 h.write_u32(top_left.x.to_bits());
                 h.write_u32(top_left.y.to_bits());
             }
-            RenderContents::Empty => h.write_u8(2),
         }
     }
 }
@@ -470,7 +471,6 @@ impl PartialEq for RenderContents {
                     top_left: y,
                 },
             ) => Arc::as_ptr(a) == Arc::as_ptr(b) && x == y,
-            (Empty, Empty) => true,
             _ => false,
         }
     }
@@ -480,34 +480,22 @@ impl Eq for RenderItem {}
 
 impl RenderItem {
     /// Return the pixel bounding box of this rect, or None if it's empty
-    fn bbox(&self) -> Option<tiny_skia::IntRect> {
-        if self.contents == RenderContents::Empty {
-            return None;
+    fn bbox(&self) -> Option<Rect> {
+        if self.pixel_box.is_valid() {
+            Some(Rect {
+                left: self.pixel_box.left.floor(),
+                top: self.pixel_box.top.floor(),
+                right: self.pixel_box.right.ceil(),
+                bottom: self.pixel_box.bottom.ceil(),
+            })
+        } else {
+            None
         }
-        // XXX self.pixel_box.round_out() is currently wrong
-        tiny_skia::IntRect::from_ltrb(
-            self.pixel_box.left().floor() as i32,
-            self.pixel_box.top().floor() as i32,
-            self.pixel_box.right().ceil() as i32,
-            self.pixel_box.bottom().ceil() as i32,
-        )
     }
 
-    fn for_damage(&self, damage: &[tiny_skia::IntRect], mut fill: impl FnMut(tiny_skia::Rect)) {
-        let l = self.pixel_box.left();
-        let t = self.pixel_box.top();
-        let r = self.pixel_box.right();
-        let b = self.pixel_box.bottom();
-
-        for dbox in damage {
-            if r <= dbox.left() as f32 || dbox.right() as f32 <= l {
-                continue;
-            }
-            let l = l.max(dbox.left() as f32);
-            let t = t.max(dbox.top() as f32);
-            let r = r.min(dbox.right() as f32);
-            let b = b.min(dbox.bottom() as f32);
-            if let Some(rect) = tiny_skia::Rect::from_ltrb(l, t, r, b) {
+    fn for_damage(&self, damage: &[Rect], mut fill: impl FnMut(tiny_skia::Rect)) {
+        for &dbox in damage {
+            if let Some(rect) = self.pixel_box.intersect(dbox).to_skia() {
                 fill(rect);
             }
         }
@@ -603,36 +591,31 @@ impl<'a> Render<'a> {
         }
     }
 
-    pub fn push_rect(&mut self, bounds: tiny_skia::Rect, color: tiny_skia::Color) {
-        let scale = self.scale;
-        let l = bounds.left() * scale;
-        let t = bounds.top() * scale;
-        let r = bounds.right() * scale;
-        let b = bounds.bottom() * scale;
-        if let Some(pixel_box) = tiny_skia::Rect::from_ltrb(l, t, r, b) {
-            self.queue.items.push(RenderItem {
-                pixel_box,
-                contents: RenderContents::Color(color),
-            });
-        }
+    /// bounds is in draw coordinates (pre-scale)
+    pub fn push_rect(&mut self, bounds: Rect, color: tiny_skia::Color) {
+        let pixel_box = bounds.scale(self.scale);
+        self.queue.items.push(RenderItem {
+            pixel_box,
+            contents: RenderContents::Color(color),
+        });
     }
 
+    /// top_left is in pixel coordinates
     pub fn push_image(&mut self, top_left: tiny_skia::Point, pixels: Arc<tiny_skia::Pixmap>) {
-        if let Some(bounds) = tiny_skia::Rect::from_xywh(
+        let bounds = Rect::from_xywh(
             top_left.x,
             top_left.y,
             pixels.width() as f32,
             pixels.height() as f32,
-        ) {
-            self.push_image_clip(top_left, pixels, bounds);
-        }
+        );
+        self.push_image_clip(top_left, pixels, bounds);
     }
 
     pub fn push_image_clip(
         &mut self,
         top_left: tiny_skia::Point,
         pixels: Arc<tiny_skia::Pixmap>,
-        pixel_box: tiny_skia::Rect,
+        pixel_box: Rect,
     ) {
         if top_left.x.fract() != 0.0 || top_left.y.fract() != 0.0 {
             log::debug!("Found fractional image coordinates ({top_left:?})");
@@ -673,36 +656,105 @@ impl<'a> Render<'a> {
     pub fn translate_group_x(&mut self, mark: &QueueMark, x: f32) {
         let x = x * self.scale;
 
-        let bb = tiny_skia::NonZeroRect::from_xywh(x, 0.0, 1., 1.).unwrap();
         for item in &mut self.queue.items[mark.pos..] {
-            item.pixel_box = item.pixel_box.bbox_transform(bb);
+            item.pixel_box = item.pixel_box.translate(x, 0.0);
             if let RenderContents::Image { top_left, .. } = &mut item.contents {
                 top_left.x += x;
             }
         }
     }
 
-    pub fn crop_range(&mut self, a: &QueueMark, b: &QueueMark, mut crop: [f32; 4]) {
-        for x in &mut crop {
-            *x *= self.scale;
-        }
+    pub fn crop_range(&mut self, a: &QueueMark, b: &QueueMark, crop: Rect) {
+        let crop = crop.scale(self.scale);
         for item in &mut self.queue.items[a.pos..b.pos] {
-            let ltrb = [
-                item.pixel_box.left(),
-                item.pixel_box.top(),
-                item.pixel_box.right(),
-                item.pixel_box.bottom(),
-            ];
-            match tiny_skia::Rect::from_ltrb(
-                ltrb[0].max(crop[0]),
-                ltrb[1].max(crop[1]),
-                ltrb[2].min(crop[2]),
-                ltrb[3].min(crop[3]),
-            ) {
-                Some(rect) => item.pixel_box = rect,
-                None => item.contents = RenderContents::Empty,
-            }
+            item.pixel_box = item.pixel_box.intersect(crop);
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rect {
+    pub left: f32,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+}
+
+impl Rect {
+    pub fn from_u32_wh(w: u32, h: u32) -> Self {
+        Self::from_ltrb(0.0, 0.0, w as f32, h as f32)
+    }
+
+    pub fn from_xywh(x: f32, y: f32, w: f32, h: f32) -> Self {
+        Self::from_ltrb(x, y, x + w, y + h)
+    }
+
+    pub fn from_ltrb(left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        Self {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    pub fn infinite() -> Self {
+        Self {
+            left: -f32::INFINITY,
+            top: -f32::INFINITY,
+            right: f32::INFINITY,
+            bottom: f32::INFINITY,
+        }
+    }
+
+    pub fn width(self) -> f32 {
+        self.right - self.left
+    }
+
+    pub fn height(self) -> f32 {
+        self.bottom - self.top
+    }
+
+    pub fn is_valid(self) -> bool {
+        self.left <= self.right && self.top <= self.bottom
+    }
+
+    pub fn translate(mut self, x: f32, y: f32) -> Self {
+        self.left += x;
+        self.top += y;
+        self.right += x;
+        self.bottom += y;
+        self
+    }
+
+    pub fn scale(mut self, scale: f32) -> Self {
+        self.left *= scale;
+        self.top *= scale;
+        self.right *= scale;
+        self.bottom *= scale;
+        self
+    }
+
+    pub fn intersect(self, other: Self) -> Self {
+        Self {
+            left: self.left.max(other.left),
+            top: self.top.max(other.top),
+            right: self.right.min(other.right),
+            bottom: self.bottom.min(other.bottom),
+        }
+    }
+
+    pub fn join(&self, other: &Self) -> Self {
+        Self {
+            left: self.left.min(other.left),
+            top: self.top.min(other.top),
+            right: self.right.max(other.right),
+            bottom: self.bottom.max(other.bottom),
+        }
+    }
+
+    pub fn to_skia(self) -> Option<tiny_skia::Rect> {
+        tiny_skia::Rect::from_ltrb(self.left, self.top, self.right, self.bottom)
     }
 }
 
