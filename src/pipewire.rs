@@ -933,20 +933,18 @@ impl Socket {
     }
 
     fn for_each_dev_link(&self, dev_id: i32, mut f: impl FnMut(i32, LinkState, bool)) {
-        let mut dev_nid = 0;
         for node in self.nodes() {
-            if node.device_id == Some(dev_id) {
-                dev_nid = node.reg_id;
-                break;
+            if node.device_id != Some(dev_id) {
+                continue;
             }
-        }
 
-        for link in self.links() {
-            if dev_nid == link.in_node {
-                f(link.out_node, link.state, true);
-            }
-            if dev_nid == link.out_node {
-                f(link.in_node, link.state, false);
+            for link in self.links() {
+                if node.reg_id == link.in_node {
+                    f(link.out_node, link.state, true);
+                }
+                if node.reg_id == link.out_node {
+                    f(link.in_node, link.state, false);
+                }
             }
         }
     }
