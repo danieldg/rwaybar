@@ -87,7 +87,7 @@ fn layout_font<'a>(
         stack.push((font, rgba));
     }
 
-    let to_draw: Vec<_> = text
+    let to_draw = text
         .char_indices()
         .filter_map(|(i, mut c)| {
             if skip > i {
@@ -239,28 +239,49 @@ fn layout_font<'a>(
     (to_draw, text_size)
 }
 
-/// Determine the bounding box of this series of glyphs
-///
-/// Output coordinates use the render scale and position as the origin.
-fn bounding_box(to_draw: &mut [CGlyph], g_scale: f32, stroke: f32) -> (Point, Point) {
-    let mut tl = Point {
-        x: f32::MAX,
-        y: f32::MAX,
-    };
-    let mut br = Point {
-        x: f32::MIN,
-        y: f32::MIN,
-    };
-    for &mut CGlyph {
-        id,
-        ref mut scale,
-        ref mut position,
-        font,
-        ref mut pixmap,
-        ..
-    } in to_draw
-    {
-        if let Some(gbox) = font.as_ref().glyph_bounding_box(id) {
+impl CGlyph<'_> {
+    fn key(&mut self, stroke_width: f32, text_stroke: u32) -> RenderKey {
+        fn sp_key(x: &mut f32) -> u8 {
+            const HALF_MAX_EXACT_F32: f32 = (1 << f32::MANTISSA_DIGITS - 1) as f32;
+            //debug_assert_eq!(HALF_MAX_EXACT_F32 + 1.0, HALF_MAX_EXACT_F32.next_up());
+            const SUBPIXEL_KEYS: u8 = 8;
+            const SUBPIXEL_KEYS_F: f32 = SUBPIXEL_KEYS as f32;
+            const SUBPIXEL_KEYS_I: u32 = SUBPIXEL_KEYS as u32;
+
+            let sp_int = (*x * SUBPIXEL_KEYS_F).round();
+            *x = sp_int / SUBPIXEL_KEYS_F;
+            // offset far into the positive numbers to avoid saturate-to-0
+            let ipos = (sp_int + HALF_MAX_EXACT_F32) as u32;
+            (ipos % SUBPIXEL_KEYS_I) as u8
+        }
+
+        let text_stroke_size_milli = (stroke_width * 1000.0).round() as u32;
+        RenderKey {
+            x_offset_subpix: sp_key(&mut self.position.x),
+            y_offset_subpix: sp_key(&mut self.position.y),
+            font: self.font.uid,
+            scale: self.scale.to_bits(),
+            font_color: to_color_u32(self.color),
+
+            text_stroke,
+            text_stroke_size_milli,
+
+            glyph: self.id,
+        }
+    }
+
+    fn scale(&mut self, scale: f32) {
+        self.position.scale(scale);
+        self.scale *= scale;
+    }
+
+    fn translate(&mut self, delta: Point) {
+        self.position += delta;
+    }
+
+    fn bbox(&mut self, stroke: f32) -> Rect {
+        let font = self.font.as_ref();
+        if let Some(gbox) = font.glyph_bounding_box(self.id) {
             let mut g_tl = Point {
                 x: gbox.x_min as f32,
                 y: -gbox.y_max as f32,
@@ -269,77 +290,52 @@ fn bounding_box(to_draw: &mut [CGlyph], g_scale: f32, stroke: f32) -> (Point, Po
                 x: gbox.x_max as f32,
                 y: -gbox.y_min as f32,
             };
-            g_tl.scale(*scale);
-            g_br.scale(*scale);
-            g_tl += *position;
-            g_br += *position;
-            tl.x = tl.x.min(g_tl.x - stroke);
-            tl.y = tl.y.min(g_tl.y - stroke);
-            br.x = br.x.max(g_br.x + stroke);
-            br.y = br.y.max(g_br.y + stroke);
-            continue;
+            g_tl.scale(self.scale);
+            g_br.scale(self.scale);
+            g_tl += self.position;
+            g_br += self.position;
+            return Rect::from_ltrb(
+                g_tl.x - stroke,
+                g_tl.y - stroke,
+                g_br.x + stroke,
+                g_br.y + stroke,
+            );
         }
 
-        let target_ppem = *scale * font.as_ref().units_per_em() as f32 * g_scale;
-        let target_h = *scale * font.as_ref().height() as f32 * g_scale;
+        let target_ppem = self.scale * font.units_per_em() as f32;
+        let target_h = self.scale * font.height() as f32;
+        let mut position = self.position;
 
-        position.y -= font.as_ref().ascender() as f32 * *scale;
-        if let Some(raster_img) = font.as_ref().glyph_raster_image(id, target_ppem as u16) {
+        position.y -= font.ascender() as f32 * self.scale;
+        if let Some(raster_img) = font.glyph_raster_image(self.id, target_ppem as u16) {
+            let img_scale = target_ppem / raster_img.pixels_per_em as f32;
             if let Some(img) = OwnedImage::from_data(raster_img.data, target_h as u32, false) {
-                *pixmap = Some(img);
+                let real_h = img.pixmap.height() as f32 * img_scale;
+                let img = img.rescale_height(real_h as u32);
+                self.pixmap = Some(img);
 
-                *scale = target_ppem / raster_img.pixels_per_em as f32 / g_scale;
-
-                position.x += raster_img.x as f32 * *scale;
-                position.y += raster_img.y as f32 * *scale;
+                position.x += raster_img.x as f32 * self.scale;
+                position.y += raster_img.y as f32 * self.scale;
             }
         }
-        if pixmap.is_none() {
-            if let Some(svg) = font.as_ref().glyph_svg_image(id) {
-                *pixmap = OwnedImage::from_svg(svg.data, target_h as u32);
-                *scale = 1.;
+        if self.pixmap.is_none() {
+            if let Some(svg) = font.glyph_svg_image(self.id) {
+                self.pixmap = OwnedImage::from_svg(svg.data, target_h as u32);
             }
         }
-        if let Some(img) = pixmap.as_ref() {
-            let size = Point {
-                x: img.pixmap.width() as f32 / g_scale,
-                y: img.pixmap.height() as f32 / g_scale,
-            };
-            let g_br = *position + size;
-
-            tl.x = tl.x.min(position.x);
-            tl.y = tl.y.min(position.y);
-            br.x = br.x.max(g_br.x);
-            br.y = br.y.max(g_br.y);
+        if let Some(img) = self.pixmap.as_ref() {
+            Rect::from_xywh(
+                position.x,
+                position.y,
+                img.pixmap.width() as f32,
+                img.pixmap.height() as f32,
+            )
+        } else {
+            Rect::anti_plane()
         }
     }
 
-    (tl, br)
-}
-
-fn draw_font_with<T>(
-    target: &mut T,
-    xform: Transform,
-    to_draw: &[CGlyph],
-    mut draw: impl FnMut(&mut T, &tiny_skia::Path, Color),
-    mut draw_img: impl FnMut(&mut T, Transform, &OwnedImage),
-) {
-    for &CGlyph {
-        id,
-        scale,
-        position,
-        font,
-        color,
-        ref pixmap,
-    } in to_draw
-    {
-        if let Some(img) = pixmap.as_ref() {
-            let xform = xform.pre_translate(position.x, position.y);
-            let xform = xform.pre_scale(scale, scale);
-            draw_img(target, xform, img);
-            continue;
-        }
-
+    fn path(&self) -> Option<tiny_skia::Path> {
         struct Draw(tiny_skia::PathBuilder);
         let mut path = Draw(tiny_skia::PathBuilder::new());
         impl ttf_parser::OutlineBuilder for Draw {
@@ -359,43 +355,14 @@ fn draw_font_with<T>(
                 self.0.close();
             }
         }
-        if let Some(_bounds) = font.as_ref().outline_glyph(id, &mut path) {
-            let xform = xform.pre_translate(position.x, position.y);
-            let xform = xform.pre_scale(scale, scale);
-            if let Some(path) = path.0.finish().and_then(|p| p.transform(xform)) {
-                draw(target, &path, color);
-            }
-            continue;
+        if let Some(_bounds) = self.font.as_ref().outline_glyph(self.id, &mut path) {
+            let xform = Transform::from_translate(self.position.x, self.position.y);
+            let xform = xform.pre_scale(self.scale, self.scale);
+            path.0.finish().and_then(|p| p.transform(xform))
+        } else {
+            None
         }
     }
-}
-
-/// High quality pixmap scaling - used when a resize may happen
-static HQ_PIXMAP_PAINT: tiny_skia::PixmapPaint = tiny_skia::PixmapPaint {
-    opacity: 1.0,
-    blend_mode: tiny_skia::BlendMode::SourceOver,
-    quality: tiny_skia::FilterQuality::Bicubic,
-};
-
-const SUBPIXEL_KEYS: f32 = 8.0;
-fn get_subpixel_key(x: f32) -> u8 {
-    let frac = x - x.floor();
-    let idx = frac * SUBPIXEL_KEYS;
-    idx.floor() as u8
-}
-
-/// Align the given point to the pixel grid, returning true if the change would be unnoticeable
-fn align_nearby_grid(Point { x, y }: &mut Point) -> bool {
-    let margin = 1.0 / SUBPIXEL_KEYS;
-    let xp = *x;
-    let yp = *y;
-    let xr = xp.round();
-    let yr = yp.round();
-    *x = xr;
-    *y = yr;
-    let dx = xp - xr;
-    let dy = yp - yr;
-    (dx.abs() <= margin) && (dy.abs() <= margin)
 }
 
 #[derive(Eq, Hash, PartialEq, Debug)]
@@ -404,64 +371,28 @@ pub struct RenderKey {
     y_offset_subpix: u8,
 
     font: UID,
-    font_size_millipt: u32,
+    scale: u32,
     font_color: u32,
     text_stroke: u32,
     text_stroke_size_milli: u32,
 
-    text: Box<str>,
+    glyph: GlyphId,
 }
 
 #[derive(Debug)]
 pub struct TextImage {
-    /// Declared size of the text, in pixels.
-    ///
-    /// This controls the movement of render_pos, and is only vaguely related to the size of the
-    /// bounding box of the text.
-    text_size: Point,
-
-    /// Clip width used while rendering, in pixels.
-    ///
-    /// If this is less than text_size.x, then the pixmap should be considered to be clipped.
-    clip_w_px: f32,
-
     /// Pixel distance from the initial render_pos to the actual pixmap origin.
     ///
     /// This plus pixmap.(width, height) forms the actual bounding box for the text.
     origin_offset: Point,
 
-    pixmap: Arc<tiny_skia::Pixmap>,
+    pub pixmap: Arc<tiny_skia::Pixmap>,
     pub last_used: Instant,
 }
 
 fn to_color_u32(color: Color) -> u32 {
     let c = color.to_color_u8();
     u32::from_ne_bytes([c.red(), c.green(), c.blue(), c.alpha()])
-}
-
-impl RenderKey {
-    fn new(ctx: &Render, text: &str) -> Self {
-        let pixel_x = ctx.render_pos.x * ctx.scale;
-        let pixel_y = ctx.render_pos.y * ctx.scale;
-        let xi = get_subpixel_key(pixel_x);
-        let yi = get_subpixel_key(pixel_y);
-
-        let text_stroke_size_milli = ctx.text_stroke.map_or(0, |_| {
-            (ctx.text_stroke_size.unwrap_or(1.0) * ctx.scale * 1000.0).round() as u32
-        });
-        RenderKey {
-            x_offset_subpix: xi,
-            y_offset_subpix: yi,
-            font: ctx.font.uid,
-            font_size_millipt: (ctx.scale * ctx.font_size * 1000.0).round() as u32,
-            font_color: to_color_u32(ctx.font_color),
-
-            text_stroke: ctx.text_stroke.map_or(0, to_color_u32),
-            text_stroke_size_milli,
-
-            text: text.into(),
-        }
-    }
 }
 
 pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
@@ -474,70 +405,8 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
 
     let clip_w = ctx.render_extents.1.x - ctx.render_pos.x;
     let clip_h = ctx.render_extents.1.y - ctx.render_extents.0.y;
-    let clip_w_px = clip_w * scale;
 
-    let key = RenderKey::new(ctx, text);
-
-    /* try */
-    match (|| {
-        let ti = ctx.cache.text.get_mut(&key)?;
-        let mut text_size = ti.text_size;
-
-        let mut add_clip = false;
-
-        if text_size.x > ti.clip_w_px {
-            // the cached key was clipped
-            if ti.clip_w_px > clip_w_px + 1.0 {
-                // it was clipped too large
-                add_clip = true;
-            } else if clip_w_px > ti.clip_w_px + 1.0 {
-                // the saved pixmap is too small, re-render
-                return None;
-            }
-            // else the clip is close enough
-        } else if text_size.x > clip_w_px + 1.0 {
-            // we need to clip it
-            add_clip = true;
-        }
-
-        text_size.scale(1. / scale);
-
-        match ctx.align.vert {
-            Some(f) if !ctx.render_flex => {
-                let extra = clip_h - text_size.y;
-                if extra >= 0.0 {
-                    render_pos.y += extra * f;
-                    ctx.render_pos.y += extra * f;
-                }
-            }
-            _ => {}
-        }
-
-        let mut pixel_pos = ctx.render_pos;
-        pixel_pos.scale(scale);
-
-        let mut pixmap_tl = pixel_pos - ti.origin_offset;
-        if !align_nearby_grid(&mut pixmap_tl) {
-            return None;
-        }
-
-        let img = ti.pixmap.clone();
-        ti.last_used = Instant::now();
-        ctx.render_pos += text_size;
-        if add_clip {
-            let bounds = Rect::from_xywh(pixmap_tl.x, pixmap_tl.y, clip_w_px, img.height() as f32);
-            ctx.push_image_clip(pixmap_tl, img, bounds);
-        } else {
-            ctx.push_image(pixmap_tl, img);
-        }
-
-        Some(())
-    })() {
-        Some(()) => return,
-        None => {}
-    }
-
-    let (mut to_draw, mut text_size) = layout_font(
+    let (mut to_draw, text_size) = layout_font(
         ctx.font,
         ctx.font_size,
         &ctx.runtime,
@@ -574,130 +443,96 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
     } else {
         0.0
     };
-
-    // bounding box relative to render_pos
-    let bbox = bounding_box(&mut to_draw, scale, 1.0 + stroke_width);
-
-    if bbox.0.x >= bbox.1.x || bbox.0.y >= bbox.1.y {
-        // empty bounding box
-        return;
-    }
-
-    // our pixmap location, in render coordinates, not yet aligned to the pixel grid
-    let bbox_tl = bbox.0 + render_pos;
-    let bbox_br = bbox.1 + render_pos;
-
-    // Expand the bbox to full pixels
-    let pixel_l = (bbox_tl.x * scale).floor();
-    let pixel_t = (bbox_tl.y * scale).floor();
-    let pixel_r = (bbox_br.x * scale).ceil();
-    let pixel_b = (bbox_br.y * scale).ceil();
-
-    // pixmap location, in pixel coordinates
-    let pixmap_tl = Point {
-        x: pixel_l,
-        y: pixel_t,
-    };
-    let xsize = pixel_r - pixel_l;
-    let ysize = pixel_b - pixel_t;
-
-    let origin_offset = Point {
-        x: render_pos.x * scale - pixel_l,
-        y: render_pos.y * scale - pixel_t,
+    let stroke_color_u32 = ctx.text_stroke.map_or(0, to_color_u32);
+    let stroke = tiny_skia::Stroke {
+        width: stroke_width,
+        ..Default::default()
     };
 
-    // transform from render_pos-relative to our-pixmap-pixel
-    let render_xform = tiny_skia::Transform {
-        sx: scale,
-        sy: scale,
-        tx: origin_offset.x,
-        ty: origin_offset.y,
-        ..tiny_skia::Transform::identity()
-    };
+    let stroke_paint = ctx.text_stroke.map(|rgba| tiny_skia::Paint {
+        shader: tiny_skia::Shader::SolidColor(rgba),
+        anti_alias: true,
+        colorspace: tiny_skia::ColorSpace::Gamma2,
+        ..tiny_skia::Paint::default()
+    });
 
-    let mut pixmap = match tiny_skia::Pixmap::new(xsize as u32, ysize as u32) {
-        Some(pixmap) => pixmap,
-        None => {
-            log::debug!("Not rendering \"{text}\" ({xsize}, {ysize})");
-            return;
+    for mut glyph in to_draw {
+        glyph.translate(render_pos);
+        glyph.scale(scale);
+
+        // glyph is now positioned in pixel coordinates on the actual render target.  See if we
+        // have a pixmap in the glyph cache that can be used - if we do, use it so that damage
+        // tracking works (and also to save time stroking the path every frame).
+        //
+        // The key() function will move the character by at most (0.5/SUBPIXEL_KEYS) pixel in each
+        // direction to align it to a sub-pixel grid.  This means rendering "aaaaaaaaaaaaaaaaaaaa"
+        // will end up with at most SUBPIXEL_KEYS "a" images in the cache, one per subpixel offset.
+        let key = glyph.key(stroke_width, stroke_color_u32);
+        if let Some(ti) = ctx.cache.text.get_mut(&key) {
+            let img = ti.pixmap.clone();
+            let mut pos = glyph.position - ti.origin_offset;
+            pos.x = pos.x.round();
+            pos.y = pos.y.round();
+            ti.last_used = Instant::now();
+            ctx.push_image(pos, img);
+            continue;
         }
-    };
 
-    if let Some(rgba) = ctx.text_stroke {
-        let stroke_paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(rgba),
+        let bbox = glyph.bbox(1.0 + stroke_width);
+        if !bbox.is_valid() {
+            continue;
+        }
+        let pbox = bbox.round_out();
+        glyph.position -= pbox.tl();
+
+        if let Some(pixmap) = glyph.pixmap.take() {
+            ctx.cache.text.insert(
+                key,
+                TextImage {
+                    origin_offset: glyph.position,
+                    pixmap: pixmap.pixmap.clone(),
+                    last_used: Instant::now(),
+                },
+            );
+            ctx.push_image(pbox.tl(), pixmap.pixmap);
+            continue;
+        }
+
+        let Some(path) = glyph.path() else {
+            continue;
+        };
+
+        let Some(mut pixmap) = tiny_skia::Pixmap::new(pbox.width() as u32, pbox.height() as u32)
+        else {
+            continue;
+        };
+
+        if let Some(stroke_paint) = stroke_paint.as_ref() {
+            pixmap.stroke_path(&path, stroke_paint, &stroke, Transform::identity(), None);
+        }
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(glyph.color),
             anti_alias: true,
             colorspace: tiny_skia::ColorSpace::Gamma2,
             ..tiny_skia::Paint::default()
         };
-        let stroke = tiny_skia::Stroke {
-            width: stroke_width,
-            ..Default::default()
-        };
+        pixmap.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::EvenOdd,
+            Transform::identity(),
+            None,
+        );
 
-        draw_font_with(
-            &mut pixmap,
-            render_xform,
-            &to_draw,
-            |canvas, path, color| {
-                canvas.stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), None);
-                let paint = tiny_skia::Paint {
-                    shader: tiny_skia::Shader::SolidColor(color),
-                    anti_alias: true,
-                    colorspace: tiny_skia::ColorSpace::Gamma2,
-                    ..tiny_skia::Paint::default()
-                };
-                canvas.fill_path(
-                    &path,
-                    &paint,
-                    tiny_skia::FillRule::EvenOdd,
-                    Transform::identity(),
-                    None,
-                );
-            },
-            |canvas, xform, img| {
-                canvas.draw_pixmap(0, 0, img.as_ref(), &HQ_PIXMAP_PAINT, xform, None);
+        let pixmap = Arc::new(pixmap);
+        ctx.cache.text.insert(
+            key,
+            TextImage {
+                origin_offset: glyph.position,
+                pixmap: pixmap.clone(),
+                last_used: Instant::now(),
             },
         );
-    } else {
-        draw_font_with(
-            &mut pixmap,
-            render_xform,
-            &to_draw,
-            |canvas, path, color| {
-                let paint = tiny_skia::Paint {
-                    shader: tiny_skia::Shader::SolidColor(color),
-                    anti_alias: true,
-                    colorspace: tiny_skia::ColorSpace::Gamma2,
-                    ..tiny_skia::Paint::default()
-                };
-                canvas.fill_path(
-                    &path,
-                    &paint,
-                    tiny_skia::FillRule::EvenOdd,
-                    Transform::identity(),
-                    None,
-                );
-            },
-            |canvas, xform, img| {
-                canvas.draw_pixmap(0, 0, img.as_ref(), &HQ_PIXMAP_PAINT, xform, None);
-            },
-        );
+        ctx.push_image(pbox.tl(), pixmap);
     }
-
-    let pixmap = Arc::new(pixmap);
-
-    ctx.push_image(pixmap_tl, pixmap.clone());
-
-    text_size.scale(scale);
-    ctx.cache.text.insert(
-        key,
-        TextImage {
-            text_size,
-            clip_w_px,
-            origin_offset,
-            pixmap,
-            last_used: Instant::now(),
-        },
-    );
 }

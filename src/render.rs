@@ -402,10 +402,10 @@ impl RenderCache {
     }
 
     pub fn prune(&mut self, as_of: time::Instant) {
-        if self.last_expire > as_of - time::Duration::from_secs(300) {
+        if self.last_expire > as_of - time::Duration::from_secs(30) {
             return;
         }
-        if let Some(min) = as_of.checked_sub(time::Duration::from_secs(130)) {
+        if let Some(min) = as_of.checked_sub(time::Duration::from_secs(13)) {
             let had = self.text.len();
             self.text.retain(|_k, v| v.last_used > min);
             log::debug!("Cache pruned from {} to {} entries", had, self.text.len());
@@ -707,6 +707,30 @@ impl Rect {
         }
     }
 
+    pub fn anti_plane() -> Self {
+        Self {
+            left: f32::INFINITY,
+            top: f32::INFINITY,
+            right: -f32::INFINITY,
+            bottom: -f32::INFINITY,
+        }
+    }
+
+    pub fn tl(self) -> tiny_skia::Point {
+        tiny_skia::Point {
+            x: self.left,
+            y: self.top,
+        }
+    }
+
+    #[allow(unused)]
+    pub fn br(self) -> tiny_skia::Point {
+        tiny_skia::Point {
+            x: self.right,
+            y: self.bottom,
+        }
+    }
+
     pub fn width(self) -> f32 {
         self.right - self.left
     }
@@ -750,6 +774,15 @@ impl Rect {
             top: self.top.min(other.top),
             right: self.right.max(other.right),
             bottom: self.bottom.max(other.bottom),
+        }
+    }
+
+    pub fn round_out(self) -> Self {
+        Self {
+            left: (self.left + 0.01).floor(),
+            top: (self.top + 0.01).floor(),
+            right: (self.right - 0.01).ceil(),
+            bottom: (self.bottom - 0.01).ceil(),
         }
     }
 

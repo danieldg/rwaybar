@@ -84,13 +84,13 @@ impl OwnedImage {
                     tiny_skia::SpreadMode::Pad,
                     tiny_skia::FilterQuality::Bicubic,
                     1.0,
-                    Transform::default(),
+                    xform,
                 ),
                 blend_mode: tiny_skia::BlendMode::Source,
                 colorspace: tiny_skia::ColorSpace::Gamma2,
                 ..Default::default()
             },
-            xform,
+            Transform::identity(),
             None,
         );
 
