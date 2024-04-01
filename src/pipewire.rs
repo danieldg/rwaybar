@@ -35,6 +35,8 @@ enum SPAValue<'a> {
     Other(u32, &'a [u8]),
 }
 
+static SPA_NONE: SPAValue<'static> = SPAValue::None;
+
 impl<'a> SPAValue<'a> {
     fn read(buf: &mut &'a [u8]) -> Self {
         let len = buf.get_u32_ne() as usize;
@@ -207,10 +209,10 @@ impl<'a> SPAValue<'a> {
         rv
     }
 
-    fn struct_field(&self, id: usize) -> Option<&Self> {
+    fn struct_field(&self, id: usize) -> &Self {
         match self {
-            SPAValue::Struct(s) => s.get(id),
-            _ => None,
+            SPAValue::Struct(s) => s.get(id).unwrap_or(&SPA_NONE),
+            _ => &SPA_NONE,
         }
     }
 
@@ -583,7 +585,7 @@ impl Socket {
                 }
             }
             (Proxy::Core, PW_CORE_EVT_PING) => {
-                self.send(0, PW_CORE_REQ_PONG, &msg);
+                self.send(PW_CORE_OID, PW_CORE_REQ_PONG, &msg);
             }
             (Proxy::Core, PW_CORE_EVT_ERROR) => {
                 let SPAValue::Struct(s) = msg else {
@@ -598,19 +600,16 @@ impl Socket {
             (Proxy::Core, PW_CORE_EVT_BOUND_ID) => {}
             (Proxy::ClientSelf, PW_CLIENT_EVT_INFO) => {}
             (Proxy::Registry, PW_REGISTRY_EVT_GLOBAL) => {
-                let SPAValue::Struct(s) = msg else {
+                let &SPAValue::I32(reg_id) = msg.struct_field(0) else {
                     return;
                 };
-                let SPAValue::I32(reg_id) = s[0] else {
+                let &SPAValue::Str(ty) = msg.struct_field(2) else {
                     return;
                 };
-                let SPAValue::Str(ty) = s[2] else {
+                let &SPAValue::I32(version) = msg.struct_field(3) else {
                     return;
                 };
-                let SPAValue::I32(version) = s[3] else {
-                    return;
-                };
-                let global_props = s[4].into_str_map();
+                let global_props = msg.struct_field(4).into_str_map();
                 let mut bound_oid = 0;
                 if ty == "PipeWire:Interface:Device" {
                     // object.serial factory.id client.id device.api device.description device.name device.nick media.class
@@ -690,7 +689,7 @@ impl Socket {
                 // Wait for the Info event to call notify-data
             }
             (Proxy::Registry, PW_REGISTRY_EVT_REMOVE) => {
-                let Some(SPAValue::I32(reg_id)) = msg.struct_field(0) else {
+                let &SPAValue::I32(reg_id) = msg.struct_field(0) else {
                     return;
                 };
                 if let Some(re) = self.registry.remove(&reg_id) {
@@ -702,14 +701,11 @@ impl Socket {
                 }
             }
             (Proxy::Device(dev), PW_DEVICE_EVT_INFO) => {
-                let SPAValue::Struct(s) = msg else {
-                    return;
-                };
-                let SPAValue::I64(mask) = s[1] else {
+                let &SPAValue::I64(mask) = msg.struct_field(1) else {
                     return;
                 };
                 if mask & 1 != 0 {
-                    let props = s[2].into_str_map();
+                    let props = msg.struct_field(2).into_str_map();
                     dev.name = props.get("device.name").copied().unwrap_or_default().into();
                     dev.description = props
                         .get("device.description")
@@ -717,7 +713,7 @@ impl Socket {
                         .unwrap_or_default()
                         .into();
                 }
-                if let (2, Some(SPAValue::Struct(params))) = (mask & 2, s.get(3)) {
+                if let (2, SPAValue::Struct(params)) = (mask & 2, msg.struct_field(3)) {
                     if params.contains(&SPAValue::Id(SPA_PARAM_Route)) {
                         if dev.pending_retry.is_none() {
                             dev.pending_retry = Some(false);
@@ -745,37 +741,22 @@ impl Socket {
             (Proxy::Device(dev), PW_DEVICE_EVT_PARAM) => {
                 if let Some(props) = msg
                     .struct_field(4)
-                    .and_then(|o| o.as_props(SPA_TYPE_OBJECT_ParamRoute, SPA_PARAM_Route))
+                    .as_props(SPA_TYPE_OBJECT_ParamRoute, SPA_PARAM_Route)
                 {
-                    let mut index = None;
-                    let mut device = None;
-                    for (key, _flag, value) in props {
-                        match (*key, value) {
-                            (SPA_PARAM_ROUTE_index, SPAValue::I32(i)) => index = Some(*i),
-                            (SPA_PARAM_ROUTE_device, SPAValue::I32(i)) => device = Some(*i),
-                            _ => {}
-                        }
-                    }
-                    let (Some(index), Some(device)) = (index, device) else {
-                        warn!("Got SPA_TYPE_OBJECT_ParamRoute without index or device: {props:?}");
-                        return;
-                    };
-
-                    let i = dev.pending_routes.len();
-                    dev.pending_routes.push(RouteEntry {
-                        index,
-                        device,
+                    let mut route = RouteEntry {
+                        index: 0,
+                        device: 0,
                         name: String::new(),
                         desc: String::new(),
                         mute: None,
                         is_input: None,
                         volume: f32::NAN,
                         channels: 0,
-                    });
-                    let route = &mut dev.pending_routes[i];
-
+                    };
                     for (key, _flag, value) in props {
                         match (*key, value) {
+                            (SPA_PARAM_ROUTE_index, SPAValue::I32(i)) => route.index = *i,
+                            (SPA_PARAM_ROUTE_device, SPAValue::I32(i)) => route.device = *i,
                             (SPA_PARAM_ROUTE_name, &SPAValue::Str(s)) => {
                                 route.name = s.into();
                             }
@@ -809,6 +790,7 @@ impl Socket {
                             _ => {}
                         }
                     }
+                    dev.pending_routes.push(route);
                 } else {
                     // we should only get objects we subscribed to
                     debug!("Unexpected device param {msg:?}");
@@ -816,14 +798,11 @@ impl Socket {
             }
             (Proxy::Node(node), PW_NODE_EVT_INFO) => {
                 // Info
-                let SPAValue::Struct(s) = msg else {
-                    return;
-                };
-                let SPAValue::I64(mask) = s[3] else {
+                let &SPAValue::I64(mask) = msg.struct_field(3) else {
                     return;
                 };
                 if mask & 8 != 0 {
-                    let props = s[8].into_str_map();
+                    let props = msg.struct_field(8).into_str_map();
                     node.sec_id = props
                         .get("pipewire.access.portal.app_id")
                         .or_else(|| props.get("pipewire.sec.pid"))
@@ -835,7 +814,7 @@ impl Socket {
                     node.device_id = props.get("device.id").and_then(|&s| s.parse().ok());
                 }
                 if mask & 16 != 0 {
-                    let SPAValue::Struct(params) = &s[9] else {
+                    let SPAValue::Struct(params) = msg.struct_field(9) else {
                         return;
                     };
 
@@ -853,7 +832,7 @@ impl Socket {
             (Proxy::Node(node), PW_NODE_EVT_PARAM) => {
                 if let Some(props) = msg
                     .struct_field(4)
-                    .and_then(|o| o.as_props(SPA_TYPE_OBJECT_Props, SPA_PARAM_Props))
+                    .as_props(SPA_TYPE_OBJECT_Props, SPA_PARAM_Props)
                 {
                     // Note: resetting the values to 'unknown' here is more correct
                     for (key, _, value) in props {
@@ -881,22 +860,19 @@ impl Socket {
                 }
             }
             (Proxy::Link(link), PW_LINK_EVT_INFO) => {
-                let SPAValue::Struct(s) = msg else {
-                    return;
-                };
-                if let Some(SPAValue::I32(i)) = s.get(1) {
+                if let SPAValue::I32(i) = msg.struct_field(1) {
                     link.out_node = *i;
                 }
-                if let Some(SPAValue::I32(i)) = s.get(3) {
+                if let SPAValue::I32(i) = msg.struct_field(3) {
                     link.in_node = *i;
                 }
-                let Some(SPAValue::I64(mask)) = s.get(5) else {
+                let SPAValue::I64(mask) = msg.struct_field(5) else {
                     return;
                 };
                 if mask & 1 != 0 {
-                    link.state = match s.get(6) {
-                        Some(SPAValue::I32(3)) => LinkState::Paused,
-                        Some(SPAValue::I32(4)) => LinkState::Active,
+                    link.state = match msg.struct_field(6) {
+                        SPAValue::I32(3) => LinkState::Paused,
+                        SPAValue::I32(4) => LinkState::Active,
                         _ => LinkState::Inactive,
                     };
                 }
