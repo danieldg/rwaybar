@@ -366,25 +366,23 @@ path = "/"
 format = "<span font='Liberation Mono'>/</span>:{hdd-use} {hdd-icon}"
 markup = true
 
-#[bat-charge]
-#type = "read-file"
-#file = "/sys/class/power_supply/BAT1/charge_now"
-#poll = 20
-#
-#[bat-full]
-#type = "read-file"
-#file = "/sys/class/power_supply/BAT1/charge_full"
-#poll = 20
+[bat-charge]
+type = "read-file"
+file = "/sys/class/power_supply/BAT1/charge_now"
+poll = 20
 
-#[bat_icon]
-#type = "meter"
-#min = 0
-#max = "{bat-full}"
-#src = "{bat-charge}"
-#values = ["", "", "", "", ""]
-#
-#[bat]
-#format = "{bat-charge} mAh {bat_icon}"
+[bat-full]
+type = "read-file"
+file = "/sys/class/power_supply/BAT1/charge_full"
+poll = 20
+
+[bat]
+type = "fade"
+charge = "{bat-charge}"
+cfull = "{bat-full}"
+expr = '0.10 + 0.75 * charge / cfull'
+items = ["", ""]
+tooltip = "{bat-charge} mAh"
 
 [cpu_temp]
 type = "thermal"
