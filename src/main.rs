@@ -1,5 +1,7 @@
-use std::error::Error;
+use std::{error::Error, rc::Rc};
 
+#[cfg(feature = "dbus")]
+mod api;
 mod bar;
 mod data;
 #[cfg(feature = "dbus")]
@@ -38,10 +40,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .enable_all()
         .build()?;
 
-    tokio::task::LocalSet::new().block_on(&rt, async move {
-        let (client, wl_queue) = WaylandClient::new()?;
+    let local = Rc::new(tokio::task::LocalSet::new());
+    let handle = local.clone();
 
-        let state = State::new(client)?;
+    local.block_on(&rt, async move {
+        let (client, wl_queue) = WaylandClient::new()?;
+        let state = State::new(handle, client)?;
 
         match wayland::run_queue(wl_queue, state).await? {}
     })

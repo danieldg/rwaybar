@@ -1,5 +1,7 @@
 //! Text expansion and data sources
 #[cfg(feature = "dbus")]
+use crate::api::DbusApi;
+#[cfg(feature = "dbus")]
 use crate::dbus::DbusValue;
 #[cfg(feature = "dbus")]
 use crate::mpris;
@@ -10,7 +12,7 @@ use crate::tray;
 use crate::{
     item::{Item, ItemFormat, ModuleContext},
     pipewire,
-    state::{NotifierList, Runtime},
+    state::{NotifierList, Runtime, State},
     sway,
     util::{glob_expand, spawn_handle, spawn_noerr, toml_to_f64, toml_to_string, Cell, Fd},
     wlr::ClipboardData,
@@ -454,6 +456,10 @@ pub enum Module {
         state: Rc<ClockState>,
     },
     #[cfg(feature = "dbus")]
+    DbusApi {
+        handle: Cell<Option<Rc<DbusApi>>>,
+    },
+    #[cfg(feature = "dbus")]
     DbusCall {
         poll: Periodic<Rc<DbusValue>>,
     },
@@ -726,6 +732,10 @@ impl Module {
                 let poll = Periodic::new(toml_to_f64(value.get("poll")).unwrap_or(0.0), rc);
                 Module::DbusCall { poll }
             }
+            #[cfg(feature = "dbus")]
+            Some("dbus-api") => Module::DbusApi {
+                handle: Default::default(),
+            },
             Some("disk") => {
                 let path = value
                     .get("path")
@@ -1256,8 +1266,11 @@ impl Module {
     }
 
     /// One-time setup, if needed, and migration from before a reload
-    pub fn init(&self, name: &str, _rt: &Runtime, from: Option<&Self>) {
+    pub fn init(&self, name: &str, state: &State, from: Option<&Self>) {
         match (self, from) {
+            (Module::DbusApi { handle }, _) => {
+                handle.set(Some(DbusApi::enable(state)));
+            }
             (
                 Module::ExecJson {
                     command,
@@ -1355,7 +1368,8 @@ impl Module {
         };
 
         match self {
-            Module::Group { .. }
+            Module::DbusApi { .. }
+            | Module::Group { .. }
             | Module::Fade { .. }
             | Module::FocusList { .. }
             | Module::FontTest { .. }

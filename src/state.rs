@@ -10,6 +10,7 @@ use std::{
     task,
     time::Instant,
 };
+use tokio::task::LocalSet;
 use wayland_client::{
     protocol::{wl_callback, wl_output::WlOutput},
     Connection,
@@ -300,14 +301,18 @@ pub struct State {
     bar_config: Vec<toml::Value>,
     pub renderer: Renderer,
     pub runtime: Runtime,
+    pub local: Rc<LocalSet>,
     this: rc::Weak<RefCell<State>>,
 }
 
 impl State {
-    pub fn new(wayland: WaylandClient) -> Result<Rc<RefCell<Self>>, Box<dyn Error>> {
+    pub fn new(
+        local: Rc<LocalSet>,
+        wayland: WaylandClient,
+    ) -> Result<Rc<RefCell<Self>>, Box<dyn Error>> {
         log::debug!("State::new");
 
-        let mut state = Self {
+        let rv = Rc::new(RefCell::new(Self {
             bars: Vec::new(),
             bar_config: Vec::new(),
             renderer: Renderer::new(),
@@ -320,13 +325,13 @@ impl State {
                 read_depth: Cell::new(0),
                 wayland,
             },
+            local,
             this: rc::Weak::new(),
-        };
-
+        }));
+        let mut state = rv.borrow_mut();
+        state.this = Rc::downgrade(&rv);
         state.load_config(false)?;
-
-        let rv = Rc::new(RefCell::new(state));
-        rv.borrow_mut().this = Rc::downgrade(&rv);
+        drop(state);
 
         let state = rv.clone();
         spawn_noerr(async move {
@@ -433,9 +438,9 @@ impl State {
 
         for (k, v) in &self.runtime.items {
             if let Some(item) = old_items.remove(k) {
-                v.data.init(k, &self.runtime, Some(&item.data));
+                v.data.init(k, self, Some(&item.data));
             } else {
-                v.data.init(k, &self.runtime, None);
+                v.data.init(k, self, None);
             }
         }
         NOTIFY.with(|notify| notify.full_redraw());
@@ -471,6 +476,10 @@ impl State {
     /// items on the surface, such as by receiving a configure or scale event from the compositor.
     pub fn request_draw(&mut self) {
         NOTIFY.with(|notify| notify.notify_draw_only());
+    }
+
+    pub fn get_ref(&self) -> Rc<RefCell<Self>> {
+        self.this.upgrade().unwrap()
     }
 
     fn set_data(&mut self) {

@@ -222,6 +222,17 @@ The first return value of the method (or value of the property) is returned if a
 The key may be a zero-index numeric path separated by `.` to address the list
 of return values and the members of returned structs.
 
+## dbus-api
+
+Enables a debugging interface over dbus, allowing items to be read and for the
+"write" action to be called on items that support it.  A block with this type
+needs to exist in the configuration in order to enable the API.
+
+```sh
+dbus-send --type=method_call --dest=net.danieldg.rwaybar --print-reply /rwaybar net.danieldg.rwaybar.Get string:time
+dbus-send --type=method_call --dest=net.danieldg.rwaybar /rwaybar net.danieldg.rwaybar.Write string:time_fmt string:%H:%M:%S
+```
+
 ## disk
 
 #### Configuration
