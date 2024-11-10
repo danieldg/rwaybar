@@ -191,6 +191,19 @@ impl<'a> From<evalexpr::Value> for Value<'a> {
     }
 }
 
+impl<'a> From<&'a JsonValue> for Value<'a> {
+    fn from(v: &'a JsonValue) -> Self {
+        match v {
+            JsonValue::String(s) => Value::Borrow(s),
+            JsonValue::Short(s) => Value::Borrow(s),
+            &JsonValue::Number(n) => Value::Float(n.into()),
+            &JsonValue::Boolean(b) => Value::Bool(b),
+            JsonValue::Object(_) | JsonValue::Array(_) => Value::Null,
+            JsonValue::Null => Value::Null,
+        }
+    }
+}
+
 impl<'a> From<toml::Value> for Value<'a> {
     fn from(v: toml::Value) -> Self {
         match v {
@@ -1587,13 +1600,19 @@ impl Module {
             Module::ExecJson { command, value, .. } => {
                 let value = value.take_in_some(|v| v.clone()).unwrap();
                 let v = value.0.replace(JsonValue::Null);
-                let rv = f(Value::Borrow(v[key].as_str().unwrap_or_else(|| {
-                    debug!(
-                        "Could not find {}.{} in the output of {}",
-                        name, key, command
-                    );
-                    ""
-                })));
+                let rv = match &v {
+                    JsonValue::Object(obj) => match obj.get(key) {
+                        Some(v) => f(v.into()),
+                        None => {
+                            debug!(
+                                "Could not find {}.{} in the output of {}",
+                                name, key, command
+                            );
+                            f(Value::Null)
+                        }
+                    },
+                    _ => f(Value::Null),
+                };
                 value.0.set(v);
                 value.1.add(rt);
                 rv
