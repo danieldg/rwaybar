@@ -310,6 +310,24 @@ impl smithay_client_toolkit::compositor::CompositorHandler for State {
         _: wayland_client::protocol::wl_output::Transform,
     ) {
     }
+
+    fn surface_enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlSurface,
+        _: &WlOutput,
+    ) {
+    }
+    fn surface_leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlSurface,
+        _: &WlOutput,
+    ) {
+    }
+
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, surf: &WlSurface, _time: u32) {
         let data = SurfaceData::from_wl(surf);
         let prev = data
@@ -820,7 +838,7 @@ impl WaylandClient {
         anchor: (i32, i32, i32, i32),
         size: (i32, i32),
     ) -> XdgPositioner {
-        use xdg_positioner::{Anchor, Gravity};
+        use xdg_positioner::{Anchor, ConstraintAdjustment as Cons, Gravity};
         let pos = XdgPositioner::new(&self.xdg).unwrap();
 
         pos.set_size(size.0, size.1);
@@ -833,7 +851,7 @@ impl WaylandClient {
             pos.set_anchor(Anchor::Bottom);
             pos.set_gravity(Gravity::Bottom);
         }
-        pos.set_constraint_adjustment(0xF); // allow moving but not resizing
+        pos.set_constraint_adjustment(Cons::SlideX | Cons::SlideY | Cons::FlipX | Cons::FlipY);
 
         pos
     }

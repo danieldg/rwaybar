@@ -40,20 +40,20 @@ xml-rs = "*"
 
 # GUI
 png = "0.17"
-resvg = { version = "0.40", default-features = false }
-smithay-client-toolkit = { version = "0.18.1", default-features = false }
+resvg = { version = "0.45", default-features = false }
+smithay-client-toolkit = { version = "0.19", default-features = false }
 #smithay-client-toolkit = { version = "*", default-features = false, path = "../smithay-client-toolkit" }
 tiny-skia = "0.11"
 ttf-parser = "*"
 wayland-client = { version = "0.31" }
 wayland-cursor = { version = "0.31" }
-wayland-protocols = { version = "0.31", features = ['unstable', 'staging'] }
-wayland-protocols-wlr = { version = "0.2" }
+wayland-protocols = { version = "0.32", features = ['client', 'unstable', 'staging'] }
+wayland-protocols-wlr = { version = "0.3", features = ['client'] }
 
 # Module specific
 chrono = { version = "*", default-features = false, features = ['clock'] }
 chrono-tz = "*"
-evalexpr = "11"
+evalexpr = "12"
 libpulse-binding = { version = "*", features = ['pa_v14'], optional = true }
 libpulse-tokio = { version = "0.1", optional = true }
 regex = "1.5"

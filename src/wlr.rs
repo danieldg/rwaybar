@@ -215,7 +215,7 @@ impl ClipboardData {
         match &mut offer.value {
             OfferValue::Available => {
                 let (mut send, recv) = oneshot::channel();
-                let (tx, rx) = match std::os::unix::net::UnixStream::pair() {
+                let (tx, mut rx) = match tokio::net::UnixStream::pair() {
                     Ok(p) => p,
                     Err(_) => {
                         offer.value = OfferValue::Failed;
@@ -234,7 +234,6 @@ impl ClipboardData {
 
                 spawn("Clipboard read", async move {
                     use tokio::io::AsyncReadExt;
-                    let mut rx = tokio::net::UnixStream::from_std(rx)?;
                     let mut buf = BytesMut::new();
                     let mut cancel = send.cancellation();
                     loop {

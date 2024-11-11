@@ -2019,6 +2019,7 @@ pub struct EvalContext<'a> {
 }
 
 impl<'a> evalexpr::Context for EvalContext<'a> {
+    type NumericTypes = evalexpr::DefaultNumericTypes;
     fn get_value(&self, name: &str) -> Option<&evalexpr::Value> {
         self.vars
             .iter()
