@@ -527,7 +527,7 @@ pub fn read_in<F: FnOnce(Value) -> R, R>(
             let port = match port {
                 Some(port) => port,
                 None => {
-                    return f(Value::Null);
+                    return f(Value::Empty);
                 }
             };
             match key {
@@ -575,13 +575,13 @@ pub fn read_in<F: FnOnce(Value) -> R, R>(
                     if let Some(ty) = port.port_type {
                         f(Value::Owned(format!("{:?}", ty)))
                     } else {
-                        f(Value::Null)
+                        f(Value::Empty)
                     }
                 }
                 "mute" => f(Value::Bool(port.mute)),
                 _ => {
                     info!("Unknown key '{}' in '{}'", key, cfg_name);
-                    f(Value::Null)
+                    f(Value::Error)
                 }
             }
         })

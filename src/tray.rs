@@ -1052,13 +1052,13 @@ pub fn read_in<F: FnOnce(Value) -> R, R>(
         }),
         "title" => item
             .title
-            .take_in(|t| f(t.as_deref().map_or(Value::Null, Value::Borrow))),
+            .take_in(|t| f(t.as_deref().map_or(Value::Empty, Value::Borrow))),
         "status" => item.status.take_in(|s| f(Value::Borrow(&s))),
         "tooltip" => item
             .tooltip
-            .take_in(|t| f(t.as_deref().map_or(Value::Null, Value::Borrow))),
+            .take_in(|t| f(t.as_deref().map_or(Value::Empty, Value::Borrow))),
         "id" => item.id.take_in(|id| f(Value::Borrow(&id))),
-        _ => f(Value::Null),
+        _ => f(Value::Error),
     }
 }
 

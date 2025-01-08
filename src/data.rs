@@ -40,7 +40,11 @@ pub enum Value<'a> {
     Owned(String),
     Float(f64),
     Bool(bool),
-    Null,
+    /// This value is not available now, but is expected to be replaced soon
+    NotReady,
+    Empty,
+    /// Use of this value should propagate errors
+    Error,
 }
 
 #[cfg_attr(not(feature = "pulse"), allow(unused))]
@@ -51,7 +55,9 @@ impl<'a> Value<'a> {
             Value::Owned(v) => Value::Borrow(&v[..]),
             Value::Float(f) => Value::Float(*f),
             Value::Bool(b) => Value::Bool(*b),
-            Value::Null => Value::Null,
+            Value::NotReady => Value::NotReady,
+            Value::Empty => Value::Empty,
+            Value::Error => Value::Error,
         }
     }
 
@@ -69,7 +75,9 @@ impl<'a> Value<'a> {
             Value::Owned(v) => Value::Owned(v),
             Value::Float(f) => Value::Float(f),
             Value::Bool(b) => Value::Bool(b),
-            Value::Null => Value::Null,
+            Value::NotReady => Value::NotReady,
+            Value::Empty => Value::Empty,
+            Value::Error => Value::Error,
         }
     }
 
@@ -80,7 +88,9 @@ impl<'a> Value<'a> {
             Value::Float(f) => format!("{}", f).into(),
             Value::Bool(true) => "1".into(),
             Value::Bool(false) => "0".into(),
-            Value::Null => "".into(),
+            Value::NotReady => "".into(),
+            Value::Empty => "".into(),
+            Value::Error => "".into(),
         }
     }
 
@@ -91,7 +101,9 @@ impl<'a> Value<'a> {
             Value::Float(f) => Some(*f as f32),
             Value::Bool(true) => Some(1.0),
             Value::Bool(false) => Some(0.0),
-            Value::Null => None,
+            Value::NotReady => None,
+            Value::Empty => None,
+            Value::Error => None,
         }
     }
 
@@ -102,7 +114,9 @@ impl<'a> Value<'a> {
             Value::Float(f) => Some(*f),
             Value::Bool(true) => Some(1.0),
             Value::Bool(false) => Some(0.0),
-            Value::Null => None,
+            Value::NotReady => None,
+            Value::Empty => None,
+            Value::Error => None,
         }
     }
 
@@ -127,14 +141,14 @@ impl<'a> Value<'a> {
             Value::Owned(v) => !v.is_empty(),
             Value::Float(f) => *f != 0.0,
             Value::Bool(b) => *b,
-            Value::Null => false,
+            _ => false,
         }
     }
 }
 
 impl<'a> Default for Value<'a> {
     fn default() -> Self {
-        Value::Null
+        Value::NotReady
     }
 }
 
@@ -146,7 +160,9 @@ impl<'a> fmt::Display for Value<'a> {
             Value::Float(f) => f.fmt(fmt),
             Value::Bool(true) => "1".fmt(fmt),
             Value::Bool(false) => "0".fmt(fmt),
-            Value::Null => Ok(()),
+            Value::NotReady => Ok(()),
+            Value::Empty => Ok(()),
+            Value::Error => Ok(()),
         }
     }
 }
@@ -158,7 +174,7 @@ impl<'a> Into<JsonValue> for Value<'a> {
             Value::Owned(v) => v.into(),
             Value::Float(f) => f.into(),
             Value::Bool(b) => b.into(),
-            Value::Null => JsonValue::Null,
+            _ => JsonValue::Null,
         }
     }
 }
@@ -170,7 +186,7 @@ impl<'a> From<Value<'a>> for evalexpr::Value {
             Value::Borrow(s) => evalexpr::Value::String(s.into()),
             Value::Float(f) => evalexpr::Value::Float(f),
             Value::Bool(f) => evalexpr::Value::Boolean(f),
-            Value::Null => evalexpr::Value::Empty,
+            _ => evalexpr::Value::Empty,
         }
     }
 }
@@ -182,10 +198,10 @@ impl<'a> From<evalexpr::Value> for Value<'a> {
             evalexpr::Value::Float(n) => Value::Float(n),
             evalexpr::Value::Int(n) => Value::Float(n as _),
             evalexpr::Value::Boolean(b) => Value::Bool(b),
-            evalexpr::Value::Empty => Value::Null,
+            evalexpr::Value::Empty => Value::Empty,
             _ => {
                 warn!("Ignoring invalid return type from eval");
-                Value::Null
+                Value::Error
             }
         }
     }
@@ -198,8 +214,8 @@ impl<'a> From<&'a JsonValue> for Value<'a> {
             JsonValue::Short(s) => Value::Borrow(s),
             &JsonValue::Number(n) => Value::Float(n.into()),
             &JsonValue::Boolean(b) => Value::Bool(b),
-            JsonValue::Object(_) | JsonValue::Array(_) => Value::Null,
-            JsonValue::Null => Value::Null,
+            JsonValue::Object(_) | JsonValue::Array(_) => Value::Error,
+            JsonValue::Null => Value::Empty,
         }
     }
 }
@@ -211,7 +227,7 @@ impl<'a> From<toml::Value> for Value<'a> {
             toml::Value::Integer(n) => Value::Float(n as f64),
             toml::Value::Float(n) => Value::Float(n),
             toml::Value::Boolean(b) => Value::Bool(b),
-            _ => Value::Null,
+            _ => Value::Error,
         }
     }
 }
@@ -1155,7 +1171,7 @@ impl Module {
                 }
             }
             Some("value") => {
-                Module::new_value(value.get("value").cloned().map_or(Value::Null, Into::into))
+                Module::new_value(value.get("value").cloned().map_or(Value::Empty, Into::into))
             }
             Some(t) => Module::parse_error(format!("Unknown module type '{t}'")),
             None => {
@@ -1334,7 +1350,7 @@ impl Module {
             Some(r) => r,
             None => {
                 error!("Loop found when evaluating '{}.{}'", name, key);
-                return f(Value::Null);
+                return f(Value::Error);
             }
         };
 
@@ -1345,12 +1361,12 @@ impl Module {
             | Module::FontTest { .. }
             | Module::Tray { .. } => {
                 error!("Cannot use '{}' in a text expansion", name);
-                f(Value::Null)
+                f(Value::Error)
             }
 
             Module::Bar { data, .. } => match toml_to_string(data.config.get(key)) {
                 Some(value) => f(Value::Owned(value)),
-                None => f(Value::Null),
+                None => f(Value::Empty),
             },
             Module::Calendar {
                 day_fmt,
@@ -1464,7 +1480,7 @@ impl Module {
                         }
                         Err(e) => {
                             warn!("Could not find timezone '{}': {}", real_zone, e);
-                            return f(Value::Null);
+                            return f(Value::Error);
                         }
                     }
                 }
@@ -1578,7 +1594,7 @@ impl Module {
                             f(Value::Float(pct))
                         }
                     }
-                    _ => f(Value::Null),
+                    _ => f(Value::Error),
                 }
             }
             Module::Eval { expr, vars } => {
@@ -1593,7 +1609,7 @@ impl Module {
                     Ok(e) => f(e.into()),
                     Err(e) => {
                         warn!("Eval error in {}: {}", name, e);
-                        f(Value::Null)
+                        f(Value::Error)
                     }
                 }
             }
@@ -1608,10 +1624,11 @@ impl Module {
                                 "Could not find {}.{} in the output of {}",
                                 name, key, command
                             );
-                            f(Value::Null)
+                            f(Value::Error)
                         }
                     },
-                    _ => f(Value::Null),
+                    JsonValue::Null => f(Value::NotReady),
+                    _ => f(Value::Error),
                 };
                 value.0.set(v);
                 value.1.add(rt);
@@ -1620,13 +1637,13 @@ impl Module {
             Module::Formatted { format, tooltip } => match key {
                 "tooltip" => match tooltip {
                     Some(tt) => tt.data.read_in(name, "text", rt, f),
-                    None => f(Value::Null),
+                    None => f(Value::Empty),
                 },
                 _ => f(rt.format_or(&format, &name)),
             },
             Module::Icon { tooltip, .. } => match key {
                 "tooltip" => f(rt.format_or(&tooltip, &name)),
-                _ => f(Value::Null),
+                _ => f(Value::Empty),
             },
             Module::Item { value } => value.take_in(|item| match item.as_ref() {
                 #[cfg(feature = "dbus")]
@@ -1642,11 +1659,11 @@ impl Module {
                 Some(IterationItem::SwayTreeItem(node)) => node.read_in(key, rt, f),
                 #[cfg(feature = "dbus")]
                 Some(IterationItem::Tray(item)) => tray::read_in(name, item, key, rt, f),
-                None => f(Value::Null),
+                None => f(Value::Error),
             }),
             Module::ItemReference { value } => ItemReference::with(value, rt, |item| match item {
                 Some(item) => item.data.read_in(name, key, rt, f),
-                None => f(Value::Null),
+                None => f(Value::Error),
             }),
             Module::List {
                 value,
@@ -1686,7 +1703,7 @@ impl Module {
                 if let Some(msg) = msg.take() {
                     log::debug!("{msg}");
                 }
-                f(Value::Null)
+                f(Value::Error)
             }
             Module::Pipewire { target } => pipewire::read_in(name, target, key, rt, f),
             #[cfg(feature = "pulse")]
@@ -1716,7 +1733,7 @@ impl Module {
                 });
                 let (_, contents) = poll.data();
                 if key == "raw" {
-                    contents.take_in(|s| f(s.as_deref().map_or(Value::Null, Value::Borrow)))
+                    contents.take_in(|s| f(s.as_deref().map_or(Value::NotReady, Value::Borrow)))
                 } else {
                     contents.take_in(|s| match s {
                         Some(s) => f(Value::Borrow(s.trim())),
@@ -1741,7 +1758,7 @@ impl Module {
                             f(Value::Borrow(cap.name(key).map_or("", |m| m.as_str())))
                         }
                     } else {
-                        f(Value::Null)
+                        f(Value::Empty)
                     }
                 }
             }
@@ -1761,7 +1778,7 @@ impl Module {
             }
             Module::Thermal { poll, label } => {
                 match key {
-                    "label" => return f(label.as_deref().map_or(Value::Null, Value::Borrow)),
+                    "label" => return f(label.as_deref().map_or(Value::Empty, Value::Borrow)),
                     _ => {}
                 }
                 poll.read_refresh(rt, move |(name, value)| match fs::read_to_string(&**name) {

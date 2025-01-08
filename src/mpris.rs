@@ -325,7 +325,7 @@ pub fn read_in<F: FnOnce(Value) -> R, R>(
                     Some(PlayState::Playing) => f(Value::Borrow("Playing")),
                     Some(PlayState::Paused) => f(Value::Borrow("Paused")),
                     Some(PlayState::Stopped) => f(Value::Borrow("Stopped")),
-                    None => f(Value::Null),
+                    None => f(Value::NotReady),
                 };
             }
 
@@ -338,7 +338,7 @@ pub fn read_in<F: FnOnce(Value) -> R, R>(
                         .map(|v| v.downcast_ref::<i64>())
                     {
                         Some(Ok(len)) => f(Value::Float(len as f64 / 1_000_000.0)),
-                        _ => f(Value::Null),
+                        _ => f(Value::NotReady),
                     },
                     _ if field.contains('.') => {
                         let real_field = field.replace('.', ":");
@@ -347,7 +347,7 @@ pub fn read_in<F: FnOnce(Value) -> R, R>(
 
                         match (qf, rf) {
                             (Some(Ok(v)), _) | (_, Some(Ok(v))) => f(Value::Borrow(v)),
-                            _ => f(Value::Null),
+                            _ => f(Value::Empty),
                         }
                     }
                     // See http://www.freedesktop.org/wiki/Specifications/mpris-spec/metadata for
@@ -369,13 +369,13 @@ pub fn read_in<F: FnOnce(Value) -> R, R>(
                                 tmp.pop();
                                 f(Value::Owned(tmp))
                             }
-                            _ => f(Value::Null),
+                            _ => f(Value::Empty),
                         }
                     }
                 }
             } else {
                 debug!("No media players found");
-                f(Value::Null)
+                f(Value::NotReady)
             }
         })
     })

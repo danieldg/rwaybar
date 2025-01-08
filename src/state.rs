@@ -235,7 +235,9 @@ impl Runtime {
                             Value::Float(f) => q.f64(f),
                             Value::Bool(true) => q.str("1"),
                             Value::Bool(false) => q.str("0"),
-                            Value::Null => q.str(""),
+                            Value::NotReady => q.str(""),
+                            Value::Empty => q.str(""),
+                            Value::Error => q.str("?"),
                         }
                     }
                     Err(e) => {
@@ -254,7 +256,9 @@ impl Runtime {
                     Value::Float(f) => q.f64(f),
                     Value::Bool(true) => q.str("1"),
                     Value::Bool(false) => q.str("0"),
-                    Value::Null => q.str(""),
+                    Value::NotReady => q.str(""),
+                    Value::Empty => q.str(""),
+                    Value::Error => Err(strfmt::FmtError::KeyError(name.to_string())),
                 }),
                 None => Err(strfmt::FmtError::KeyError(name.to_string())),
             }
@@ -267,7 +271,7 @@ impl Runtime {
             Ok(v) => v,
             Err(e) => {
                 warn!("Error formatting '{}': {}", context, e);
-                Value::Null
+                Value::Error
             }
         }
     }

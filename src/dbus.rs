@@ -505,13 +505,13 @@ impl DbusValue {
                     .and_then(|i| a.get(i).ok().flatten())
                 {
                     Some(v) => Self::read_variant(v, keys, rt, f),
-                    None => f(Value::Null),
+                    None => f(Value::Error),
                 }
             }
             Variant::Dict(d) => {
                 let key = match keys.next() {
                     Some(k) => k,
-                    None => return f(Value::Null),
+                    None => return f(Value::Empty),
                 };
                 // sig is "a{sv}" or "a{oa...}"
                 let sig = d.full_signature().as_bytes();
@@ -532,12 +532,13 @@ impl DbusValue {
                             "Unsupported dict key in type: '{}'",
                             d.full_signature().as_str()
                         );
-                        return f(Value::Null);
+                        return f(Value::Error);
                     }
                 };
                 match v {
                     Some(Ok(v)) => Self::read_variant(&*v, keys, rt, f),
-                    _ => f(Value::Null),
+                    Some(Err(_)) => f(Value::Error),
+                    None => f(Value::Empty),
                 }
             }
             Variant::Structure(s) => {
@@ -549,10 +550,10 @@ impl DbusValue {
                     .unwrap_or(0);
                 match s.fields().get(i) {
                     Some(v) => Self::read_variant(v, keys, rt, f),
-                    None => f(Value::Null),
+                    None => f(Value::Empty),
                 }
             }
-            Variant::Fd(_) => f(Value::Null),
+            Variant::Fd(_) => f(Value::Error),
         }
     }
 
@@ -561,7 +562,7 @@ impl DbusValue {
         let value = self.value.borrow();
         match value.as_deref() {
             Some(value) => Self::read_variant(value, key.split("."), rt, f),
-            None => f(Value::Null),
+            None => f(Value::NotReady),
         }
     }
 }

@@ -331,10 +331,10 @@ impl Mode {
     ) -> R {
         self.interest(rt);
         self.value.mode.take_in(|s| match key {
-            "" | "text" if s == "default" => f(Value::Null),
+            "" | "text" if s == "default" => f(Value::Empty),
             "" | "text" => f(Value::Borrow(s)),
             "raw" => f(Value::Borrow(s)),
-            "tooltip" => f(Value::Null),
+            "tooltip" => f(Value::Empty),
             _ => {
                 warn!("Unknown key in sway-mode");
                 f(Value::Borrow(s))
@@ -356,7 +356,7 @@ impl WorkspaceData {
             "name" | "text" | "" => f(Value::Borrow(&self.name)),
             "output" | "tooltip" => f(Value::Borrow(&self.output)),
             "repr" => f(Value::Borrow(&self.repr)),
-            _ => f(Value::Null),
+            _ => f(Value::Error),
         }
     }
 
@@ -587,10 +587,10 @@ impl Workspace {
         self.interest(rt);
         match key {
             "text" | "focus" => self.value.focus.take_in(|focus| f(Value::Borrow(&focus))),
-            "tooltip" => f(Value::Null),
+            "tooltip" => f(Value::Empty),
             _ => {
                 warn!("Unknown key in sway-workspace");
-                f(Value::Null)
+                f(Value::Error)
             }
         }
     }
@@ -748,7 +748,7 @@ impl Node {
                 Layout::Stacked => "S",
             }
             .into()),
-            _ => f(Value::Null),
+            _ => f(Value::Error),
         }
     }
 
@@ -957,7 +957,7 @@ impl Tree {
         _rt: &Runtime,
         f: F,
     ) -> R {
-        f(Value::Null)
+        f(Value::Error)
     }
 
     pub fn render(&self, ctx: &mut Render, ev: &mut EventSink) {

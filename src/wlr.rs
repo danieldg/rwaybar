@@ -320,14 +320,14 @@ impl ClipboardData {
                             if let OfferValue::Finished(v) = &best.value {
                                 return f(String::from_utf8_lossy(&v).into());
                             } else {
-                                return f(Value::Null);
+                                return f(Value::NotReady);
                             }
                         }
                     }
                 }
-                return f(Value::Null);
+                return f(Value::Empty);
             }
-            f(Value::Null)
+            f(Value::Empty)
         })
     }
 }

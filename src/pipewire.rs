@@ -1074,11 +1074,11 @@ pub fn read_in<F: FnOnce(Value) -> R, R>(
         sock.interested.add(&rt);
 
         let Some((oid, rid)) = sock.find_device(target) else {
-            return f(Value::Null);
+            return f(Value::NotReady);
         };
 
         let Proxy::Device(dev) = &sock.by_oid[oid] else {
-            return f(Value::Null);
+            return f(Value::NotReady);
         };
         let route = &dev.routes[rid];
 
@@ -1143,11 +1143,11 @@ pub fn read_in<F: FnOnce(Value) -> R, R>(
             }
             "" | "text" => f(Value::Owned(format!("{:.0}%", route.volume))),
             "device" => f(Value::Borrow(&dev.description)),
-            "mute" => f(route.mute.map_or(Value::Null, Value::Bool)),
+            "mute" => f(route.mute.map_or(Value::NotReady, Value::Bool)),
             "name" => f(Value::Owned(format!("{} {}", dev.name, route.name))),
             "route" => f(Value::Borrow(&route.desc)),
             "volume" => f(Value::Float(route.volume as f64)),
-            _ => f(Value::Null),
+            _ => f(Value::Error),
         }
     })
 }
