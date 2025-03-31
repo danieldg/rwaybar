@@ -57,7 +57,7 @@ evalexpr = "12"
 libpulse-binding = { version = "*", features = ['pa_v14'], optional = true }
 libpulse-tokio = { version = "0.1", optional = true }
 regex = "1.5"
-zbus = { version = "4", default-features = false, features = ['tokio'] }
+zbus = { version = "5", default-features = false, features = ['tokio'] }
 
 [patch.crates-io]
 tiny-skia = { path = "../tiny-skia" }

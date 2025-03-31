@@ -222,7 +222,7 @@ impl Tray {
                 .await?;
 
             let bus = DBusProxy::builder(&zbus)
-                .cache_properties(zbus::CacheProperties::No)
+                .cache_properties(zbus::proxy::CacheProperties::No)
                 .build()
                 .await?;
 
@@ -294,8 +294,8 @@ macro_rules! build_snw {
                 async fn register_status_notifier_item(
                     &self,
                     path: &str,
-                    #[zbus(header)] hdr: zbus::MessageHeader<'_>,
-                    #[zbus(signal_context)] ctxt: zbus::SignalContext<'_>,
+                    #[zbus(header)] hdr: zbus::message::Header<'_>,
+                    #[zbus(signal_emitter)] ctxt: zbus::object_server::SignalEmitter<'_>,
                 ) -> zbus::fdo::Result<()> {
                     let service = if path.starts_with('/') {
                         format!("{}{}", hdr.sender().unwrap(), path)
@@ -325,19 +325,19 @@ macro_rules! build_snw {
 
                 #[zbus(signal)]
                 async fn status_notifier_item_registered(
-                    ctxt: &zbus::SignalContext<'_>,
+                    emitter: &zbus::object_server::SignalEmitter<'_>,
                     name: &str,
                 ) -> zbus::Result<()>;
 
                 #[zbus(signal)]
                 async fn status_notifier_host_registered(
-                    ctxt: &zbus::SignalContext<'_>,
+                    emitter: &zbus::object_server::SignalEmitter<'_>,
                 ) -> zbus::Result<()>;
 
                 async fn register_status_notifier_host(
                     &self,
                     _host: &str,
-                    #[zbus(signal_context)] ctxt: zbus::SignalContext<'_>,
+                    #[zbus(signal_emitter)] ctxt: zbus::object_server::SignalEmitter<'_>,
                 ) -> zbus::fdo::Result<()> {
                     Self::status_notifier_host_registered(&ctxt)
                         .await
@@ -388,7 +388,7 @@ async fn init_snw(is_kde: bool) -> Result<(), Box<dyn Error>> {
     let name = format!("org.{}.StatusNotifierHost-{}", who, std::process::id());
 
     let dbif = DBusProxy::builder(&zbus)
-        .cache_properties(zbus::CacheProperties::No)
+        .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await?;
 
@@ -419,7 +419,7 @@ async fn init_snw(is_kde: bool) -> Result<(), Box<dyn Error>> {
     let snw_proxy = StatusNotifierWatcherProxy::builder(&zbus)
         .destination(snw_path)?
         .interface(snw_path)?
-        .cache_properties(zbus::CacheProperties::No)
+        .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await?;
 
@@ -788,7 +788,7 @@ impl TrayPopupMenu {
     }
 
     async fn refrsh_signal(self: Rc<Self>, msg: &zbus::Message) {
-        if msg.primary_header().msg_type() != zbus::MessageType::Signal {
+        if msg.primary_header().msg_type() != zbus::message::Type::Signal {
             return;
         }
         let dbm = self.proxy().unwrap();
@@ -840,7 +840,7 @@ impl TrayPopupMenu {
     fn add_remove_match(&self, dbus: &DBus, method: &str) {
         if let Some(menu_path) = self.menu_path.take_in(|m| m.clone()) {
             // NoReply would be nice
-            dbus.send(zbus::Message::method(
+            dbus.send(zbus::Message::method_call(
                 "/org/freedesktop/DBus",
                 method,
             )
@@ -852,7 +852,7 @@ impl TrayPopupMenu {
             .build(
                 &format!("type='signal',interface='com.canonical.dbusmenu',member='ItemsPropertiesUpdated',sender='{}',path='{}'", self.owner, menu_path),
             ).unwrap());
-            dbus.send(zbus::Message::method(
+            dbus.send(zbus::Message::method_call(
                 "/org/freedesktop/DBus",
                 method,
             )
@@ -974,7 +974,7 @@ impl TrayPopup {
                 );
                 let dbus = DBus::get_session();
                 dbus.send(
-                    zbus::Message::method(dbm.inner().path(), "Event")
+                    zbus::Message::method_call(dbm.inner().path(), "Event")
                         .unwrap()
                         .destination(dbm.inner().destination())
                         .unwrap()
@@ -1089,18 +1089,18 @@ pub fn do_click(item: &Rc<TrayItem>, how: u32) {
     let _ = (|| -> zbus::Result<()> {
         if how < 3 {
             dbus.send(
-                zbus::Message::method(&*item.path, method)?
+                zbus::Message::method_call(&*item.path, method)?
                     .destination(&*item.owner)?
                     .interface(sni_path)?
-                    .with_flags(zbus::MessageFlags::NoReplyExpected)?
+                    .with_flags(zbus::message::Flags::NoReplyExpected)?
                     .build(&(0i32, 0i32))?,
             );
         } else {
             dbus.send(
-                zbus::Message::method(&*item.path, "Scroll")?
+                zbus::Message::method_call(&*item.path, "Scroll")?
                     .destination(&*item.owner)?
                     .interface(sni_path)?
-                    .with_flags(zbus::MessageFlags::NoReplyExpected)?
+                    .with_flags(zbus::message::Flags::NoReplyExpected)?
                     .build(&(15i32, method))?,
             );
         }

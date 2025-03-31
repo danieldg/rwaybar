@@ -139,7 +139,7 @@ impl MediaPlayer2 {
             let zbus = dbus.connection().await?;
 
             let bus = DBusProxy::builder(&zbus)
-                .cache_properties(zbus::CacheProperties::No)
+                .cache_properties(zbus::proxy::CacheProperties::No)
                 .build()
                 .await?;
 
@@ -205,7 +205,7 @@ impl MediaPlayer2 {
         let owner = match owner {
             Some(owner) => owner,
             None => DBusProxy::builder(&zbus)
-                .cache_properties(zbus::CacheProperties::No)
+                .cache_properties(zbus::proxy::CacheProperties::No)
                 .build()
                 .await?
                 .get_name_owner(bus_name)
@@ -436,7 +436,7 @@ pub fn write(_name: &str, target: &str, key: &str, command: Value, _rt: &Runtime
             match &*command {
                 "Next" | "Previous" | "Pause" | "PlayPause" | "Stop" | "Play" => {
                     dbus.send(
-                        zbus::Message::method("/org/mpris/MediaPlayer2", &*command)
+                        zbus::Message::method_call("/org/mpris/MediaPlayer2", &*command)
                             .unwrap()
                             .destination(player.proxy.inner().destination().clone())
                             .unwrap()
@@ -449,7 +449,7 @@ pub fn write(_name: &str, target: &str, key: &str, command: Value, _rt: &Runtime
                 // TODO seek, volume?
                 "Raise" | "Quit" => {
                     dbus.send(
-                        zbus::Message::method("/org/mpris/MediaPlayer2", &*command)
+                        zbus::Message::method_call("/org/mpris/MediaPlayer2", &*command)
                             .unwrap()
                             .destination(player.proxy.inner().destination().clone())
                             .unwrap()

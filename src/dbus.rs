@@ -172,7 +172,7 @@ impl DbusValue {
                 }
                 // TODO remove matches when this object is dropped
                 dbus.send(
-                    zbus::Message::method("/org/freedesktop/DBus", "AddMatch")
+                    zbus::Message::method_call("/org/freedesktop/DBus", "AddMatch")
                         .unwrap()
                         .destination("org.freedesktop.DBus")
                         .unwrap()
@@ -217,7 +217,7 @@ impl DbusValue {
                     rc.path, rc.args[0].as_str().unwrap(),
                 );
                 dbus.send(
-                    zbus::Message::method("/org/freedesktop/DBus", "AddMatch")
+                    zbus::Message::method_call("/org/freedesktop/DBus", "AddMatch")
                         .unwrap()
                         .destination("org.freedesktop.DBus")
                         .unwrap()
@@ -261,7 +261,7 @@ impl DbusValue {
                                 let v = Variant::Structure(
                                     zvariant::StructureBuilder::new()
                                         .append_field((**value).try_clone().unwrap())
-                                        .build(),
+                                        .build()?,
                                 )
                                 .try_to_owned()
                                 .unwrap();
@@ -458,7 +458,7 @@ impl DbusValue {
                 }
             }
         }
-        let args = args.build();
+        let args = args.build()?;
         let reply = zbus
             .call_method(
                 Some(&*self.bus_name),
@@ -493,7 +493,7 @@ impl DbusValue {
             Variant::U64(v) => f(Value::Float(*v as _)),
             Variant::F64(v) => f(Value::Float(*v)),
             Variant::Str(s) => f(Value::Borrow(s)),
-            Variant::Signature(s) => f(Value::Borrow(s)),
+            Variant::Signature(s) => f(Value::Owned(s.to_string())),
             Variant::ObjectPath(s) => f(Value::Borrow(s)),
             Variant::Value(v) => Self::read_variant(v, keys, rt, f),
             Variant::Array(a) => {
@@ -514,7 +514,7 @@ impl DbusValue {
                     None => return f(Value::Empty),
                 };
                 // sig is "a{sv}" or "a{oa...}"
-                let sig = d.full_signature().as_bytes();
+                let sig = d.signature().to_string().into_bytes();
                 let v = match sig.get(2) {
                     Some(b's') => d.get(&key).ok().flatten().map(Variant::try_to_owned),
                     Some(b'o') => d
@@ -522,15 +522,17 @@ impl DbusValue {
                         .ok()
                         .flatten()
                         .map(Variant::try_to_owned),
-                    Some(b'g') => d
-                        .get(&zvariant::Signature::from_str_unchecked(key))
+                    Some(b'g') => zvariant::Signature::from_bytes(key.as_bytes())
+                        .map(Variant::Signature)
+                        .as_ref()
                         .ok()
+                        .and_then(|s| d.get(s).ok())
                         .flatten()
                         .map(Variant::try_to_owned),
                     _ => {
                         info!(
                             "Unsupported dict key in type: '{}'",
-                            d.full_signature().as_str()
+                            d.signature().to_string()
                         );
                         return f(Value::Error);
                     }
