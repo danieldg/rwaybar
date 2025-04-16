@@ -1006,9 +1006,10 @@ impl Popup {
                 .unwrap();
 
         parent.get_popup(sctk.xdg_popup());
-        sctk.xdg_surface().set_window_geometry(0, 0, size.0, size.1);
 
         surf.commit();
+        sctk.xdg_surface().set_window_geometry(0, 0, size.0, size.1);
+
         Popup {
             surf,
             sctk,
