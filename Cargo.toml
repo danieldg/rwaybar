@@ -32,16 +32,16 @@ log = "*"
 memmap2 = "0.9"
 once_cell = "*"
 serde = "1"
-strfmt = "=0.2.4"
+strfmt = "=0.2.5"
 tokio = { version = "1", features = ['rt', 'net', 'signal', 'sync', 'io-util', 'time'] }
-toml = "0.8"
+toml = "0.9"
 xdg = "*"
 xml-rs = "*"
 
 # GUI
 png = "0.17"
 resvg = { version = "0.45", default-features = false }
-smithay-client-toolkit = { version = "0.19", default-features = false }
+smithay-client-toolkit = { version = "0.20", default-features = false }
 #smithay-client-toolkit = { version = "*", default-features = false, path = "../smithay-client-toolkit" }
 tiny-skia = "0.11"
 ttf-parser = "*"

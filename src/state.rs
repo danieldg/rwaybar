@@ -317,7 +317,7 @@ impl State {
             bar_config: Vec::new(),
             renderer: Renderer::new(),
             runtime: Runtime {
-                xdg: xdg::BaseDirectories::new()?,
+                xdg: xdg::BaseDirectories::new(),
                 fonts: Vec::new(),
                 items: Default::default(),
                 item_var: Item::new_current_item(),
