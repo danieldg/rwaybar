@@ -55,8 +55,8 @@ the-clock-font = "Liberation Sans 20"
 [fonts]
 # Named fonts are tried first, then all other fonts are searched for missing glyphs
 # `fc-list` can be used to find fonts on your system.
-"Liberation Sans" = "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf"
-mono = "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf"
+"Liberation Sans" = "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf"
+mono = "/usr/share/fonts/liberation-mono-fonts/LiberationMono-Regular.ttf"
 symbola = "/usr/share/fonts/gdouros-symbola/Symbola.ttf"
 # Note: this font provides images for emojis, so it disregards the font color.
 emoji = "/usr/share/fonts/google-noto-color-emoji-fonts/NotoColorEmoji.ttf"
