@@ -38,6 +38,9 @@ impl Renderer {
         }
     }
 
+    /// Creates a [Render] object that discards its draw queue when complete.
+    ///
+    /// This may be used to create size estimates for surface creation.
     pub fn render_dummy<R>(&mut self, rt: &Runtime, render: impl FnOnce(&mut Render) -> R) -> R {
         let font = &rt.fonts[0];
 
@@ -66,6 +69,14 @@ impl Renderer {
         render(&mut ctx)
     }
 
+    /// Creates a [Render] object that is used by the provided closure to define a surface's
+    /// contents, and then composites them into shared memory to be displayed.
+    ///
+    /// If the closure returns false, the render is aborted without making any changes to the
+    /// surface.
+    ///
+    /// The provided data must be uniquely paired with the provided surface, and will be used for
+    /// damage tracking.
     pub fn render(
         &mut self,
         rt: &Runtime,
@@ -252,6 +263,8 @@ impl Renderer {
         self.cursor_surf = Some(cursor_surf);
     }
 
+    /// Set the cursor using a cached cursor surface.  Intended as a fallback for compositors that
+    /// do not support the wp_cursor_shape_manager protocol.
     pub fn set_cursor(&mut self, wl: &WaylandClient, mouse: &WlPointer, serial: u32) {
         if self.cursor_surf.is_none() {
             self.setup_cursor(wl);
@@ -263,12 +276,20 @@ impl Renderer {
     }
 }
 
-/// Render state bound to a bar
+/// The contents of a surface prior to compositing.
+///
+/// This is used to do damage tracking and reduce the amount of work involved in rendering a frame
+/// any time it is possible to reuse the slot
 #[derive(Debug)]
 pub struct RenderSurface {
+    /// All items visible on the surface as of the most recent render.
+    ///
+    /// Note: Because this lacks proper Z-order information, it can't be used to render the surface
+    /// directly
     rect: HashSet<RenderItem>,
     size: (i32, i32),
 
+    /// The shared memory slot used for the most recent render
     slot: Option<Slot>,
 }
 
@@ -281,6 +302,7 @@ impl RenderSurface {
         }
     }
 
+    /// Prepare this surface for rendering a frame
     fn prep_slot<'r>(
         &mut self,
         renderer: &'r mut Renderer,
@@ -384,11 +406,14 @@ impl RenderSurface {
     }
 }
 
-/// TODO make private
+/// A cache of recently used glyphs and icons
+///
+/// This is generally accessed via [Render].cache
 #[derive(Debug)]
 pub struct RenderCache {
-    pub text: HashMap<RenderKey, TextImage>,
-    pub icon: HashMap<(Box<str>, u32), Option<OwnedImage>>,
+    text: HashMap<RenderKey, TextImage>,
+    icon: HashMap<(Box<str>, u32), Option<OwnedImage>>,
+    failed_chars: HashSet<char>,
     last_expire: time::Instant,
 }
 
@@ -397,8 +422,61 @@ impl RenderCache {
         Self {
             text: HashMap::new(),
             icon: HashMap::new(),
+            failed_chars: HashSet::new(),
             last_expire: time::Instant::now(),
         }
+    }
+
+    pub fn debug_stats(&self) {
+        log::debug!(
+            "Cache: {}k text ({}, max {}), {}k img",
+            self.text
+                .values()
+                .map(|i| i.pixmap.width() * i.pixmap.height())
+                .sum::<u32>()
+                / 256,
+            self.text.len(),
+            self.text
+                .values()
+                .map(|i| i.pixmap.width() * i.pixmap.height())
+                .max()
+                .unwrap_or(0)
+                / 256,
+            self.icon
+                .values()
+                .flatten()
+                .map(|i| i.pixmap.width() * i.pixmap.height())
+                .sum::<u32>()
+                / 256,
+        );
+    }
+
+    pub fn get_glyph(&mut self, key: &RenderKey) -> Option<&mut TextImage> {
+        self.text.get_mut(key)
+    }
+
+    pub fn add_glyph(&mut self, key: RenderKey, image: TextImage) {
+        self.text.insert(key, image);
+    }
+
+    pub fn set_failed(&mut self, c: char) {
+        self.failed_chars.insert(c);
+    }
+
+    pub fn failed_char(&self, c: char) -> bool {
+        self.failed_chars.contains(&c)
+    }
+
+    pub fn get_icon(
+        &mut self,
+        name: Box<str>,
+        target_size: u32,
+        populate: impl FnOnce(&str) -> Option<OwnedImage>,
+    ) -> Option<&OwnedImage> {
+        self.icon
+            .entry((name, target_size))
+            .or_insert_with_key(|(name, _)| populate(name))
+            .as_ref()
     }
 
     pub fn prune(&mut self, as_of: time::Instant) {
@@ -632,7 +710,7 @@ impl<'a> Render<'a> {
         }
     }
 
-    /// This moves all items pushed after (b) behind all items pushed between (a) and (b)
+    /// Move all items pushed after (b) behind all items pushed between (a) and (b)
     pub fn swap_after_marks(&mut self, a: &QueueMark, b: &QueueMark) {
         let len = self.queue.items.len() - b.pos;
         if a.pos == b.pos || len == 0 {
@@ -653,6 +731,7 @@ impl<'a> Render<'a> {
         (x * self.scale).round() / self.scale
     }
 
+    /// Move all items pushed after (mark) to the right by (x), measured using draw coordinates.
     pub fn translate_group_x(&mut self, mark: &QueueMark, x: f32) {
         let x = x * self.scale;
 
@@ -664,6 +743,9 @@ impl<'a> Render<'a> {
         }
     }
 
+    /// Crop all items pushed between (a) and (b) to the provided box.
+    ///
+    /// Uses draw coordinates.
     pub fn crop_range(&mut self, a: &QueueMark, b: &QueueMark, crop: Rect) {
         let crop = crop.scale(self.scale);
         for item in &mut self.queue.items[a.pos..b.pos] {
@@ -698,6 +780,7 @@ impl Rect {
         }
     }
 
+    /// A rect representing the entire coordinate plane
     pub fn infinite() -> Self {
         Self {
             left: -f32::INFINITY,
@@ -707,6 +790,10 @@ impl Rect {
         }
     }
 
+    /// An invalid rect representing no pixels at all.
+    ///
+    /// This is useful for fast bounding box calculations, because unlike the all-zero rect, it
+    /// will not expand a bounding box when joined with other rects.
     pub fn anti_plane() -> Self {
         Self {
             left: f32::INFINITY,

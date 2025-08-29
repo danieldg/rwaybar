@@ -1,7 +1,7 @@
 use crate::{
     icon::OwnedImage,
     item::Formatting,
-    render::{Rect, Render},
+    render::{Rect, Render, RenderCache},
     state::Runtime,
     util::UID,
 };
@@ -71,6 +71,7 @@ fn layout_font<'a>(
     font: &'a FontMapped,
     size_pt: f32,
     runtime: &'a Runtime,
+    cache: &mut RenderCache,
     rgba: Color,
     text: &str,
     markup: bool,
@@ -198,12 +199,15 @@ fn layout_font<'a>(
                     xpos += offset as f32 * scale;
                 }
                 prev = Some(id);
+            } else if cache.failed_char(c) {
+                return None;
             } else {
                 let mut i = runtime.fonts.iter();
                 loop {
                     let font = match i.next() {
                         Some(font) => font,
                         None => {
+                            cache.set_failed(c);
                             info!("Cannot find font for '{}'", c);
                             return None;
                         }
@@ -410,6 +414,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         ctx.font,
         ctx.font_size,
         &ctx.runtime,
+        ctx.cache,
         ctx.font_color,
         &text,
         markup,
@@ -468,7 +473,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         // direction to align it to a sub-pixel grid.  This means rendering "aaaaaaaaaaaaaaaaaaaa"
         // will end up with at most SUBPIXEL_KEYS "a" images in the cache, one per subpixel offset.
         let key = glyph.key(stroke_width, stroke_color_u32);
-        if let Some(ti) = ctx.cache.text.get_mut(&key) {
+        if let Some(ti) = ctx.cache.get_glyph(&key) {
             let img = ti.pixmap.clone();
             let mut pos = glyph.position - ti.origin_offset;
             pos.x = pos.x.round();
@@ -486,7 +491,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         glyph.position -= pbox.tl();
 
         if let Some(pixmap) = glyph.pixmap.take() {
-            ctx.cache.text.insert(
+            ctx.cache.add_glyph(
                 key,
                 TextImage {
                     origin_offset: glyph.position,
@@ -525,7 +530,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         );
 
         let pixmap = Arc::new(pixmap);
-        ctx.cache.text.insert(
+        ctx.cache.add_glyph(
             key,
             TextImage {
                 origin_offset: glyph.position,

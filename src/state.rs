@@ -520,33 +520,7 @@ impl State {
             render_time / 1_000_000,
             render_time % 1_000_000
         );
-        log::debug!(
-            "Cache: {}k text ({}, max {}), {}k img",
-            self.renderer
-                .cache
-                .text
-                .values()
-                .map(|i| i.pixmap.width() * i.pixmap.height())
-                .sum::<u32>()
-                / 256,
-            self.renderer.cache.text.len(),
-            self.renderer
-                .cache
-                .text
-                .values()
-                .map(|i| i.pixmap.width() * i.pixmap.height())
-                .max()
-                .unwrap_or(0)
-                / 256,
-            self.renderer
-                .cache
-                .icon
-                .values()
-                .flatten()
-                .map(|i| i.pixmap.width() * i.pixmap.height())
-                .sum::<u32>()
-                / 256,
-        );
+        self.renderer.cache.debug_stats();
     }
 
     pub fn output_ready(&mut self, output: &WlOutput) {

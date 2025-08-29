@@ -243,14 +243,11 @@ pub fn render(ctx: &mut Render, name: Box<str>) -> Result<(), ()> {
 
     let img = ctx
         .cache
-        .icon
-        .entry((name, tsize))
-        .or_insert_with_key(|(name, _)| {
+        .get_icon(name, tsize, |name| {
             open_icon(&ctx.runtime.xdg, name, tsize)
                 .ok()
                 .and_then(|file| OwnedImage::from_file(file, tsize, true))
         })
-        .as_ref()
         .ok_or(())?
         .pixmap
         .clone();
