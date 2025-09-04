@@ -21,7 +21,7 @@ use crate::{
     data::{EvalContext, IterationItem, Module, Value},
     font::FontMapped,
     item::*,
-    render::Renderer,
+    render::{RenderCache, Renderer},
     util::{spawn, spawn_noerr, Cell},
     wayland::{SurfaceData, WaylandClient},
 };
@@ -431,6 +431,7 @@ impl State {
         let mut old_items = std::mem::replace(&mut self.runtime.items, new_items);
         self.bar_config = bar_config;
         self.runtime.fonts = fonts;
+        self.renderer.cache = RenderCache::new();
 
         self.runtime
             .items
