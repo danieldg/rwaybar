@@ -38,6 +38,7 @@ use wayland_client::{
     Connection, Proxy, QueueHandle,
 };
 use wayland_protocols::{
+    ext::data_control::v1::client::ext_data_control_manager_v1::ExtDataControlManagerV1,
     wp::{
         cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape::Default as NormalCursor,
         fractional_scale::v1::client::{
@@ -75,6 +76,13 @@ pub enum Button {
     Tap,
 }
 
+#[derive(Debug)]
+pub enum DataControlManager {
+    None,
+    Ext(ExtDataControlManagerV1),
+    Wlr(ZwlrDataControlManagerV1),
+}
+
 /// Structures related to the Wayland display
 #[derive(Debug)]
 pub struct WaylandClient {
@@ -88,7 +96,7 @@ pub struct WaylandClient {
     pub seat: SeatState,
     pub shm: Shm,
     pub cursor_shape: Option<CursorShapeManager>,
-    pub wlr_dcm: GlobalProxy<ZwlrDataControlManagerV1>,
+    pub dcm: DataControlManager,
     pub wp_fscale: GlobalProxy<WpFractionalScaleManagerV1>,
     pub wp_viewport: GlobalProxy<WpViewporter>,
     pub xdg: XdgShell,
@@ -113,6 +121,7 @@ smithay_client_toolkit::delegate_pointer!(State, pointer: [PointerData]);
 smithay_client_toolkit::delegate_registry!(State);
 smithay_client_toolkit::delegate_seat!(State);
 smithay_client_toolkit::delegate_shm!(State);
+smithay_client_toolkit::delegate_simple!(State, ExtDataControlManagerV1, 1);
 smithay_client_toolkit::delegate_simple!(State, ZwlrDataControlManagerV1, 1);
 smithay_client_toolkit::delegate_simple!(State, WpFractionalScaleManagerV1, 1);
 smithay_client_toolkit::delegate_simple!(State, WpViewporter, 1);
@@ -789,7 +798,11 @@ impl WaylandClient {
             shm: Shm::bind(&globals, &queue)?,
             layer: LayerShell::bind(&globals, &queue)?,
             cursor_shape: CursorShapeManager::bind(&globals, &queue).ok(),
-            wlr_dcm: globals.bind(&queue, 0..=2, ()).into(),
+            dcm: globals
+                .bind(&queue, 0..=1, ())
+                .map(DataControlManager::Ext)
+                .or_else(|_| globals.bind(&queue, 0..=2, ()).map(DataControlManager::Wlr))
+                .unwrap_or(DataControlManager::None),
             wp_fscale: globals.bind(&queue, 0..=1, ()).into(),
             wp_viewport: globals.bind(&queue, 0..=1, ()).into(),
             xdg: XdgShell::bind(&globals, &queue)?,
