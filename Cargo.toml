@@ -39,7 +39,7 @@ xdg = "*"
 xml-rs = "*"
 
 # GUI
-png = "0.17"
+png = "0.18"
 resvg = { version = "0.45", default-features = false }
 smithay-client-toolkit = { version = "0.20", default-features = false }
 #smithay-client-toolkit = { version = "*", default-features = false, path = "../smithay-client-toolkit" }

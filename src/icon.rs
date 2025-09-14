@@ -40,10 +40,9 @@ impl OwnedImage {
         png.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
         let mut png = png.read_info().ok()?;
         let color = png.output_color_type().0;
-        let mut image = vec![0; png.output_buffer_size()];
-        png.next_frame(&mut image).ok()?;
+        let mut image = vec![0; png.output_buffer_size()?];
+        let info = png.next_frame(&mut image).ok()?;
 
-        let info = png.info();
         let mut pixmap = tiny_skia::Pixmap::new(info.width as u32, info.height as u32)?;
         let step = match color {
             png::ColorType::Grayscale => 1,
