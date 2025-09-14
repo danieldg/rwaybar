@@ -85,7 +85,8 @@ fn layout_font<'a>(
     let mut stack = Vec::new();
     let mut skip = 0;
     if false {
-        stack.push((font, rgba));
+        // Avoid creating a stack if not needed by falling back on unwrap
+        stack.push((font, size_pt, rgba));
     }
 
     let to_draw = text
@@ -103,8 +104,7 @@ fn layout_font<'a>(
             if c == '\t' {
                 c = ' ';
             }
-            let mut fid = stack.last().map_or(font, |v| v.0);
-            let color = stack.last().map_or(rgba, |v| v.1);
+            let &(mut fid, size_pt, color) = stack.last().unwrap_or(&(font, size_pt, rgba));
             if markup && c == '<' {
                 if let Some(eot) = text[i..].find('>') {
                     let tag = &text[i..][..eot][1..];
@@ -113,6 +113,7 @@ fn layout_font<'a>(
                         stack.pop();
                     } else {
                         let mut color = color;
+                        let mut size_pt = size_pt;
                         for kv in tag.split(' ') {
                             if kv.starts_with("color='") || kv.starts_with("color=\"") {
                                 let v = kv[7..].get(..kv.len() - 8);
@@ -128,9 +129,19 @@ fn layout_font<'a>(
                                         break;
                                     }
                                 }
+                            } else if kv.starts_with("size=") {
+                                let mut v = &kv[5..];
+                                if matches!(v.chars().next(), Some('"') | Some('\'')) {
+                                    v = &v[1..v.len() - 1];
+                                }
+                                if v.ends_with('%') {
+                                    size_pt *= v[..v.len() - 1].parse().unwrap_or(100.0) / 100.0;
+                                } else if let Ok(v) = v.parse() {
+                                    size_pt = v;
+                                }
                             }
                         }
-                        stack.push((fid, color));
+                        stack.push((fid, size_pt, color));
                     }
                     return None;
                 }
