@@ -2,7 +2,7 @@ use futures_util::future::poll_fn;
 use log::{debug, error, info, warn};
 use smithay_client_toolkit::shell::WaylandSurface;
 use std::{
-    cell::RefCell,
+    cell::{OnceCell, RefCell},
     collections::HashMap,
     error::Error,
     iter,
@@ -22,6 +22,7 @@ use crate::{
     font::FontMapped,
     item::*,
     render::{RenderCache, Renderer},
+    sway::SwaySocket,
     util::{spawn, spawn_noerr, Cell},
     wayland::{SurfaceData, WaylandClient},
 };
@@ -154,6 +155,7 @@ impl NotifierList {
 /// Common state available during rendering operations
 #[derive(Debug)]
 pub struct Runtime {
+    pub sway: OnceCell<SwaySocket>,
     pub xdg: xdg::BaseDirectories,
     pub fonts: Vec<FontMapped>,
     pub items: HashMap<Rc<str>, Rc<Item>>,
@@ -317,6 +319,7 @@ impl State {
             bar_config: Vec::new(),
             renderer: Renderer::new(),
             runtime: Runtime {
+                sway: OnceCell::new(),
                 xdg: xdg::BaseDirectories::new(),
                 fonts: Vec::new(),
                 items: Default::default(),
