@@ -17,7 +17,6 @@ pub struct FontMapped {
     // this field must follow parsed for safety (drop order)
     #[allow(unused)]
     mmap: memmap2::Mmap,
-    pub file: PathBuf,
     pub name: String,
     pub uid: UID,
 }
@@ -36,7 +35,6 @@ impl FontMapped {
         Ok(FontMapped {
             parsed,
             mmap,
-            file: path,
             name,
             uid,
         })

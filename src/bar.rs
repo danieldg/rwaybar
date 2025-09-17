@@ -15,7 +15,7 @@ use crate::{
     item::*,
     render::{RenderSurface, Renderer},
     state::{DrawNotifyHandle, InterestMask, Runtime},
-    util::{spawn_noerr, UID},
+    util::spawn_noerr,
     wayland::{Button, Popup, Scale120, SurfaceData, SurfaceEvents, WaylandClient},
 };
 
@@ -39,7 +39,6 @@ pub struct Bar {
     sparse: bool,
     pub item: Rc<Item>,
     pub cfg_index: usize,
-    pub id: UID,
 
     render: RenderSurface,
 }
@@ -138,7 +137,6 @@ impl Bar {
             sparse,
             popup: None,
             cfg_index,
-            id: UID::new(),
         }
     }
 

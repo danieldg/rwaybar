@@ -36,6 +36,7 @@ pub fn toml_to_f64(value: Option<&toml::Value>) -> Option<f64> {
     })
 }
 
+#[allow(unused)]
 #[derive(Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ImplDebug<T>(pub T);
 

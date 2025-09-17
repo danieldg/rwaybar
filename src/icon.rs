@@ -13,7 +13,7 @@ pub struct OwnedImage {
 }
 
 impl OwnedImage {
-    pub fn as_ref(&self) -> tiny_skia::PixmapRef {
+    pub fn as_ref(&self) -> tiny_skia::PixmapRef<'_> {
         tiny_skia::Pixmap::as_ref(&self.pixmap)
     }
 

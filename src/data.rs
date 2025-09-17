@@ -51,7 +51,7 @@ pub enum Value<'a> {
 
 #[cfg_attr(not(feature = "pulse"), allow(unused))]
 impl<'a> Value<'a> {
-    pub fn as_ref(&self) -> Value {
+    pub fn as_ref(&self) -> Value<'_> {
         match self {
             Value::Borrow(v) => Value::Borrow(v),
             Value::Owned(v) => Value::Borrow(&v[..]),

@@ -495,7 +495,7 @@ pub struct ModuleContext<'a> {
 }
 
 impl ModuleContext<'_> {
-    pub fn with_ref_preferred(&self) -> ModuleContext {
+    pub fn with_ref_preferred(&self) -> Self {
         // Source
         ModuleContext {
             parent: &self.parent,
@@ -503,7 +503,7 @@ impl ModuleContext<'_> {
         }
     }
 
-    pub fn with_text_preferred(&self) -> ModuleContext {
+    pub fn with_text_preferred(&self) -> Self {
         ModuleContext {
             parent: &self.parent,
             prefer_ref: false,
