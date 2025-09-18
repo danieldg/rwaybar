@@ -25,6 +25,7 @@ use crate::{
     sway::SwaySocket,
     util::{spawn, spawn_noerr, Cell},
     wayland::{SurfaceData, WaylandClient},
+    wlr::Clipboards,
 };
 
 #[derive(Default, Debug, Copy, Clone, Eq, PartialEq)]
@@ -155,6 +156,7 @@ impl NotifierList {
 /// Common state available during rendering operations
 #[derive(Debug)]
 pub struct Runtime {
+    pub clipboards: OnceCell<Clipboards>,
     pub sway: OnceCell<SwaySocket>,
     pub xdg: xdg::BaseDirectories,
     pub fonts: Vec<FontMapped>,
@@ -319,6 +321,7 @@ impl State {
             bar_config: Vec::new(),
             renderer: Renderer::new(),
             runtime: Runtime {
+                clipboards: OnceCell::new(),
                 sway: OnceCell::new(),
                 xdg: xdg::BaseDirectories::new(),
                 fonts: Vec::new(),
