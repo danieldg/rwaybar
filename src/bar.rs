@@ -269,6 +269,8 @@ impl SurfaceEvents for Bar {
 
     fn no_hover(&mut self, runtime: &mut Runtime) {
         if let Some(popup) = &mut self.popup {
+            // If the mouse has moved off the bar, attempt to dismiss the popup in 0.1 second,
+            // unless the mouse either moves back or moves into the popup by then.
             let vanish = Instant::now() + std::time::Duration::from_millis(100);
             popup.vanish = Some(vanish);
             let notify = DrawNotifyHandle::new(runtime);

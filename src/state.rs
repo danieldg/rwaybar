@@ -1,10 +1,10 @@
-use futures_util::future::poll_fn;
 use log::{debug, error, info, warn};
 use smithay_client_toolkit::shell::WaylandSurface;
 use std::{
     cell::{OnceCell, RefCell},
     collections::HashMap,
     error::Error,
+    future::poll_fn,
     iter,
     rc::{self, Rc},
     task,
@@ -31,6 +31,11 @@ use crate::{
 #[cfg(feature = "dbus")]
 use crate::mpris::MediaPlayer2;
 
+/// A bit-set for marking which surfaces need to be redrawn
+///
+/// Currently we use two bits per bar, with the top two bits reused for all bars after bar 32.  The
+/// dirty bits are associated with the surface, and cause SurfaceData::start_render to return false
+/// when a surface was not marked dirty.
 #[derive(Default, Debug, Copy, Clone, Eq, PartialEq)]
 pub struct InterestMask(u64);
 
@@ -40,37 +45,51 @@ impl InterestMask {
     }
 }
 
+// This is actually a singleton static, just marked as thread_local so it can use Cell instead of
+// Mutex.  It could in theory be part of State or its own allocation, but that would just require
+// all NotifierList items to have a OnceCell<Weak<...>> pointing to that allocation so they can be
+// used to wake the draw task.  That's just a waste of space (and time managing the refcounting).
 thread_local! {
     static NOTIFY: NotifierInner = NotifierInner {
-        waker: Cell::new(None),
-        state: Cell::new(NotifyState::Idle),
+        state: Cell::new(NotifyState::Running),
     };
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 enum NotifyState {
-    Idle,
-    DrawOnly,
+    /// draw_task is idle (inside poll_fn) and must be woken if state is changed
+    Waiting(task::Waker),
+    /// draw_task has been woken, but has not yet propagated dirty bits.
+    ///
+    /// It is valid for InterestMask to be empty; this is useful if dirty bits were set outside the
+    /// Notify mechanism or to make the popup vanish timeout work.
+    ///
+    /// Additional dirty bits may be added.
     NewData(InterestMask),
+
+    /// transient state: draw_task will transition this to Waiting when polled
+    Running,
 }
 
 #[derive(Debug)]
 struct NotifierInner {
-    waker: Cell<Option<task::Waker>>,
     state: Cell<NotifyState>,
 }
 
 impl NotifierInner {
     pub fn notify_draw_only(&self) {
-        if self.state.get() == NotifyState::Idle {
-            self.state.set(NotifyState::DrawOnly);
-            self.waker.take().map(|w| w.wake());
+        match self.state.replace(NotifyState::NewData(InterestMask(0))) {
+            v @ NotifyState::NewData(_) => self.state.set(v),
+            NotifyState::Waiting(w) => w.wake(),
+            NotifyState::Running => {}
         }
     }
 
     fn full_redraw(&self) {
-        self.waker.take().map(|w| w.wake());
-        self.state.set(NotifyState::NewData(InterestMask(!0)));
+        match self.state.replace(NotifyState::NewData(InterestMask(!0))) {
+            NotifyState::Waiting(w) => w.wake(),
+            _ => {}
+        }
     }
 }
 
@@ -83,10 +102,16 @@ impl DrawNotifyHandle {
     }
 
     pub fn notify_draw_only(&self) {
-        NOTIFY.with(|notify| notify.notify_draw_only());
+        NOTIFY.with(NotifierInner::notify_draw_only);
     }
 }
 
+/// A list (bitset) of surfaces that are interested in changes to a particular data source.
+///
+/// Any data source that can change should contain a NotifierList.  When reading, the current
+/// Runtime should be added to the list.  When the data changes (or may have changed), call
+/// [Self::notify_data]; this will trigger a re-render of the surface, which will cause the new
+/// value of the data to be read.
 #[derive(Debug, Default)]
 pub struct NotifierList {
     interest: Cell<InterestMask>,
@@ -110,7 +135,8 @@ impl NotifierList {
 
     /// Mark all items in this notifier list as dirty.
     ///
-    /// Future calls to notify_data will do nothing until you add() bars again.
+    /// Future calls to notify_data will do nothing until you add() bars again.  This should happen
+    /// automatically as they redraw and re-read their data.
     pub fn notify_data(&self, who: &str) {
         let mut interest = self.interest.take();
         if interest.0 == 0 {
@@ -139,20 +165,16 @@ impl NotifierList {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        NOTIFY.with(|notify| {
-            match notify.state.get() {
-                NotifyState::Idle => {
-                    notify.waker.take().map(|w| w.wake());
-                }
-                NotifyState::DrawOnly => {
-                    // already woken, and no added items
-                }
+        NOTIFY.with(
+            |notify| match notify.state.replace(NotifyState::NewData(interest)) {
+                NotifyState::Waiting(w) => w.wake(),
+                NotifyState::Running => {}
                 NotifyState::NewData(mask) => {
                     interest.0 |= mask.0;
+                    notify.state.set(NotifyState::NewData(interest));
                 }
-            }
-            notify.state.set(NotifyState::NewData(interest))
-        });
+            },
+        );
     }
 }
 
@@ -167,8 +189,11 @@ pub struct Runtime {
     pub fonts: Vec<FontMapped>,
     pub items: HashMap<Rc<str>, Rc<Item>>,
     pub wayland: WaylandClient,
+
     item_var: Rc<Item>,
+    /// The surfaces identified by this mask may be interested in changes to any queried values
     interest: Cell<InterestMask>,
+    /// Helper for get_recursion_handle to avoid infinite recursion on self-referential values
     read_depth: Cell<u8>,
 }
 
@@ -177,6 +202,8 @@ impl Runtime {
         self.interest.set(mask);
     }
 
+    /// Before potentially recursing, call this function and only recurse while holding the
+    /// returned guard
     pub fn get_recursion_handle(&self) -> Option<impl Sized + '_> {
         let depth = self.read_depth.get();
         if depth > 80 {
@@ -193,6 +220,7 @@ impl Runtime {
         }
     }
 
+    /// Evaluate a mathematical expression
     pub fn eval(&self, expr: &str) -> Result<Value<'static>, evalexpr::EvalexprError> {
         let expr = evalexpr::build_operator_tree(expr)?;
         let mut vars = Vec::new();
@@ -210,6 +238,10 @@ impl Runtime {
         expr.eval_with_context(&ctx).map(Into::into)
     }
 
+    /// Format the given string, expanding all `{value}`s
+    ///
+    /// This will always return a string unless the expression is a single "{item}", in which case
+    /// it will return exactly that item's read value.
     pub fn format<'a>(&'a self, fmt: &'a str) -> Result<Value<'a>, strfmt::FmtError> {
         if !fmt.contains("{") {
             return Ok(Value::Borrow(fmt));
@@ -276,6 +308,7 @@ impl Runtime {
         .map(Value::Owned)
     }
 
+    /// Call [Self::format] and report errors with the given context
     pub fn format_or<'a>(&'a self, fmt: &'a str, context: &str) -> Value<'a> {
         match self.format(fmt) {
             Ok(v) => v,
@@ -346,38 +379,42 @@ impl State {
         state.load_config(false)?;
         drop(state);
 
-        let state = rv.clone();
-        spawn_noerr(async move {
-            loop {
-                poll_fn(|ctx| {
-                    NOTIFY.with(|notify| {
-                        if notify.state.get() == NotifyState::Idle {
-                            notify.waker.set(Some(ctx.waker().clone()));
-                            task::Poll::Pending
-                        } else {
-                            task::Poll::Ready(())
-                        }
-                    })
-                })
-                .await;
-                let mut state = state.borrow_mut();
-                state.draw_now();
-            }
-        });
+        spawn_noerr(Self::draw_task(rv.clone()));
 
-        let state = rv.clone();
-        spawn("Config reload", async move {
-            let mut hups = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
-            while let Some(()) = hups.recv().await {
-                match state.borrow_mut().load_config(true) {
-                    Ok(()) => (),
-                    Err(e) => error!("Config reload failed: {}", e),
-                }
-            }
-            Ok(())
-        });
+        spawn("Config reload", Self::reload_task(rv.clone()));
 
         Ok(rv)
+    }
+
+    async fn draw_task(state: Rc<RefCell<Self>>) {
+        loop {
+            let interest = poll_fn(|ctx| {
+                NOTIFY.with(|notify| match notify.state.replace(NotifyState::Running) {
+                    NotifyState::NewData(d) => task::Poll::Ready(d),
+                    NotifyState::Waiting(w) if w.will_wake(ctx.waker()) => task::Poll::Pending,
+                    NotifyState::Running | NotifyState::Waiting(_) => {
+                        notify.state.set(NotifyState::Waiting(ctx.waker().clone()));
+                        task::Poll::Pending
+                    }
+                })
+            })
+            .await;
+            let mut state = state.borrow_mut();
+            // Propagate new_data notifications to all bar dirty fieds
+            state.set_data(interest);
+            state.draw_now();
+        }
+    }
+
+    async fn reload_task(state: Rc<RefCell<Self>>) -> Result<(), Box<dyn Error>> {
+        let mut hups = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+        while let Some(()) = hups.recv().await {
+            match state.borrow_mut().load_config(true) {
+                Ok(()) => (),
+                Err(e) => error!("Config reload failed: {}", e),
+            }
+        }
+        Ok(())
     }
 
     /// Note: always call from a task, not drectly from dispatch
@@ -457,7 +494,7 @@ impl State {
                 v.data.init(k, self, None);
             }
         }
-        NOTIFY.with(|notify| notify.full_redraw());
+        NOTIFY.with(NotifierInner::full_redraw);
 
         self.bars.clear();
         for output in self.runtime.wayland.output.outputs() {
@@ -478,8 +515,6 @@ impl State {
                     }
                 }
             }
-        } else {
-            self.set_data();
         }
 
         Ok(())
@@ -489,21 +524,14 @@ impl State {
     /// throttled.  This should be called after damaging a surface in some way unrelated to the
     /// items on the surface, such as by receiving a configure or scale event from the compositor.
     pub fn request_draw(&mut self) {
-        NOTIFY.with(|notify| notify.notify_draw_only());
+        NOTIFY.with(NotifierInner::notify_draw_only);
     }
 
     pub fn get_ref(&self) -> Rc<RefCell<Self>> {
         self.this.upgrade().unwrap()
     }
 
-    fn set_data(&mut self) {
-        // Propagate new_data notifications to all bar dirty fields
-        let dirty_mask = match NOTIFY.with(|notify| notify.state.replace(NotifyState::Idle)) {
-            NotifyState::Idle => return,
-            NotifyState::DrawOnly => return,
-            NotifyState::NewData(d) => d.0,
-        };
-
+    fn set_data(&mut self, InterestMask(dirty_mask): InterestMask) {
         for (i, bar) in (0..31).chain(iter::repeat(31)).zip(&mut self.bars) {
             let mask = (dirty_mask >> (2 * i)) & 3;
             if mask & 1 != 0 {
@@ -517,9 +545,8 @@ impl State {
         }
     }
 
-    pub fn draw_now(&mut self) {
-        self.set_data();
-
+    /// Called from draw_task; trigger it with request_draw
+    fn draw_now(&mut self) {
         let begin = Instant::now();
         for (i, bar) in (0..31).chain(iter::repeat(31)).zip(&mut self.bars) {
             let mask = InterestMask(1 << (2 * i));
@@ -537,6 +564,7 @@ impl State {
         self.renderer.cache.debug_stats();
     }
 
+    /// A new output is present - called on reload for every output, or on hotplug
     pub fn output_ready(&mut self, output: &WlOutput) {
         let data = match self.runtime.wayland.output.info(&output) {
             Some(info) => info,
