@@ -10,10 +10,10 @@ use bytes::{Buf, BytesMut};
 use log::{error, warn};
 use std::{
     cmp::Ordering,
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs,
     io::{BufRead, BufReader},
-    rc::Rc,
+    rc::{Rc, Weak},
     sync::OnceLock,
 };
 use tokio::{net::UnixStream, sync::Notify};
@@ -69,14 +69,14 @@ pub fn appid_to_icon<'a>(rt: &Runtime, appid: &'a str) -> Value<'a> {
 
 #[derive(Debug)]
 pub struct SwaySocket {
-    inner: Rc<SocketInner>,
+    inner: Cell<Weak<SocketInner>>,
 }
 
 #[derive(Default, Debug)]
 struct SocketInner {
     wbuf: Cell<Vec<u8>>,
     notify: Notify,
-    listeners: Cell<Vec<(u32, Box<dyn FnMut(&SocketInner, &[u8])>)>>,
+    listeners: Cell<VecDeque<Box<dyn FnOnce(&SocketInner, &[u8])>>>,
 
     workspaces: WorkspacesData,
     tree: TreeData,
@@ -84,45 +84,52 @@ struct SocketInner {
 }
 
 impl SwaySocket {
-    fn init() -> Self {
-        let rv = Self {
-            inner: Rc::new(SocketInner::default()),
-        };
-        spawn_noerr(rv.inner.clone().init_task());
+    pub fn lazy() -> Self {
+        Self {
+            inner: Cell::new(Weak::new()),
+        }
+    }
+
+    fn get(&self) -> Rc<SocketInner> {
+        self.inner.upgrade_or_init(Self::init)
+    }
+
+    fn init() -> Rc<SocketInner> {
+        let rv = Rc::new(SocketInner::default());
+        spawn_noerr(rv.clone().init_task());
 
         rv
     }
+}
 
-    /// Send an IPC message
-    pub fn send(&self, id: u32, msg: &[u8]) {
-        self.inner.send(id, msg, |_, _| ())
+impl SocketInner {
+    /// Send a RUN_COMMMAND IPC message
+    pub fn send_cmd(&self, msg: &str) {
+        self.send(0, msg.as_bytes(), |_, _| ())
     }
 
     /// Subscribe to the provided message type.
     ///
     /// Events are handled in on_read, not via a provided callback
     fn subscribe(&self, name: &'static str) {
-        self.inner
-            .send(2, format!(r#"[ "{}" ]"#, name).as_bytes(), move |_, buf| {
-                match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
-                    Ok(Ok(value)) if value["success"].as_bool() == Some(true) => {
-                        // great
-                    }
-                    Ok(Ok(value)) => {
-                        error!("Could not subscribe to {}: {}", name, value);
-                    }
-                    Ok(Err(e)) => {
-                        error!("Could not subscribe to {}: {}", name, e);
-                    }
-                    Err(e) => {
-                        error!("Could not subscribe to {}: {}", name, e);
-                    }
+        self.send(2, format!(r#"[ "{}" ]"#, name).as_bytes(), move |_, buf| {
+            match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
+                Ok(Ok(value)) if value["success"].as_bool() == Some(true) => {
+                    // great
                 }
-            });
+                Ok(Ok(value)) => {
+                    error!("Could not subscribe to {}: {}", name, value);
+                }
+                Ok(Err(e)) => {
+                    error!("Could not subscribe to {}: {}", name, e);
+                }
+                Err(e) => {
+                    error!("Could not subscribe to {}: {}", name, e);
+                }
+            }
+        });
     }
-}
 
-impl SocketInner {
     async fn init_task(self: Rc<Self>) {
         let (mut rh, wh) = match match std::env::var_os("SWAYSOCK") {
             Some(path) => UnixStream::connect(path).await,
@@ -196,7 +203,7 @@ impl SocketInner {
         }
     }
 
-    pub fn send<F: FnMut(&Self, &[u8]) + 'static>(&self, id: u32, msg: &[u8], on_reply: F) {
+    pub fn send<F: FnOnce(&Self, &[u8]) + 'static>(&self, id: u32, msg: &[u8], on_reply: F) {
         self.wbuf.take_in(|buf| {
             buf.extend_from_slice(b"i3-ipc");
             buf.extend_from_slice(&(msg.len() as u32).to_ne_bytes());
@@ -205,7 +212,7 @@ impl SocketInner {
         });
 
         self.listeners
-            .take_in(|list| list.push((id, Box::new(on_reply))));
+            .take_in(|list| list.push_back(Box::new(on_reply)));
 
         self.notify.notify_one();
     }
@@ -261,21 +268,19 @@ impl SocketInner {
                 }
             }
             // Others documented in man sway-ipc
-            _ => {}
+            0x8000000.. => {}
+            0..0x7FFF_FFFF => {
+                // Handle request callbacks
+                self.listeners.take_in(|list| {
+                    if let Some(cb) = list.pop_front() {
+                        cb(self, msg);
+                    } else {
+                        warn!("Unexpected sway reply of type {ptype}");
+                        return;
+                    }
+                });
+            }
         }
-
-        // Handle request callbacks
-        self.listeners.take_in(|list| {
-            let mut done = false;
-            list.retain_mut(|(lty, cb)| {
-                if done || *lty != ptype {
-                    return true;
-                }
-                cb(self, msg);
-                done = true;
-                false
-            });
-        });
     }
 }
 
@@ -296,9 +301,10 @@ impl ModeData {
             return;
         }
 
-        let sway = rt.sway.get_or_init(SwaySocket::init);
+        let sway = rt.sway.get();
         sway.subscribe("mode");
-        sway.inner.send(12, b"", move |inner, buf| {
+        // GET_BINDING_STATE
+        sway.send(12, b"", move |inner, buf| {
             match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                 Ok(Ok(msg)) => {
                     msg["name"]
@@ -324,9 +330,9 @@ impl Mode {
         rt: &Runtime,
         f: F,
     ) -> R {
-        let sway = rt.sway.get_or_init(SwaySocket::init);
-        sway.inner.mode.interest(rt);
-        sway.inner.mode.mode.take_in(|s| match key {
+        let sway = rt.sway.get();
+        sway.mode.interest(rt);
+        sway.mode.mode.take_in(|s| match key {
             "" | "text" if s == "default" => f(Value::Empty),
             "" | "text" => f(Value::Borrow(s)),
             "raw" => f(Value::Borrow(s)),
@@ -357,17 +363,14 @@ impl WorkspaceData {
     }
 
     pub fn write(&self, key: &str, value: Value, rt: &Runtime) {
-        let sway = rt.sway.get_or_init(SwaySocket::init);
+        let sway = rt.sway.get();
         match key {
-            "switch" => sway.send(
-                0,
-                format!(r#"workspace --no-auto-back-and-forth "{}""#, value).as_bytes(),
-            ),
+            "switch" => sway.send_cmd(&format!(r#"workspace --no-auto-back-and-forth "{value}""#)),
             "" if value.into_text() == "switch" => {
-                sway.send(
-                    0,
-                    format!(r#"workspace --no-auto-back-and-forth "{}""#, self.name).as_bytes(),
-                );
+                sway.send_cmd(&format!(
+                    r#"workspace --no-auto-back-and-forth "{}""#,
+                    self.name
+                ));
             }
             _ => {
                 error!("Ignoring write to item.{}", key);
@@ -419,10 +422,11 @@ impl WorkspacesData {
             return;
         }
 
-        let sway = rt.sway.get_or_init(SwaySocket::init);
+        let sway = rt.sway.get();
         sway.subscribe("workspace");
 
-        sway.inner.send(1, b"", move |inner, buf| {
+        // GET_WORKSPACES
+        sway.send(1, b"", move |inner, buf| {
             match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                 Ok(Ok(msg)) => {
                     let mut list = Vec::new();
@@ -552,11 +556,10 @@ impl Workspace {
         rt: &Runtime,
         f: F,
     ) -> R {
-        let sway = rt.sway.get_or_init(SwaySocket::init);
-        sway.inner.workspaces.interest(rt);
+        let sway = rt.sway.get();
+        sway.workspaces.interest(rt);
         match key {
             "text" | "focus" => sway
-                .inner
                 .workspaces
                 .focus
                 .take_in(|focus| f(Value::Borrow(&focus))),
@@ -569,15 +572,15 @@ impl Workspace {
     }
 
     pub fn read_focus_list<F: FnMut(bool, IterationItem)>(&self, rt: &Runtime, mut f: F) {
-        let sway = rt.sway.get_or_init(SwaySocket::init);
-        sway.inner.workspaces.interest(rt);
+        let sway = rt.sway.get();
+        sway.workspaces.interest(rt);
         let output = self
             .output
             .as_ref()
             .map(|v| rt.format_or(&v, "sway-workspace").into_text())
             .unwrap_or_default();
-        let focus = sway.inner.workspaces.focus.take_in(|f| f.clone());
-        sway.inner.workspaces.list.take_in(|list| {
+        let focus = sway.workspaces.focus.take_in(|f| f.clone());
+        sway.workspaces.list.take_in(|list| {
             for item in &*list {
                 let focus = item.name == focus;
                 if !output.is_empty() && item.output != output {
@@ -589,12 +592,9 @@ impl Workspace {
     }
 
     pub fn write(&self, name: &str, key: &str, value: Value, rt: &Runtime) {
-        let sway = rt.sway.get_or_init(SwaySocket::init);
+        let sway = rt.sway.get();
         match key {
-            "switch" => sway.send(
-                0,
-                format!(r#"workspace --no-auto-back-and-forth "{}""#, value).as_bytes(),
-            ),
+            "switch" => sway.send_cmd(&format!(r#"workspace --no-auto-back-and-forth "{value}""#,)),
             _ => {
                 error!("Ignoring write to {}.{}", name, key);
             }
@@ -727,8 +727,8 @@ impl Node {
     }
 
     pub fn write(&self, _key: &str, value: Value, rt: &Runtime) {
-        let sway = rt.sway.get_or_init(SwaySocket::init);
-        sway.send(0, format!("[con_id={}] {}", self.id, value).as_bytes());
+        let sway = rt.sway.get();
+        sway.send_cmd(&format!("[con_id={}] {}", self.id, value));
     }
 
     pub fn find_node<'a>(self: &'a Rc<Self>, id: u32) -> Option<&'a Rc<Self>> {
@@ -815,12 +815,13 @@ impl TreeData {
             return;
         }
 
-        let sway = rt.sway.get_or_init(SwaySocket::init);
+        let sway = rt.sway.get();
         sway.subscribe("window");
-        TreeData::refresh(&sway.inner);
+        TreeData::refresh(&sway);
     }
 
     fn refresh(sway: &SocketInner) {
+        // GET_TREE
         sway.send(4, b"", move |inner, buf| {
             match std::str::from_utf8(buf).map(|buf| json::parse(buf)) {
                 Ok(Ok(msg)) => {
@@ -906,9 +907,9 @@ impl Tree {
             .as_ref()
             .map(|v| ctx.runtime.format_or(&v, ctx.err_name).into_text())
             .unwrap_or_default();
-        let sway = ctx.runtime.sway.get_or_init(SwaySocket::init);
-        sway.inner.tree.interest(ctx.runtime);
-        sway.inner.tree.workspaces.take_in_some(|workspaces| {
+        let sway = ctx.runtime.sway.get();
+        sway.tree.interest(ctx.runtime);
+        sway.tree.workspaces.take_in_some(|workspaces| {
             for workspace in workspaces {
                 if !output.is_empty() && workspace.output != output {
                     continue;
@@ -954,7 +955,5 @@ impl Tree {
 }
 
 pub fn write(value: Value, rt: &Runtime) {
-    rt.sway
-        .get_or_init(SwaySocket::init)
-        .send(0, format!("{}", value).as_bytes());
+    rt.sway.get().send_cmd(&format!("{value}"));
 }

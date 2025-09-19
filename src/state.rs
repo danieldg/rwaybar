@@ -184,7 +184,7 @@ pub struct Runtime {
     #[cfg(feature = "dbus")]
     pub mpris: OnceCell<Rc<MediaPlayer2>>,
     pub clipboards: OnceCell<Clipboards>,
-    pub sway: OnceCell<SwaySocket>,
+    pub sway: SwaySocket,
     pub xdg: xdg::BaseDirectories,
     pub fonts: Vec<FontMapped>,
     pub items: HashMap<Rc<str>, Rc<Item>>,
@@ -362,7 +362,7 @@ impl State {
                 #[cfg(feature = "dbus")]
                 mpris: OnceCell::new(),
                 clipboards: OnceCell::new(),
-                sway: OnceCell::new(),
+                sway: SwaySocket::lazy(),
                 xdg: xdg::BaseDirectories::new(),
                 fonts: Vec::new(),
                 items: Default::default(),

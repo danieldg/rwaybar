@@ -8,6 +8,7 @@ use std::{
     future::Future,
     os::unix::io::{AsRawFd, RawFd},
     path::PathBuf,
+    rc::{Rc, Weak},
 };
 
 pub fn toml_to_string(value: Option<&toml::Value>) -> Option<String> {
@@ -97,6 +98,26 @@ impl<T> Cell<Option<T>> {
         let mut t = self.0.take();
         let rv = t.as_mut().map(f);
         self.0.set(t);
+        rv
+    }
+}
+
+impl<T> Cell<Weak<T>> {
+    pub fn upgrade_or_init(&self, init: impl FnOnce() -> Rc<T>) -> Rc<T> {
+        if let Some(rv) = self.upgrade() {
+            return rv;
+        }
+        let rv = init();
+        self.set(Rc::downgrade(&rv));
+        rv
+    }
+
+    pub fn upgrade(&self) -> Option<Rc<T>> {
+        let w = self.take();
+        let rv = w.upgrade();
+        if rv.is_some() {
+            self.set(w);
+        }
         rv
     }
 }
