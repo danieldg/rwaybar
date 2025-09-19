@@ -28,6 +28,9 @@ use crate::{
     wlr::Clipboards,
 };
 
+#[cfg(feature = "dbus")]
+use crate::mpris::MediaPlayer2;
+
 #[derive(Default, Debug, Copy, Clone, Eq, PartialEq)]
 pub struct InterestMask(u64);
 
@@ -156,6 +159,8 @@ impl NotifierList {
 /// Common state available during rendering operations
 #[derive(Debug)]
 pub struct Runtime {
+    #[cfg(feature = "dbus")]
+    pub mpris: OnceCell<Rc<MediaPlayer2>>,
     pub clipboards: OnceCell<Clipboards>,
     pub sway: OnceCell<SwaySocket>,
     pub xdg: xdg::BaseDirectories,
@@ -321,6 +326,8 @@ impl State {
             bar_config: Vec::new(),
             renderer: Renderer::new(),
             runtime: Runtime {
+                #[cfg(feature = "dbus")]
+                mpris: OnceCell::new(),
                 clipboards: OnceCell::new(),
                 sway: OnceCell::new(),
                 xdg: xdg::BaseDirectories::new(),

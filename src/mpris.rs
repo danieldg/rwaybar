@@ -6,9 +6,9 @@ use crate::{
 };
 use futures_util::{future::RemoteHandle, StreamExt};
 use log::{debug, error, warn};
-use std::{cell::OnceCell, collections::HashMap, convert::TryInto, error::Error, rc::Rc};
+use std::{collections::HashMap, convert::TryInto, error::Error, rc::Rc};
 use zbus::{
-    fdo::DBusProxy,
+    fdo::{DBusProxy, NameOwnerChangedStream},
     names::{BusName, UniqueName},
     zvariant,
 };
@@ -119,78 +119,85 @@ struct Player {
     update_handle: RemoteHandle<()>,
 }
 
-#[derive(Debug, Default)]
-struct MediaPlayer2 {
+#[derive(Debug)]
+pub struct MediaPlayer2 {
     players: Cell<Vec<Player>>,
     interested: NotifierList,
 }
 
-thread_local! {
-    static DATA : OnceCell<Rc<MediaPlayer2>> = Default::default();
-}
-
 impl MediaPlayer2 {
     pub fn new() -> Rc<Self> {
-        let rv = Rc::new(MediaPlayer2::default());
-
-        let mpris = rv.clone();
-        util::spawn("MPRIS setup", async move {
-            let dbus = DBus::get_session();
-            let zbus = dbus.connection().await?;
-
-            let bus = DBusProxy::builder(&zbus)
-                .cache_properties(zbus::proxy::CacheProperties::No)
-                .build()
-                .await?;
-
-            let this = mpris.clone();
-            let mut names = bus.receive_name_owner_changed().await?;
-            util::spawn("MPRIS client add/remove watcher", async move {
-                while let Some(noc) = names.next().await {
-                    let event = noc.args()?;
-                    if !event.name.starts_with("org.mpris.MediaPlayer2.") {
-                        continue;
-                    }
-                    if let Some(old) = &*event.old_owner {
-                        this.players.take_in(|players| {
-                            players.retain(|player| {
-                                if *player.proxy.inner().destination() == *old {
-                                    this.interested.notify_data("mpris:remove");
-                                    false
-                                } else {
-                                    true
-                                }
-                            });
-                        });
-                    }
-
-                    if let Some(new) = &*event.new_owner {
-                        util::spawn(
-                            "MPRIS state query",
-                            this.clone()
-                                .initial_query(event.name.to_owned(), Some(new.to_owned())),
-                        );
-                    }
-                }
-                Ok(())
-            });
-
-            let names = bus.list_names().await?;
-
-            for name in names {
-                if !name.starts_with("org.mpris.MediaPlayer2.") {
-                    continue;
-                }
-                let name = name.into_inner();
-
-                // query them all in parallel
-                util::spawn("MPRIS state query", mpris.clone().initial_query(name, None));
-            }
-
-            Ok(())
+        let rv = Rc::new(MediaPlayer2 {
+            players: Default::default(),
+            interested: Default::default(),
         });
 
+        util::spawn("MPRIS setup", rv.clone().setup());
+
         rv
+    }
+
+    async fn setup(self: Rc<Self>) -> Result<(), Box<dyn Error>> {
+        let dbus = DBus::get_session();
+        let zbus = dbus.connection().await?;
+
+        let bus = DBusProxy::builder(&zbus)
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await?;
+
+        let names = bus.receive_name_owner_changed().await?;
+        util::spawn(
+            "MPRIS client add/remove watcher",
+            self.clone().name_watcher(names),
+        );
+
+        let names = bus.list_names().await?;
+
+        for name in names {
+            if !name.starts_with("org.mpris.MediaPlayer2.") {
+                continue;
+            }
+            let name = name.into_inner();
+
+            // query them all in parallel
+            util::spawn("MPRIS state query", self.clone().initial_query(name, None));
+        }
+
+        Ok(())
+    }
+
+    async fn name_watcher(
+        self: Rc<Self>,
+        mut names: NameOwnerChangedStream,
+    ) -> Result<(), Box<dyn Error>> {
+        while let Some(noc) = names.next().await {
+            let event = noc.args()?;
+            if !event.name.starts_with("org.mpris.MediaPlayer2.") {
+                continue;
+            }
+            if let Some(old) = &*event.old_owner {
+                self.players.take_in(|players| {
+                    players.retain(|player| {
+                        if *player.proxy.inner().destination() == *old {
+                            self.interested.notify_data("mpris:remove");
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                });
+            }
+
+            if let Some(new) = &*event.new_owner {
+                util::spawn(
+                    "MPRIS state query",
+                    self.clone()
+                        .initial_query(event.name.to_owned(), Some(new.to_owned())),
+                );
+            }
+        }
+        Ok(())
     }
 
     async fn initial_query(
@@ -289,108 +296,104 @@ pub fn read_in<F: FnOnce(Value) -> R, R>(
     rt: &Runtime,
     f: F,
 ) -> R {
-    DATA.with(|cell| {
-        let state = cell.get_or_init(MediaPlayer2::new);
-        state.interested.add(rt);
+    let state = rt.mpris.get_or_init(MediaPlayer2::new);
+    state.interested.add(rt);
 
-        state.players.take_in(|players| {
-            let player;
-            let field;
+    state.players.take_in(|players| {
+        let player;
+        let field;
 
-            if !target.is_empty() {
-                field = key;
-                player = players.iter().find(|p| &*p.name_tail == target);
-            } else if let Some(dot) = key.find('.') {
-                let name = &key[..dot];
-                field = &key[dot + 1..];
-                player = players.iter().find(|p| &*p.name_tail == name);
-            } else {
-                field = key;
-                // Prefer playing players, then paused, then any
-                //
-                player = players
-                    .iter()
-                    .filter(|p| p.playing == Some(PlayState::Playing))
-                    .chain(
-                        players
-                            .iter()
-                            .filter(|p| p.playing == Some(PlayState::Paused)),
-                    )
-                    .chain(players.iter())
-                    .next();
-            }
+        if !target.is_empty() {
+            field = key;
+            player = players.iter().find(|p| &*p.name_tail == target);
+        } else if let Some(dot) = key.find('.') {
+            let name = &key[..dot];
+            field = &key[dot + 1..];
+            player = players.iter().find(|p| &*p.name_tail == name);
+        } else {
+            field = key;
+            // Prefer playing players, then paused, then any
+            //
+            player = players
+                .iter()
+                .filter(|p| p.playing == Some(PlayState::Playing))
+                .chain(
+                    players
+                        .iter()
+                        .filter(|p| p.playing == Some(PlayState::Paused)),
+                )
+                .chain(players.iter())
+                .next();
+        }
 
-            if field == "state" {
-                return match player.and_then(|p| p.playing) {
-                    Some(PlayState::Playing) => f(Value::Borrow("Playing")),
-                    Some(PlayState::Paused) => f(Value::Borrow("Paused")),
-                    Some(PlayState::Stopped) => f(Value::Borrow("Stopped")),
-                    None => f(Value::NotReady),
-                };
-            }
+        if field == "state" {
+            return match player.and_then(|p| p.playing) {
+                Some(PlayState::Playing) => f(Value::Borrow("Playing")),
+                Some(PlayState::Paused) => f(Value::Borrow("Paused")),
+                Some(PlayState::Stopped) => f(Value::Borrow("Stopped")),
+                None => f(Value::NotReady),
+            };
+        }
 
-            if let Some(player) = player {
-                match field {
-                    "player.name" => f(Value::Borrow(&player.name_tail)),
-                    "length" => match player
-                        .meta
-                        .get("mpris:length")
-                        .map(|v| v.downcast_ref::<i64>())
-                    {
-                        Some(Ok(len)) => f(Value::Float(len as f64 / 1_000_000.0)),
-                        _ => f(Value::NotReady),
-                    },
-                    _ if field.contains('.') => {
-                        let real_field = field.replace('.', ":");
-                        let qf = player.meta.get(&*field).map(|v| v.downcast_ref());
-                        let rf = player.meta.get(&*real_field).map(|v| v.downcast_ref());
+        if let Some(player) = player {
+            match field {
+                "player.name" => f(Value::Borrow(&player.name_tail)),
+                "length" => match player
+                    .meta
+                    .get("mpris:length")
+                    .map(|v| v.downcast_ref::<i64>())
+                {
+                    Some(Ok(len)) => f(Value::Float(len as f64 / 1_000_000.0)),
+                    _ => f(Value::NotReady),
+                },
+                _ if field.contains('.') => {
+                    let real_field = field.replace('.', ":");
+                    let qf = player.meta.get(&*field).map(|v| v.downcast_ref());
+                    let rf = player.meta.get(&*real_field).map(|v| v.downcast_ref());
 
-                        match (qf, rf) {
-                            (Some(Ok(v)), _) | (_, Some(Ok(v))) => f(Value::Borrow(v)),
-                            _ => f(Value::Empty),
-                        }
-                    }
-                    // See http://www.freedesktop.org/wiki/Specifications/mpris-spec/metadata for
-                    // a list of valid names
-                    _ => {
-                        let xeasm = format!("xesam:{}", field);
-                        let value = player.meta.get(&xeasm).map(|x| &**x);
-                        match value {
-                            Some(Variant::Str(v)) => f(Value::Borrow(v.as_str())),
-                            Some(Variant::Array(a)) => {
-                                let mut tmp = String::new();
-                                for e in a.iter() {
-                                    if let Variant::Str(s) = e {
-                                        tmp.push_str(s);
-                                        tmp.push_str(", ");
-                                    }
-                                }
-                                tmp.pop();
-                                tmp.pop();
-                                f(Value::Owned(tmp))
-                            }
-                            _ => f(Value::Empty),
-                        }
+                    match (qf, rf) {
+                        (Some(Ok(v)), _) | (_, Some(Ok(v))) => f(Value::Borrow(v)),
+                        _ => f(Value::Empty),
                     }
                 }
-            } else {
-                debug!("No media players found");
-                f(Value::NotReady)
+                // See http://www.freedesktop.org/wiki/Specifications/mpris-spec/metadata for
+                // a list of valid names
+                _ => {
+                    let xeasm = format!("xesam:{}", field);
+                    let value = player.meta.get(&xeasm).map(|x| &**x);
+                    match value {
+                        Some(Variant::Str(v)) => f(Value::Borrow(v.as_str())),
+                        Some(Variant::Array(a)) => {
+                            let mut tmp = String::new();
+                            for e in a.iter() {
+                                if let Variant::Str(s) = e {
+                                    tmp.push_str(s);
+                                    tmp.push_str(", ");
+                                }
+                            }
+                            tmp.pop();
+                            tmp.pop();
+                            f(Value::Owned(tmp))
+                        }
+                        _ => f(Value::Empty),
+                    }
+                }
             }
-        })
+        } else {
+            debug!("No media players found");
+            f(Value::NotReady)
+        }
     })
 }
 
 pub fn read_focus_list<F: FnMut(bool, IterationItem)>(rt: &Runtime, mut f: F) {
-    let players: Vec<_> = DATA.with(|cell| {
-        let state = cell.get_or_init(MediaPlayer2::new);
-        state.interested.add(rt);
-        state.players.take_in(|players| {
-            players
-                .iter()
-                .map(|p| (p.name_tail.clone(), p.playing == Some(PlayState::Playing)))
-                .collect()
-        })
+    let state = rt.mpris.get_or_init(MediaPlayer2::new);
+    state.interested.add(rt);
+    let players: Vec<_> = state.players.take_in(|players| {
+        players
+            .iter()
+            .map(|p| (p.name_tail.clone(), p.playing == Some(PlayState::Playing)))
+            .collect()
     });
 
     for (player, playing) in players {
@@ -398,71 +401,69 @@ pub fn read_focus_list<F: FnMut(bool, IterationItem)>(rt: &Runtime, mut f: F) {
     }
 }
 
-pub fn write(_name: &str, target: &str, key: &str, command: Value, _rt: &Runtime) {
-    DATA.with(|cell| {
-        let state = cell.get_or_init(MediaPlayer2::new);
-        state.players.take_in(|players| {
-            let player;
+pub fn write(_name: &str, target: &str, key: &str, command: Value, rt: &Runtime) {
+    let state = rt.mpris.get_or_init(MediaPlayer2::new);
+    state.players.take_in(|players| {
+        let player;
 
-            if !target.is_empty() {
-                player = players.iter().find(|p| &*p.name_tail == target);
-            } else if !key.is_empty() {
-                player = players.iter().find(|p| &*p.name_tail == key);
-            } else {
-                // Prefer playing players, then paused, then any
-                player = players
-                    .iter()
-                    .filter(|p| p.playing == Some(PlayState::Playing))
-                    .chain(
-                        players
-                            .iter()
-                            .filter(|p| p.playing == Some(PlayState::Paused)),
-                    )
-                    .chain(players.iter())
-                    .next();
+        if !target.is_empty() {
+            player = players.iter().find(|p| &*p.name_tail == target);
+        } else if !key.is_empty() {
+            player = players.iter().find(|p| &*p.name_tail == key);
+        } else {
+            // Prefer playing players, then paused, then any
+            player = players
+                .iter()
+                .filter(|p| p.playing == Some(PlayState::Playing))
+                .chain(
+                    players
+                        .iter()
+                        .filter(|p| p.playing == Some(PlayState::Paused)),
+                )
+                .chain(players.iter())
+                .next();
+        }
+
+        let player = match player {
+            Some(p) => p,
+            None => {
+                warn!("No player found when sending {}", key);
+                return;
             }
+        };
 
-            let player = match player {
-                Some(p) => p,
-                None => {
-                    warn!("No player found when sending {}", key);
-                    return;
-                }
-            };
-
-            // TODO call/nowait
-            let dbus = DBus::get_session();
-            let command = command.into_text();
-            match &*command {
-                "Next" | "Previous" | "Pause" | "PlayPause" | "Stop" | "Play" => {
-                    dbus.send(
-                        zbus::Message::method_call("/org/mpris/MediaPlayer2", &*command)
-                            .unwrap()
-                            .destination(player.proxy.inner().destination().clone())
-                            .unwrap()
-                            .interface("org.mpris.MediaPlayer2.Player")
-                            .unwrap()
-                            .build(&())
-                            .unwrap(),
-                    );
-                }
-                // TODO seek, volume?
-                "Raise" | "Quit" => {
-                    dbus.send(
-                        zbus::Message::method_call("/org/mpris/MediaPlayer2", &*command)
-                            .unwrap()
-                            .destination(player.proxy.inner().destination().clone())
-                            .unwrap()
-                            .interface("org.mpris.MediaPlayer2")
-                            .unwrap()
-                            .build(&())
-                            .unwrap(),
-                    );
-                }
-                _ => {
-                    error!("Unknown command {}", command);
-                }
+        // TODO call/nowait
+        let dbus = DBus::get_session();
+        let command = command.into_text();
+        match &*command {
+            "Next" | "Previous" | "Pause" | "PlayPause" | "Stop" | "Play" => {
+                dbus.send(
+                    zbus::Message::method_call("/org/mpris/MediaPlayer2", &*command)
+                        .unwrap()
+                        .destination(player.proxy.inner().destination().clone())
+                        .unwrap()
+                        .interface("org.mpris.MediaPlayer2.Player")
+                        .unwrap()
+                        .build(&())
+                        .unwrap(),
+                );
             }
-        })
+            // TODO seek, volume?
+            "Raise" | "Quit" => {
+                dbus.send(
+                    zbus::Message::method_call("/org/mpris/MediaPlayer2", &*command)
+                        .unwrap()
+                        .destination(player.proxy.inner().destination().clone())
+                        .unwrap()
+                        .interface("org.mpris.MediaPlayer2")
+                        .unwrap()
+                        .build(&())
+                        .unwrap(),
+                );
+            }
+            _ => {
+                error!("Unknown command {}", command);
+            }
+        }
     })
 }
