@@ -120,7 +120,7 @@ impl DbusValue {
             .into();
         let method = value.get("method").and_then(|v| v.as_str());
         let property = value.get("property").and_then(|v| v.as_str());
-        let (interface, member, args);
+        let (interface, member, args, sig);
         match (
             method.map(|s| s.rsplit_once(".")),
             property.map(|s| s.rsplit_once(".")),
@@ -137,11 +137,21 @@ impl DbusValue {
                     .cloned()
                     .unwrap_or_default()
                     .into_boxed_slice();
+                sig = Cell::new(value.get("arg_types").and_then(|v| {
+                    let mut sig = String::new();
+                    for elt in v.as_array()? {
+                        sig.push_str(elt.as_str()?);
+                        sig.push(',');
+                    }
+                    sig.pop();
+                    Some(sig.into())
+                }));
             }
             (None, Some(Some((i, p)))) => {
                 interface = "org.freedesktop.DBus.Properties".into();
                 member = "Get".into();
                 args = Box::new([i.into(), p.into()]);
+                sig = Cell::new(Some("s,s".into()));
             }
             _ => {
                 return Err("dbus requires a member or property to query");
@@ -156,7 +166,7 @@ impl DbusValue {
             member,
             args,
             value: RefCell::new(None),
-            sig: Default::default(),
+            sig,
             interested: Default::default(),
             watch: Default::default(),
         });

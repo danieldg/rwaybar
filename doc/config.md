@@ -207,6 +207,7 @@ Key | Expanded | Default | Details
 `method` | No | -- | A dbus method (interface`.`member) to invoke (exclusive with property)
 `property` | No | -- | A dbus property (interface`.`member) to inspect (exclusive with method)
 `args` | No | [] | Arguments to the method.  Only strings and floats are currently supported.
+`arg_types` | No | -- | Argument types, as an array of strings.  Set by introspection if not specified.
 `poll` | No | 0 | Number of seconds to wait between calls, or 0 to disable polling
 `watch-method` | No | -- | A dbus signal (interface`.`member) to watch for updates
 `watch-path` | No | -- | A dbus object path to which the signal must be attached
