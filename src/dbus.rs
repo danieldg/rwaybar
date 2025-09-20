@@ -11,6 +11,7 @@ use log::{error, info};
 use std::{
     cell::{OnceCell, RefCell},
     collections::HashMap,
+    error::Error,
     fmt,
     rc::Rc,
 };
@@ -293,6 +294,55 @@ impl DbusValue {
         }
     }
 
+    fn parse_api(&self, msg: zbus::Result<zbus::Message>) -> Result<Rc<str>, Box<dyn Error>> {
+        let body = msg?.body();
+        let xml = body.deserialize()?;
+        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut sig = String::new();
+        let mut in_iface = false;
+        let mut in_method = false;
+        loop {
+            use quick_xml::events::Event;
+            match reader.read_event()? {
+                Event::Start(e) if e.local_name().as_ref() == b"interface" => {
+                    in_iface = e
+                        .try_get_attribute(b"name")?
+                        .is_some_and(|v| v.value == self.interface.as_bytes());
+                }
+                Event::End(e) if e.local_name().as_ref() == b"interface" => {
+                    in_iface = false;
+                }
+                Event::Start(e) if e.local_name().as_ref() == b"method" => {
+                    in_method = e
+                        .try_get_attribute(b"name")?
+                        .is_some_and(|v| v.value == self.member.as_bytes());
+                }
+                Event::End(e) if e.local_name().as_ref() == b"method" => {
+                    in_method = false;
+                }
+                Event::Start(e) | Event::Empty(e)
+                    if in_iface
+                        && in_method
+                        && e.local_name().as_ref() == b"arg"
+                        && e.try_get_attribute("direction")?
+                            .is_some_and(|v| *v.value == *b"in") =>
+                {
+                    if let Some(attr) = e.try_get_attribute(b"type")? {
+                        sig.push_str(str::from_utf8(&attr.value)?);
+                        sig.push_str(",");
+                    }
+                }
+                Event::Eof => {
+                    sig.pop();
+                    let api = sig.into();
+                    self.sig.set(Some(Rc::clone(&api)));
+                    return Ok(api);
+                }
+                _ => {}
+            }
+        }
+    }
+
     async fn try_call(self: Rc<Self>) -> zbus::Result<()> {
         use toml::value::Value;
         let dbus = &*self.bus;
@@ -310,69 +360,10 @@ impl DbusValue {
                     &(),
                 )
                 .await;
-            match msg.as_ref().map(|m| m.body()) {
-                Ok(body) => {
-                    let xml = body.deserialize()?;
-                    let mut reader = xml::EventReader::from_str(xml);
-                    let mut sig = String::new();
-                    let mut in_iface = false;
-                    let mut in_method = false;
-                    loop {
-                        use xml::reader::XmlEvent;
-                        match reader.next() {
-                            Ok(XmlEvent::StartElement {
-                                name, attributes, ..
-                            }) if name.local_name == "interface" => {
-                                in_iface = attributes.iter().any(|attr| {
-                                    attr.name.local_name == "name" && attr.value == &*self.interface
-                                });
-                            }
-                            Ok(XmlEvent::EndElement { name }) if name.local_name == "interface" => {
-                                in_iface = false;
-                            }
-                            Ok(XmlEvent::StartElement {
-                                name, attributes, ..
-                            }) if name.local_name == "method" => {
-                                in_method = attributes.iter().any(|attr| {
-                                    attr.name.local_name == "name" && attr.value == &*self.member
-                                });
-                            }
-                            Ok(XmlEvent::EndElement { name }) if name.local_name == "interface" => {
-                                in_method = false;
-                            }
-                            Ok(XmlEvent::StartElement {
-                                name, attributes, ..
-                            }) if in_iface
-                                && in_method
-                                && name.local_name == "arg"
-                                && attributes.iter().any(|attr| {
-                                    attr.name.local_name == "direction" && attr.value == "in"
-                                }) =>
-                            {
-                                for attr in attributes {
-                                    if attr.name.local_name == "type" {
-                                        sig.push_str(&attr.value);
-                                        sig.push_str(",");
-                                    }
-                                }
-                            }
-                            Ok(XmlEvent::EndDocument) => {
-                                sig.pop();
-                                api = Some(sig.into());
-                                self.sig.set(api.clone());
-                                break;
-                            }
-                            Ok(_) => {}
-                            Err(e) => {
-                                info!("Error introspecting {} {}: {}", self.bus_name, self.path, e);
-                                break;
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    info!("Error introspecting {} {}: {}", self.bus_name, self.path, e);
-                }
+
+            match self.parse_api(msg) {
+                Ok(res) => api = Some(res),
+                Err(e) => info!("Error introspecting {} {}: {}", self.bus_name, self.path, e),
             }
         }
 

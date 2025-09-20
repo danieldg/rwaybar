@@ -31,12 +31,12 @@ libc = "*"
 log = "*"
 memmap2 = "0.9"
 once_cell = "*"
+quick-xml = "0.37"
 serde = "1"
 strfmt = "=0.2.5"
 tokio = { version = "1", features = ['rt', 'net', 'signal', 'sync', 'io-util', 'time'] }
 toml = "0.9"
 xdg = "*"
-xml-rs = "*"
 
 # GUI
 png = "0.18"
