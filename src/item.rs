@@ -383,12 +383,6 @@ impl Item {
                 right,
                 ..
             } => {
-                // Region 0 (bit 0x1) is "entire bar" - set for the outer render of this item and
-                // catches things like bar background changes.
-                //
-                // Region 1 is "left"
-                // Region 2 is "right"
-                // Region 3 is "center"
                 let clip = ctx.render_extents;
                 let width = clip.right - ctx.render_pos.x;
 
