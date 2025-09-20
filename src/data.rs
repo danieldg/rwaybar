@@ -10,9 +10,10 @@ use crate::pulse;
 #[cfg(feature = "dbus")]
 use crate::tray;
 use crate::{
-    item::{Item, ItemFormat, ModuleContext},
+    item::{Item, ModuleContext},
     pipewire,
     state::{NotifierList, Runtime, State},
+    style::ItemFormat,
     sway,
     util::{glob_expand, spawn_handle, spawn_noerr, toml_to_f64, toml_to_string, Cell, Fd},
     wlr::ClipboardData,

@@ -1,8 +1,8 @@
 use crate::{
     icon::OwnedImage,
-    item::Formatting,
     render::{Rect, Render, RenderCache},
     state::Runtime,
+    style::Formatting,
     util::UID,
 };
 use log::info;
@@ -420,11 +420,11 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
     let clip_h = ctx.render_extents.1.y - ctx.render_extents.0.y;
 
     let (mut to_draw, text_size) = layout_font(
-        ctx.font,
-        ctx.font_size,
+        ctx.style.font,
+        ctx.style.font_size,
         &ctx.runtime,
         ctx.cache,
-        ctx.font_color,
+        ctx.style.font_color,
         &text,
         markup,
     );
@@ -436,7 +436,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
     ctx.render_pos += text_size;
 
     if !ctx.render_flex {
-        match ctx.align.vert {
+        match ctx.style.align.vert {
             Some(f) => {
                 let extra = clip_h - text_size.y;
                 if extra >= 0.0 {
@@ -452,18 +452,18 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         return;
     }
 
-    let stroke_width = if ctx.text_stroke.is_some() {
-        ctx.text_stroke_size.unwrap_or(1.0)
+    let stroke_width = if ctx.style.text_stroke.is_some() {
+        ctx.style.text_stroke_size.unwrap_or(1.0)
     } else {
         0.0
     };
-    let stroke_color_u32 = ctx.text_stroke.map_or(0, to_color_u32);
+    let stroke_color_u32 = ctx.style.text_stroke.map_or(0, to_color_u32);
     let stroke = tiny_skia::Stroke {
         width: stroke_width,
         ..Default::default()
     };
 
-    let stroke_paint = ctx.text_stroke.map(|rgba| tiny_skia::Paint {
+    let stroke_paint = ctx.style.text_stroke.map(|rgba| tiny_skia::Paint {
         shader: tiny_skia::Shader::SolidColor(rgba),
         anti_alias: true,
         colorspace: tiny_skia::ColorSpace::Gamma2,

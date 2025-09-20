@@ -17,6 +17,7 @@ mod pipewire;
 mod pulse;
 mod render;
 mod state;
+mod style;
 mod sway;
 #[cfg(feature = "dbus")]
 mod tray;

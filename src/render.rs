@@ -2,12 +2,11 @@ use crate::{
     font::{FontMapped, RenderKey, TextImage},
     icon::OwnedImage,
     state::Runtime,
+    style::{Align, Computed},
     wayland::{SurfaceData, WaylandClient},
 };
-use log::error;
 use smithay_client_toolkit::shm::slot::{Slot, SlotPool};
 use std::{
-    borrow::Cow,
     collections::{HashMap, HashSet},
     hash::{Hash, Hasher},
     sync::Arc,
@@ -57,13 +56,15 @@ impl Renderer {
             bounds_only: true,
             scale: 1.0,
 
-            font,
-            font_size: 16.0,
-            font_color: tiny_skia::Color::BLACK,
-            align: Align::bar_default(),
+            style: Computed {
+                font,
+                font_size: 16.0,
+                font_color: tiny_skia::Color::BLACK,
+                text_stroke: None,
+                text_stroke_size: None,
+                align: Align::bar_default(),
+            },
             err_name: "dummy",
-            text_stroke: None,
-            text_stroke_size: None,
             runtime: rt,
         };
         render(&mut ctx)
@@ -109,13 +110,15 @@ impl Renderer {
             bounds_only: false,
             scale,
 
-            font,
-            font_size: 16.0,
-            font_color: tiny_skia::Color::BLACK,
-            align: Align::bar_default(),
+            style: Computed {
+                font,
+                font_size: 16.0,
+                font_color: tiny_skia::Color::BLACK,
+                text_stroke: None,
+                text_stroke_size: None,
+                align: Align::bar_default(),
+            },
             err_name: "bar",
-            text_stroke: None,
-            text_stroke_size: None,
             runtime: rt,
         };
 
@@ -605,17 +608,13 @@ pub struct Render<'a> {
     /// to the bottom-right of an item.
     pub render_pos: tiny_skia::Point,
 
+    /// Continue drawing outside the declared extents; the window (popup) will grow if needed
     pub render_flex: bool,
     /// Skip expensive rendering steps, we just want bounds
     pub bounds_only: bool,
 
-    pub font: &'a FontMapped,
-    pub font_size: f32,
-    pub font_color: tiny_skia::Color,
-    pub text_stroke: Option<tiny_skia::Color>,
-    pub text_stroke_size: Option<f32>,
+    pub style: Computed<'a>,
 
-    pub align: Align,
     pub err_name: &'a str,
     pub runtime: &'a Runtime,
 }
@@ -657,7 +656,10 @@ impl<'a> Render<'a> {
         Render {
             queue: &mut *self.queue,
             cache: &mut *self.cache,
-            font: font.unwrap_or(&self.font),
+            style: Computed {
+                font: font.unwrap_or(&self.style.font),
+                ..self.style
+            },
             ..*self
         }
     }
@@ -875,100 +877,5 @@ impl Rect {
 
     pub fn to_skia(self) -> Option<tiny_skia::Rect> {
         tiny_skia::Rect::from_ltrb(self.left, self.top, self.right, self.bottom)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Width {
-    /// Some fraction (0.0-1.0) of the total width
-    Fraction(f32),
-    /// Some number of pixels
-    Pixels(f32),
-}
-
-impl Width {
-    pub fn from_str(value: Cow<str>) -> Option<Self> {
-        if value.ends_with('%') {
-            let value = &value[..value.len() - 1];
-            let pct = value.parse::<f32>().ok()?;
-            return Some(Width::Fraction(pct / 100.0));
-        }
-        if value.contains('.') {
-            value.parse().ok().map(Width::Fraction)
-        } else {
-            value.parse().ok().map(Width::Pixels)
-        }
-    }
-}
-
-pub const MIDDLE: f32 = 0.5;
-
-#[derive(Default, Debug, Copy, Clone, PartialEq)]
-pub struct Align {
-    pub horiz: Option<f32>,
-    pub vert: Option<f32>,
-}
-
-impl Align {
-    pub fn bar_default() -> Self {
-        Align {
-            horiz: None,
-            vert: Some(MIDDLE),
-        }
-    }
-
-    pub fn parse_hv(value: Cow<str>) -> Option<f32> {
-        if value.ends_with('%') {
-            let value = &value[..value.len() - 1];
-            let pct = value.parse::<f32>().ok()?;
-            return Some(pct / 100.0);
-        }
-        value.parse().ok()
-    }
-
-    pub fn from_name(&mut self, value: Option<Cow<str>>) {
-        match value.as_deref() {
-            Some("north") => {
-                *self = Align {
-                    horiz: Some(MIDDLE),
-                    vert: Some(0.0),
-                }
-            }
-            Some("south") => {
-                *self = Align {
-                    horiz: Some(MIDDLE),
-                    vert: Some(1.0),
-                }
-            }
-            Some("east") => {
-                *self = Align {
-                    horiz: Some(0.0),
-                    vert: Some(MIDDLE),
-                }
-            }
-            Some("west") => {
-                *self = Align {
-                    horiz: Some(1.0),
-                    vert: Some(MIDDLE),
-                }
-            }
-            Some("center") => {
-                *self = Align {
-                    horiz: Some(MIDDLE),
-                    vert: Some(MIDDLE),
-                }
-            }
-            Some("") | None => {}
-            Some(x) => {
-                error!("Unknown alignment {}", x);
-            }
-        }
-    }
-
-    pub fn merge(&self, child: &Self) -> Self {
-        Align {
-            horiz: child.horiz.or(self.horiz),
-            vert: child.vert.or(self.vert),
-        }
     }
 }
