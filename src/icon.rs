@@ -231,7 +231,7 @@ where
 }
 
 pub fn render(ctx: &mut Render, name: Box<str>) -> Result<(), ()> {
-    let room = ctx.render_extents.1 - ctx.render_pos;
+    let room = ctx.render_extents.br() - ctx.render_pos;
     let xsize = room.x * ctx.scale;
     let ysize = room.y * ctx.scale;
 

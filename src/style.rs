@@ -376,26 +376,26 @@ impl Formatting {
         if (shrink, format.max_width) != (None, None) {
             match shrink {
                 Some((t, r, b, l)) => {
-                    inner_clip.0.x += l;
-                    inner_clip.0.y += t;
+                    inner_clip.left += l;
+                    inner_clip.top += t;
                     start_pos.x += l;
                     start_pos.y += t;
-                    inner_clip.1.x -= r;
-                    inner_clip.1.y -= b;
+                    inner_clip.right -= r;
+                    inner_clip.bottom -= b;
                 }
                 None => {}
             }
             match format.max_width {
                 Some(Width::Pixels(n)) => {
                     let clip_at = start_pos.x + n;
-                    if inner_clip.1.x > clip_at {
+                    if inner_clip.right > clip_at {
                         ctx.render_flex = false;
-                        inner_clip.1.x = clip_at;
+                        inner_clip.right = clip_at;
                     }
                 }
                 Some(Width::Fraction(f)) => {
-                    let parent_width = outer_clip.1.x - outer_clip.0.x;
-                    inner_clip.1.x = inner_clip.1.x.min(start_pos.x + parent_width * f);
+                    let parent_width = outer_clip.width();
+                    inner_clip.right = inner_clip.right.min(start_pos.x + parent_width * f);
                 }
                 None => {}
             }
@@ -413,11 +413,11 @@ impl Formatting {
         let mut min_width = match format.min_width {
             None => 0.0,
             Some(Width::Pixels(n)) => n,
-            Some(Width::Fraction(f)) => f * (outer_clip.1.x - outer_clip.0.x),
+            Some(Width::Fraction(f)) => f * outer_clip.width(),
         };
-        if min_width > inner_clip.1.x - start_pos.x {
+        if min_width > inner_clip.right - start_pos.x {
             // clamp the minimum to only the available region
-            min_width = inner_clip.1.x - start_pos.x;
+            min_width = inner_clip.right - start_pos.x;
         }
 
         let inner_x_offset;
@@ -443,7 +443,7 @@ impl Formatting {
         let shrink_b_height = shrink.map_or(0.0, |s| s.2);
         if !ctx.render_flex {
             // clip to the allowed size
-            end_pos.x = end_pos.x.min(inner_clip.1.x);
+            end_pos.x = end_pos.x.min(inner_clip.right);
         }
         let outer_pos = end_pos
             + Point {
@@ -491,7 +491,7 @@ impl Formatting {
             }
 
             // The background and borders go *behind* the item
-            ctx.swap_after_marks(&mark, &end_mark);
+            ctx.swap_after_marks(mark, end_mark);
         }
 
         (outer_pos, inner_x_offset, start_pos.x, end_pos.x)

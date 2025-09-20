@@ -416,8 +416,8 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
     let scale = ctx.scale;
     let mut render_pos = ctx.render_pos;
 
-    let clip_w = ctx.render_extents.1.x - ctx.render_pos.x;
-    let clip_h = ctx.render_extents.1.y - ctx.render_extents.0.y;
+    let clip_w = ctx.render_extents.right - ctx.render_pos.x;
+    let clip_h = ctx.render_extents.height();
 
     let (mut to_draw, text_size) = layout_font(
         ctx.style.font,

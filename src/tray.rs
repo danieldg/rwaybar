@@ -881,7 +881,7 @@ impl TrayPopup {
     }
 
     pub fn render(&mut self, ctx: &mut Render) {
-        let width = ctx.render_extents.1.x;
+        let width = ctx.render_extents.right;
         let rendered_ids = &mut self.rendered_ids;
         rendered_ids.clear();
 

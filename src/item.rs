@@ -218,7 +218,7 @@ impl Item {
 
     pub fn render(self: &Rc<Self>, parent_ctx: &mut Render) -> EventSink {
         // skip rendering if we are outside the clip bounds
-        if !parent_ctx.render_flex && parent_ctx.render_pos.x > parent_ctx.render_extents.1.x {
+        if !parent_ctx.render_flex && parent_ctx.render_pos.x > parent_ctx.render_extents.right {
             return EventSink::default();
         }
 
@@ -390,35 +390,35 @@ impl Item {
                 // Region 2 is "right"
                 // Region 3 is "center"
                 let clip = ctx.render_extents;
-                let width = clip.1.x - ctx.render_pos.x;
+                let width = clip.right - ctx.render_pos.x;
 
                 let mut left_ev = left.render(ctx);
                 let left_size = ctx.render_pos.x;
                 left_ev.offset_clamp(0.0, 0.0, left_size);
                 rv.merge(left_ev);
 
-                ctx.render_pos = clip.0;
+                ctx.render_pos = clip.tl();
                 let mark = ctx.start_group();
                 let mut right_ev = right.render(ctx);
                 let right_size = ctx.ceil_to_pixel(ctx.render_pos.x);
 
-                let right_offset = clip.1.x - right_size;
+                let right_offset = clip.right - right_size;
                 ctx.translate_group_x(&mark, right_offset);
-                right_ev.offset_clamp(right_offset, right_offset, clip.1.x);
+                right_ev.offset_clamp(right_offset, right_offset, clip.right);
                 rv.merge(right_ev);
 
                 let max_center_width = width - left_size - right_size;
 
                 if max_center_width < 1.0 {
-                    ctx.render_pos = clip.1;
+                    ctx.render_pos = clip.br();
                     // don't render the center if there's no room at all
                     return;
                 }
 
                 let mark = ctx.start_group();
-                let x0 = ctx.round_to_pixel(clip.1.x - max_center_width);
+                let x0 = ctx.round_to_pixel(clip.right - max_center_width);
                 ctx.render_pos.x = x0;
-                ctx.render_pos.y = clip.0.y;
+                ctx.render_pos.y = clip.top;
 
                 let mut cent_ev = center.render(ctx);
                 let cent_size = ctx.ceil_to_pixel(ctx.render_pos.x - x0);
@@ -446,7 +446,7 @@ impl Item {
 
                 cent_ev.offset_clamp(cent_offset - x0, cent_offset, cent_offset + cent_size);
                 rv.merge(cent_ev);
-                ctx.render_pos = clip.1;
+                ctx.render_pos = clip.br();
             }
             Module::Fade {
                 items,

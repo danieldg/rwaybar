@@ -47,10 +47,7 @@ impl Renderer {
         let mut ctx = Render {
             queue: &mut queue,
             cache: &mut self.cache,
-            render_extents: (
-                tiny_skia::Point::zero(),
-                tiny_skia::Point { x: 1.0, y: 1.0 },
-            ),
+            render_extents: Rect::from_u32_wh(1, 1),
             render_pos: tiny_skia::Point::zero(),
             render_flex: false,
             bounds_only: true,
@@ -98,13 +95,7 @@ impl Renderer {
         let mut ctx = Render {
             queue: &mut queue,
             cache: &mut self.cache,
-            render_extents: (
-                tiny_skia::Point::zero(),
-                tiny_skia::Point {
-                    x: surface_data.width() as f32,
-                    y: surface_data.height() as f32,
-                },
-            ),
+            render_extents: Rect::from_u32_wh(surface_data.width(), surface_data.height()),
             render_pos: tiny_skia::Point::zero(),
             render_flex: false,
             bounds_only: false,
@@ -595,14 +586,19 @@ pub struct QueueMark {
 
 /// State available to an [Item][crate::item::Item] render function
 pub struct Render<'a> {
-    queue: &'a mut Queue,
+    pub runtime: &'a Runtime,
     pub cache: &'a mut RenderCache,
+    pub err_name: &'a str,
+    queue: &'a mut Queue,
 
+    pub style: Computed<'a>,
+
+    /// A width of 1.0 in draw coordinates represents (scale) pixels on the screen
     pub scale: f32,
 
     /// Bounding box for the current item or group.  This is used to compute percentage-based
     /// widths, so it is constant for all items in a group.
-    pub render_extents: (tiny_skia::Point, tiny_skia::Point),
+    pub render_extents: Rect,
 
     /// Position of the pen.  During any render call, this should move from the top-left of an item
     /// to the bottom-right of an item.
@@ -612,13 +608,9 @@ pub struct Render<'a> {
     pub render_flex: bool,
     /// Skip expensive rendering steps, we just want bounds
     pub bounds_only: bool,
-
-    pub style: Computed<'a>,
-
-    pub err_name: &'a str,
-    pub runtime: &'a Runtime,
 }
 
+/// A helper for rendering a group of items
 #[derive(Debug)]
 pub struct Group {
     pub origin: tiny_skia::Point,
@@ -691,6 +683,7 @@ impl<'a> Render<'a> {
         self.push_image_clip(top_left, pixels, bounds);
     }
 
+    /// all in pixel coordinates
     pub fn push_image_clip(
         &mut self,
         top_left: tiny_skia::Point,
@@ -713,7 +706,7 @@ impl<'a> Render<'a> {
     }
 
     /// Move all items pushed after (b) behind all items pushed between (a) and (b)
-    pub fn swap_after_marks(&mut self, a: &QueueMark, b: &QueueMark) {
+    pub fn swap_after_marks(&mut self, a: QueueMark, b: QueueMark) {
         let len = self.queue.items.len() - b.pos;
         if a.pos == b.pos || len == 0 {
             return;
@@ -721,14 +714,17 @@ impl<'a> Render<'a> {
         self.queue.items[a.pos..].rotate_right(len);
     }
 
+    /// Align a draw x-coordinate to a pixel boundary
     pub fn floor_to_pixel(&self, x: f32) -> f32 {
         (x * self.scale + 0.01).floor() / self.scale
     }
 
+    /// Align a draw x-coordinate to a pixel boundary
     pub fn ceil_to_pixel(&self, x: f32) -> f32 {
         (x * self.scale - 0.01).ceil() / self.scale
     }
 
+    /// Align a draw x-coordinate to a pixel boundary
     pub fn round_to_pixel(&self, x: f32) -> f32 {
         (x * self.scale).round() / self.scale
     }
