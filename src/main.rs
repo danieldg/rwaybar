@@ -22,6 +22,7 @@ mod sway;
 #[cfg(feature = "dbus")]
 mod tray;
 mod util;
+mod value;
 mod wayland;
 mod wlr;
 

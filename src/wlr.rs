@@ -1,7 +1,7 @@
 use crate::{
-    data::Value,
     state::{NotifierList, Runtime, State},
     util::{spawn, Cell},
+    value::Value,
     wayland::DataControlManager,
 };
 use std::{

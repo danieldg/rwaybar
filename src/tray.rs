@@ -1,5 +1,5 @@
 use crate::{
-    data::{IterationItem, Value},
+    data::IterationItem,
     dbus::DBus,
     event::EventSink,
     font::render_font_item,
@@ -7,6 +7,7 @@ use crate::{
     render::{Rect, Render},
     state::{NotifierList, Runtime},
     util::{spawn, spawn_handle, Cell},
+    value::Value,
     wayland::Button,
 };
 use async_once_cell::OnceCell as AsyncOnceCell;

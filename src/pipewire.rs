@@ -1,8 +1,9 @@
 #![allow(non_upper_case_globals)]
 use crate::{
-    data::{IterationItem, Value},
+    data::IterationItem,
     state::{NotifierList, Runtime},
     util::spawn_noerr,
+    value::Value,
 };
 use bytes::{Buf, BufMut, BytesMut};
 use log::{debug, error, trace, warn};

@@ -1,8 +1,8 @@
 use crate::{
-    data::Value,
     font::FontMapped,
     render::{Rect, Render},
     state::Runtime,
+    value::Value,
 };
 use log::{debug, error, warn};
 use std::borrow::Cow;

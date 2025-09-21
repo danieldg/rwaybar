@@ -1,4 +1,4 @@
-use crate::{data::Value, dbus::DBus, state::State, util::spawn};
+use crate::{dbus::DBus, state::State, util::spawn, value::Value};
 use std::{
     cell::{Cell, RefCell},
     mem::ManuallyDrop,

@@ -1,10 +1,11 @@
 use crate::{
-    data::{IterationItem, Value},
+    data::IterationItem,
     event::EventSink,
     item::{Item, ModuleContext},
     render::{Group, Render},
     state::{NotifierList, Runtime},
     util::{spawn_noerr, Cell},
+    value::Value,
 };
 use bytes::{Buf, BytesMut};
 use log::{error, warn};

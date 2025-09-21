@@ -1,8 +1,9 @@
 use crate::{
-    data::{IterationItem, Value},
+    data::IterationItem,
     dbus::DBus,
     state::{NotifierList, Runtime},
     util::{self, Cell},
+    value::Value,
 };
 use futures_util::{future::RemoteHandle, StreamExt};
 use log::{debug, error, warn};

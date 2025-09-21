@@ -1,8 +1,8 @@
 use crate::{
-    data::Value,
     state::{NotifierList, Runtime},
     util,
     util::{spawn_noerr, Cell},
+    value::Value,
 };
 use async_once_cell::Lazy;
 use futures_channel::mpsc::{self, UnboundedSender};
