@@ -6,7 +6,7 @@ use std::{
     error::Error,
     future::poll_fn,
     iter,
-    rc::{self, Rc},
+    rc::{self, Rc, Weak},
     task,
     time::Instant,
 };
@@ -30,7 +30,7 @@ use crate::{
 };
 
 #[cfg(feature = "dbus")]
-use crate::mpris::MediaPlayer2;
+use crate::{api::DbusApi, mpris::MediaPlayer2};
 
 /// A bit-set for marking which surfaces need to be redrawn
 ///
@@ -182,6 +182,8 @@ impl NotifierList {
 /// Common state available during rendering operations
 #[derive(Debug)]
 pub struct Runtime {
+    #[cfg(feature = "dbus")]
+    pub api: Cell<Weak<DbusApi>>,
     #[cfg(feature = "dbus")]
     pub mpris: OnceCell<Rc<MediaPlayer2>>,
     pub clipboards: OnceCell<Clipboards>,
@@ -360,6 +362,8 @@ impl State {
             bar_config: Vec::new(),
             renderer: Renderer::new(),
             runtime: Runtime {
+                #[cfg(feature = "dbus")]
+                api: Default::default(),
                 #[cfg(feature = "dbus")]
                 mpris: OnceCell::new(),
                 clipboards: OnceCell::new(),

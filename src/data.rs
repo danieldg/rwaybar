@@ -27,6 +27,7 @@ use libc;
 use log::{debug, error, info, warn};
 use std::{
     borrow::Cow,
+    cell::OnceCell,
     fs, io,
     io::Write,
     os::unix::io::{AsRawFd, IntoRawFd},
@@ -108,7 +109,7 @@ pub enum Module {
     },
     #[cfg(feature = "dbus")]
     DbusApi {
-        handle: Cell<Option<Rc<DbusApi>>>,
+        handle: OnceCell<Rc<DbusApi>>,
     },
     #[cfg(feature = "dbus")]
     DbusCall {
@@ -920,7 +921,7 @@ impl Module {
     pub fn init(&self, name: &str, state: &State, from: Option<&Self>) {
         match (self, from) {
             (Module::DbusApi { handle }, _) => {
-                handle.set(Some(DbusApi::enable(state)));
+                handle.get_or_init(|| DbusApi::enable(state));
             }
             (
                 Module::ExecJson {
