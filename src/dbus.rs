@@ -297,7 +297,7 @@ impl DbusValue {
         });
     }
 
-    pub async fn do_call(self: Rc<Self>) {
+    pub async fn do_call(&self) {
         match self.try_call().await {
             Ok(()) => (),
             Err(e) => log::debug!("DBus error: {}", e),
@@ -353,7 +353,7 @@ impl DbusValue {
         }
     }
 
-    async fn try_call(self: Rc<Self>) -> zbus::Result<()> {
+    async fn try_call(&self) -> zbus::Result<()> {
         use toml::value::Value;
         let dbus = &*self.bus;
         let zbus = dbus.connection().await?;

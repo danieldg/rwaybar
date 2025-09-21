@@ -115,7 +115,7 @@ pub enum Module {
         poll: CachedValue<Rc<DbusValue>>,
     },
     Disk {
-        poll: CachedValue<(Box<str>, Cell<libc::statvfs>)>,
+        poll: CachedValue<(NotifierList, Box<str>, Cell<libc::statvfs>)>,
     },
     Eval {
         expr: EvalExpr,
@@ -196,7 +196,7 @@ pub enum Module {
     },
     ReadFile {
         on_err: Box<str>,
-        poll: CachedValue<(Box<str>, Cell<Option<String>>)>,
+        poll: CachedValue<(NotifierList, Box<str>, Cell<Option<String>>)>,
     },
     Regex {
         regex: regex::Regex,
@@ -212,7 +212,7 @@ pub enum Module {
         default: Box<str>,
     },
     Thermal {
-        poll: CachedValue<(Box<str>, Cell<u32>)>,
+        poll: CachedValue<(NotifierList, Box<str>, Cell<u32>)>,
         label: Option<Box<str>>,
     },
     Tray {
@@ -396,7 +396,7 @@ impl Module {
                 let v: libc::statvfs = unsafe { std::mem::zeroed() };
                 let poll = CachedValue::new(
                     toml_to_f64(value.get("poll")).unwrap_or(60.0),
-                    (path, Cell::new(v)),
+                    (Default::default(), path, Cell::new(v)),
                 );
                 Module::Disk { poll }
             }
@@ -714,7 +714,7 @@ impl Module {
                     .into();
                 let poll = CachedValue::new(
                     toml_to_f64(value.get("poll")).unwrap_or(60.0),
-                    (name, Cell::new(None)),
+                    (Default::default(), name, Cell::new(None)),
                 );
                 Module::ReadFile { on_err, poll }
             }
@@ -807,7 +807,7 @@ impl Module {
 
                 let poll = CachedValue::new(
                     toml_to_f64(value.get("poll")).unwrap_or(60.0),
-                    (path, Cell::new(0)),
+                    (Default::default(), path, Cell::new(0)),
                 );
 
                 Module::Thermal { poll, label }
@@ -1169,11 +1169,11 @@ impl Module {
             }
             #[cfg(feature = "dbus")]
             Module::DbusCall { poll } => poll
-                .read_refresh(rt, move |rc| rc.clone().do_call())
+                .read_refresh(async |rc| rc.do_call().await)
                 .read_in(key, rt, f),
             Module::Disk { poll } => {
-                let (_, vfs) = poll.read_refresh(rt, async |data| {
-                    let (path, contents) = &*data;
+                let (interest, _, vfs) = poll.read_refresh(async |data| {
+                    let (interest, path, contents) = &*data;
                     let cstr = std::ffi::CString::new(path.as_bytes()).unwrap();
                     let rv = unsafe { libc::statvfs(cstr.as_ptr(), contents.as_ptr()) };
                     if rv != 0 {
@@ -1183,8 +1183,9 @@ impl Module {
                             std::io::Error::last_os_error()
                         );
                     }
-                    data.notify_data(path);
+                    interest.notify_data(path);
                 });
+                interest.add(rt);
                 let vfs = vfs.get();
                 match key {
                     "size" => f(Value::Float((vfs.f_frsize * vfs.f_blocks) as f64)),
@@ -1375,24 +1376,25 @@ impl Module {
             Module::Pulse { target } => pulse::read_in(name, target, key, rt, f),
             Module::ReadFile { on_err, poll } => {
                 use std::io::Read;
-                let (_, contents) = poll.read_refresh(rt, async move |data| {
-                    let (name, contents) = &*data;
+                let (interest, _, contents) = poll.read_refresh(async move |data| {
+                    let (interest, name, contents) = &*data;
                     let mut v = String::with_capacity(4096);
                     match std::fs::File::open(&**name).and_then(|mut f| f.read_to_string(&mut v)) {
                         Ok(_len) => {
                             if contents.take_in(|prev| Some(&v) != prev.as_ref()) {
                                 contents.set(Some(v));
-                                data.notify_data(name);
+                                interest.notify_data(name);
                             }
                         }
                         Err(e) => {
                             debug!("Could not read {}: {}", name, e);
                             if contents.take().is_some() {
-                                data.notify_data(name);
+                                interest.notify_data(name);
                             }
                         }
                     }
                 });
+                interest.add(rt);
                 if key == "raw" {
                     contents.take_in(|s| f(s.as_deref().map_or(Value::NotReady, Value::Borrow)))
                 } else {
@@ -1442,8 +1444,8 @@ impl Module {
                     "label" => return f(label.as_deref().map_or(Value::Empty, Value::Borrow)),
                     _ => {}
                 }
-                let (_, value) = poll.read_refresh(rt, async move |data| {
-                    let (name, value) = &*data;
+                let (interest, _, value) = poll.read_refresh(async move |data| {
+                    let (interest, name, value) = &*data;
                     match fs::read_to_string(&**name) {
                         Ok(mut s) => {
                             s.pop();
@@ -1454,15 +1456,16 @@ impl Module {
                                     value.set(0);
                                 }
                             }
-                            data.notify_data(name);
+                            interest.notify_data(name);
                         }
                         Err(e) => {
                             debug!("Could not read {}: {}", name, e);
                             value.set(0);
-                            data.notify_data(name);
+                            interest.notify_data(name);
                         }
                     }
                 });
+                interest.add(rt);
                 f(Value::Float(value.get() as f64 / 1000.0))
             }
             Module::Value { value, interested } => {
