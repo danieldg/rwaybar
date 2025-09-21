@@ -1032,6 +1032,7 @@ dependencies = [
  "log",
  "memmap2",
  "once_cell",
+ "pin-project-lite",
  "png 0.18.0",
  "quick-xml",
  "regex",

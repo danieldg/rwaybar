@@ -3,6 +3,7 @@ use std::{error::Error, rc::Rc};
 #[cfg(feature = "dbus")]
 mod api;
 mod bar;
+mod cache;
 mod data;
 #[cfg(feature = "dbus")]
 mod dbus;

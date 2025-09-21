@@ -1,3 +1,4 @@
+use crate::state::Runtime;
 use json::JsonValue;
 use log::warn;
 use std::{borrow::Cow, fmt};
@@ -219,5 +220,74 @@ impl<'a> From<&'a str> for Value<'a> {
 impl<'a> From<String> for Value<'a> {
     fn from(v: String) -> Self {
         Value::Owned(v)
+    }
+}
+
+pub struct EvalContext<'a> {
+    pub rt: &'a Runtime,
+    pub vars: Vec<(&'a str, evalexpr::Value)>,
+}
+
+impl<'a> evalexpr::Context for EvalContext<'a> {
+    type NumericTypes = evalexpr::DefaultNumericTypes;
+    fn get_value(&self, name: &str) -> Option<&evalexpr::Value> {
+        self.vars
+            .iter()
+            .filter(|&&(k, _)| k == name)
+            .next()
+            .map(|(_, v)| v)
+    }
+    fn call_function(
+        &self,
+        name: &str,
+        arg: &evalexpr::Value,
+    ) -> evalexpr::EvalexprResult<evalexpr::Value> {
+        match name {
+            "float" => {
+                if arg.is_float() {
+                    return Ok(arg.clone());
+                }
+                let rv = arg.as_string()?;
+                match rv.trim().parse() {
+                    Ok(v) => Ok(evalexpr::Value::Float(v)),
+                    Err(_) => Err(evalexpr::error::EvalexprError::ExpectedFloat {
+                        actual: evalexpr::Value::String(rv),
+                    }),
+                }
+            }
+            "int" => {
+                if let Ok(f) = arg.as_float() {
+                    return Ok(evalexpr::Value::Int(f as _));
+                }
+                let rv = arg.as_string()?;
+                match rv.trim().parse() {
+                    Ok(v) => Ok(evalexpr::Value::Int(v)),
+                    Err(_) => Err(evalexpr::error::EvalexprError::ExpectedInt {
+                        actual: evalexpr::Value::String(rv),
+                    }),
+                }
+            }
+            "get" => {
+                let key = arg.as_string()?;
+                let (name, key) = match key.find('.') {
+                    Some(p) => (&key[..p], &key[p + 1..]),
+                    None => (&key[..], ""),
+                };
+                if let Some(item) = self.rt.items.get(name) {
+                    Ok(item.data.read_to_owned(name, key, self.rt).into())
+                } else {
+                    Ok(evalexpr::Value::Empty)
+                }
+            }
+            _ => Err(evalexpr::error::EvalexprError::FunctionIdentifierNotFound(
+                name.into(),
+            )),
+        }
+    }
+    fn are_builtin_functions_disabled(&self) -> bool {
+        false
+    }
+    fn set_builtin_functions_disabled(&mut self, _: bool) -> evalexpr::EvalexprResult<()> {
+        Err(evalexpr::error::EvalexprError::BuiltinFunctionsCannotBeDisabled)
     }
 }

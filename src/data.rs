@@ -10,13 +10,14 @@ use crate::pulse;
 #[cfg(feature = "dbus")]
 use crate::tray;
 use crate::{
+    cache::CachedValue,
     item::{Item, ModuleContext},
     pipewire,
     state::{NotifierList, Runtime, State},
     style::ItemFormat,
     sway,
-    util::{glob_expand, spawn_handle, spawn_noerr, toml_to_f64, toml_to_string, Cell, Fd},
-    value::Value,
+    util::{glob_expand, spawn_handle, toml_to_f64, toml_to_string, Cell, Fd},
+    value::{EvalContext, Value},
     wlr::ClipboardData,
 };
 use evalexpr::Node as EvalExpr;
@@ -26,9 +27,7 @@ use libc;
 use log::{debug, error, info, warn};
 use std::{
     borrow::Cow,
-    fs,
-    future::Future,
-    io,
+    fs, io,
     io::Write,
     os::unix::io::{AsRawFd, IntoRawFd},
     process::{ChildStdin, Command, Stdio},
@@ -74,136 +73,6 @@ impl ItemReference {
     }
 }
 
-/// Helper for items that are updated based on a polling timer
-#[derive(Debug)]
-pub struct Periodic<T> {
-    period: f64,
-    shared: Rc<PeriodicInner<T>>,
-}
-
-#[derive(Debug)]
-struct PeriodicInner<T> {
-    interested: NotifierList,
-    was_read: Cell<bool>,
-    last_update: Cell<Option<Instant>>,
-    timer: Cell<Option<RemoteHandle<()>>>,
-    data: T,
-}
-
-impl<T: 'static> Periodic<T> {
-    pub fn new(period: f64, data: T) -> Self {
-        Periodic {
-            period,
-            shared: Rc::new(PeriodicInner {
-                interested: Default::default(),
-                was_read: Cell::default(),
-                last_update: Cell::default(),
-                timer: Cell::default(),
-                data,
-            }),
-        }
-    }
-
-    pub fn data(&self) -> &T {
-        self.shared.was_read.set(true);
-        &self.shared.data
-    }
-
-    /// Read periodically using the given closure.
-    ///
-    /// If the closure returns `Some(reason)`, an update will happen; otherwise, the closure will
-    /// continue to be polled at the specified period.
-    pub fn read_refresh<F>(&self, rt: &Runtime, mut do_read: F)
-    where
-        F: FnMut(&T) -> Option<&str> + 'static,
-    {
-        self._read_refresh(rt, move |n, t| {
-            match (n, do_read(t)) {
-                (Some(notify), Some(reason)) => {
-                    notify.notify_data(reason);
-                }
-                _ => {}
-            }
-            None::<std::future::Ready<_>>
-        })
-    }
-
-    /// Read periodically using the given async closure, spawning it off if in sync context.
-    ///
-    /// The closure is responsible for change notification.
-    pub fn read_refresh_async<F, Fut>(&self, rt: &Runtime, mut do_read: F)
-    where
-        F: FnMut(&T) -> Fut + 'static,
-        Fut: Future<Output = ()> + 'static,
-    {
-        self._read_refresh(rt, move |_n, t| Some(do_read(t)));
-    }
-
-    fn _read_refresh<F, Fut>(&self, rt: &Runtime, mut do_read: F)
-    where
-        F: FnMut(Option<&NotifierList>, &T) -> Option<Fut> + 'static,
-        Fut: Future<Output = ()> + 'static,
-    {
-        let last_update = self.shared.last_update.get();
-        if self.period <= 0.0 && last_update.is_some() {
-            // the one-shot read is already done
-            return;
-        }
-
-        let now = Instant::now();
-        self.shared.interested.add(rt);
-        if let Some(last_update) = last_update {
-            // Read a new values if we are currently redrawing and it's at least 90% of the
-            // deadline.  This avoids waking up several times in a row to update each of a
-            // group of items that have almost the same deadline.
-            let early = last_update + Duration::from_secs_f64(self.period * 0.9);
-            if early > now {
-                // just keep the timer active
-                return;
-            }
-        }
-        // last_update was too long ago, update now
-
-        self.shared.last_update.set(Some(now));
-        let fut = do_read(None, &self.shared.data);
-        if self.period > 0.0 {
-            let weak = Rc::downgrade(&self.shared);
-            let period = self.period;
-
-            let rh = spawn_handle("Periodic", async move {
-                match fut {
-                    Some(fut) => fut.await,
-                    None => {}
-                }
-                loop {
-                    tokio::time::sleep(Duration::from_secs_f64(period)).await;
-                    let shared = match weak.upgrade() {
-                        Some(v) => v,
-                        None => return Ok(()),
-                    };
-
-                    // Try to avoid reading if nobody is listening.
-                    if !shared.was_read.replace(false) {
-                        shared.timer.set(None);
-                        return Ok(());
-                    }
-
-                    shared.last_update.set(Some(Instant::now()));
-                    let fut = do_read(Some(&shared.interested), &shared.data);
-                    match fut {
-                        Some(fut) => fut.await,
-                        None => {}
-                    }
-                }
-            });
-            // ensure we only have one task working to update the value
-            self.shared.timer.set(Some(rh));
-        } else if let Some(fut) = fut {
-            spawn_noerr(fut);
-        }
-    }
-}
-
 /// Type-specific part of an [Item]
 #[derive(Debug)]
 pub enum Module {
@@ -243,10 +112,10 @@ pub enum Module {
     },
     #[cfg(feature = "dbus")]
     DbusCall {
-        poll: Periodic<Rc<DbusValue>>,
+        poll: CachedValue<Rc<DbusValue>>,
     },
     Disk {
-        poll: Periodic<(Box<str>, Cell<libc::statvfs>)>,
+        poll: CachedValue<(Box<str>, Cell<libc::statvfs>)>,
     },
     Eval {
         expr: EvalExpr,
@@ -327,7 +196,7 @@ pub enum Module {
     },
     ReadFile {
         on_err: Box<str>,
-        poll: Periodic<(Box<str>, Cell<Option<String>>)>,
+        poll: CachedValue<(Box<str>, Cell<Option<String>>)>,
     },
     Regex {
         regex: regex::Regex,
@@ -343,7 +212,7 @@ pub enum Module {
         default: Box<str>,
     },
     Thermal {
-        poll: Periodic<(Box<str>, Cell<u32>)>,
+        poll: CachedValue<(Box<str>, Cell<u32>)>,
         label: Option<Box<str>>,
     },
     Tray {
@@ -511,7 +380,7 @@ impl Module {
                     Ok(rc) => rc,
                     Err(e) => return Module::parse_error(e),
                 };
-                let poll = Periodic::new(toml_to_f64(value.get("poll")).unwrap_or(0.0), rc);
+                let poll = CachedValue::new(toml_to_f64(value.get("poll")).unwrap_or(0.0), rc);
                 Module::DbusCall { poll }
             }
             #[cfg(feature = "dbus")]
@@ -525,7 +394,7 @@ impl Module {
                     .unwrap_or("/")
                     .into();
                 let v: libc::statvfs = unsafe { std::mem::zeroed() };
-                let poll = Periodic::new(
+                let poll = CachedValue::new(
                     toml_to_f64(value.get("poll")).unwrap_or(60.0),
                     (path, Cell::new(v)),
                 );
@@ -843,7 +712,7 @@ impl Module {
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .into();
-                let poll = Periodic::new(
+                let poll = CachedValue::new(
                     toml_to_f64(value.get("poll")).unwrap_or(60.0),
                     (name, Cell::new(None)),
                 );
@@ -936,7 +805,7 @@ impl Module {
                     return Module::parse_error("'thermal' requires a 'file' or 'name'");
                 };
 
-                let poll = Periodic::new(
+                let poll = CachedValue::new(
                     toml_to_f64(value.get("poll")).unwrap_or(60.0),
                     (path, Cell::new(0)),
                 );
@@ -1299,12 +1168,12 @@ impl Module {
                 f(Value::Owned(value))
             }
             #[cfg(feature = "dbus")]
-            Module::DbusCall { poll } => {
-                poll.read_refresh_async(rt, move |rc| rc.clone().do_call());
-                poll.data().read_in(key, rt, f)
-            }
+            Module::DbusCall { poll } => poll
+                .read_refresh(rt, move |rc| rc.clone().do_call())
+                .read_in(key, rt, f),
             Module::Disk { poll } => {
-                poll.read_refresh(rt, |(path, contents)| {
+                let (_, vfs) = poll.read_refresh(rt, async |data| {
+                    let (path, contents) = &*data;
                     let cstr = std::ffi::CString::new(path.as_bytes()).unwrap();
                     let rv = unsafe { libc::statvfs(cstr.as_ptr(), contents.as_ptr()) };
                     if rv != 0 {
@@ -1314,9 +1183,9 @@ impl Module {
                             std::io::Error::last_os_error()
                         );
                     }
-                    Some(path)
+                    data.notify_data(path);
                 });
-                let vfs = poll.data().1.get();
+                let vfs = vfs.get();
                 match key {
                     "size" => f(Value::Float((vfs.f_frsize * vfs.f_blocks) as f64)),
                     "free" => f(Value::Float((vfs.f_bsize * vfs.f_bfree) as f64)),
@@ -1506,28 +1375,24 @@ impl Module {
             Module::Pulse { target } => pulse::read_in(name, target, key, rt, f),
             Module::ReadFile { on_err, poll } => {
                 use std::io::Read;
-                poll.read_refresh(rt, move |(name, contents)| {
+                let (_, contents) = poll.read_refresh(rt, async move |data| {
+                    let (name, contents) = &*data;
                     let mut v = String::with_capacity(4096);
                     match std::fs::File::open(&**name).and_then(|mut f| f.read_to_string(&mut v)) {
                         Ok(_len) => {
-                            if contents.take_in(|prev| Some(&v) == prev.as_ref()) {
-                                None
-                            } else {
+                            if contents.take_in(|prev| Some(&v) != prev.as_ref()) {
                                 contents.set(Some(v));
-                                Some(name)
+                                data.notify_data(name);
                             }
                         }
                         Err(e) => {
                             debug!("Could not read {}: {}", name, e);
                             if contents.take().is_some() {
-                                Some(name)
-                            } else {
-                                None
+                                data.notify_data(name);
                             }
                         }
                     }
                 });
-                let (_, contents) = poll.data();
                 if key == "raw" {
                     contents.take_in(|s| f(s.as_deref().map_or(Value::NotReady, Value::Borrow)))
                 } else {
@@ -1577,25 +1442,27 @@ impl Module {
                     "label" => return f(label.as_deref().map_or(Value::Empty, Value::Borrow)),
                     _ => {}
                 }
-                poll.read_refresh(rt, move |(name, value)| match fs::read_to_string(&**name) {
-                    Ok(mut s) => {
-                        s.pop();
-                        match s.parse() {
-                            Ok(v) => value.set(v),
-                            _ => {
-                                debug!("Invalid value '{}' read from {}", s, name);
-                                value.set(0);
+                let (_, value) = poll.read_refresh(rt, async move |data| {
+                    let (name, value) = &*data;
+                    match fs::read_to_string(&**name) {
+                        Ok(mut s) => {
+                            s.pop();
+                            match s.parse() {
+                                Ok(v) => value.set(v),
+                                _ => {
+                                    debug!("Invalid value '{}' read from {}", s, name);
+                                    value.set(0);
+                                }
                             }
+                            data.notify_data(name);
                         }
-                        Some(name)
-                    }
-                    Err(e) => {
-                        debug!("Could not read {}: {}", name, e);
-                        value.set(0);
-                        Some(name)
+                        Err(e) => {
+                            debug!("Could not read {}: {}", name, e);
+                            value.set(0);
+                            data.notify_data(name);
+                        }
                     }
                 });
-                let (_, value) = poll.data();
                 f(Value::Float(value.get() as f64 / 1000.0))
             }
             Module::Value { value, interested } => {
@@ -1792,75 +1659,6 @@ impl ClockState {
             this.task.set(None);
             Ok(())
         })));
-    }
-}
-
-pub struct EvalContext<'a> {
-    pub rt: &'a Runtime,
-    pub vars: Vec<(&'a str, evalexpr::Value)>,
-}
-
-impl<'a> evalexpr::Context for EvalContext<'a> {
-    type NumericTypes = evalexpr::DefaultNumericTypes;
-    fn get_value(&self, name: &str) -> Option<&evalexpr::Value> {
-        self.vars
-            .iter()
-            .filter(|&&(k, _)| k == name)
-            .next()
-            .map(|(_, v)| v)
-    }
-    fn call_function(
-        &self,
-        name: &str,
-        arg: &evalexpr::Value,
-    ) -> evalexpr::EvalexprResult<evalexpr::Value> {
-        match name {
-            "float" => {
-                if arg.is_float() {
-                    return Ok(arg.clone());
-                }
-                let rv = arg.as_string()?;
-                match rv.trim().parse() {
-                    Ok(v) => Ok(evalexpr::Value::Float(v)),
-                    Err(_) => Err(evalexpr::error::EvalexprError::ExpectedFloat {
-                        actual: evalexpr::Value::String(rv),
-                    }),
-                }
-            }
-            "int" => {
-                if let Ok(f) = arg.as_float() {
-                    return Ok(evalexpr::Value::Int(f as _));
-                }
-                let rv = arg.as_string()?;
-                match rv.trim().parse() {
-                    Ok(v) => Ok(evalexpr::Value::Int(v)),
-                    Err(_) => Err(evalexpr::error::EvalexprError::ExpectedInt {
-                        actual: evalexpr::Value::String(rv),
-                    }),
-                }
-            }
-            "get" => {
-                let key = arg.as_string()?;
-                let (name, key) = match key.find('.') {
-                    Some(p) => (&key[..p], &key[p + 1..]),
-                    None => (&key[..], ""),
-                };
-                if let Some(item) = self.rt.items.get(name) {
-                    Ok(item.data.read_to_owned(name, key, self.rt).into())
-                } else {
-                    Ok(evalexpr::Value::Empty)
-                }
-            }
-            _ => Err(evalexpr::error::EvalexprError::FunctionIdentifierNotFound(
-                name.into(),
-            )),
-        }
-    }
-    fn are_builtin_functions_disabled(&self) -> bool {
-        false
-    }
-    fn set_builtin_functions_disabled(&mut self, _: bool) -> evalexpr::EvalexprResult<()> {
-        Err(evalexpr::error::EvalexprError::BuiltinFunctionsCannotBeDisabled)
     }
 }
 

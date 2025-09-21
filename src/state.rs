@@ -18,13 +18,13 @@ use wayland_client::{
 
 use crate::{
     bar::Bar,
-    data::{EvalContext, IterationItem, Module},
+    data::{IterationItem, Module},
     font::FontMapped,
     item::*,
     render::{RenderCache, Renderer},
     sway::SwaySocket,
     util::{spawn, spawn_noerr, Cell},
-    value::Value,
+    value::{EvalContext, Value},
     wayland::{SurfaceData, WaylandClient},
     wlr::Clipboards,
 };
