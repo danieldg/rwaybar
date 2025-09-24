@@ -19,9 +19,8 @@ use wayland_client::{
 use crate::{
     bar::Bar,
     data::{IterationItem, Module},
-    font::FontMapped,
     item::*,
-    render::{RenderCache, Renderer},
+    render::Renderer,
     sway::SwaySocket,
     util::{spawn, spawn_noerr, Cell},
     value::{EvalContext, Value},
@@ -189,7 +188,6 @@ pub struct Runtime {
     pub clipboards: OnceCell<Clipboards>,
     pub sway: SwaySocket,
     pub xdg: xdg::BaseDirectories,
-    pub fonts: Vec<FontMapped>,
     pub items: HashMap<Rc<str>, Rc<Item>>,
     pub wayland: WaylandClient,
 
@@ -369,7 +367,6 @@ impl State {
                 clipboards: OnceCell::new(),
                 sway: SwaySocket::lazy(),
                 xdg: xdg::BaseDirectories::new(),
-                fonts: Vec::new(),
                 items: Default::default(),
                 item_var: Item::new_current_item(),
                 interest: Cell::new(InterestMask(0)),
@@ -425,7 +422,6 @@ impl State {
     /// Note: always call from a task, not drectly from dispatch
     fn load_config(&mut self, reload: bool) -> Result<(), Box<dyn Error>> {
         let mut bar_config = Vec::new();
-        let mut font_list = Vec::new();
 
         let config_path = self
             .runtime
@@ -435,6 +431,8 @@ impl State {
 
         let cfg = std::fs::read_to_string(config_path)?;
         let config: toml::Value = toml::from_str(&cfg)?;
+
+        let mut font_list = &Vec::new();
 
         let cfg = config.as_table().unwrap();
 
@@ -449,9 +447,9 @@ impl State {
                     }
                     None
                 }
-                "fonts" => {
-                    if let Some(list) = value.as_table() {
-                        font_list = list.iter().collect();
+                "global" => {
+                    if let Some(list) = value.get("font-list").and_then(|v| v.as_array()) {
+                        font_list = list;
                     }
                     None
                 }
@@ -467,26 +465,12 @@ impl State {
             Err("At least one [[bar]] section is required")?;
         }
 
-        let mut fonts = Vec::with_capacity(font_list.len());
-        for (name, path) in font_list {
-            match FontMapped::new(name.clone(), path.as_str().unwrap_or("").to_owned().into()) {
-                Ok(font) => fonts.push(font),
-                Err(e) => {
-                    error!("Could not load font '{name}' from {path}: {e}");
-                }
-            }
-        }
-
-        if fonts.is_empty() {
-            Err("At least one valid font is required in the [fonts] section")?;
-        }
-
         debug!("Loading configuration");
 
         let mut old_items = std::mem::replace(&mut self.runtime.items, new_items);
         self.bar_config = bar_config;
-        self.runtime.fonts = fonts;
-        self.renderer.cache = RenderCache::new();
+        self.renderer.cache.clear();
+        self.renderer.cache.fontdb.set_fallback(font_list);
 
         self.runtime
             .items

@@ -1,5 +1,5 @@
 use crate::{
-    font::{FontMapped, RenderKey, TextImage},
+    font::{FontDB, RenderKey, TextImage},
     icon::OwnedImage,
     state::Runtime,
     style::{Align, Computed},
@@ -10,7 +10,7 @@ use std::{
     collections::{HashMap, HashSet},
     hash::{Hash, Hasher},
     sync::Arc,
-    time,
+    time::{Duration, Instant},
 };
 use wayland_client::protocol::{wl_pointer::WlPointer, wl_shm::Format, wl_surface::WlSurface};
 
@@ -41,8 +41,6 @@ impl Renderer {
     ///
     /// This may be used to create size estimates for surface creation.
     pub fn render_dummy<R>(&mut self, rt: &Runtime, render: impl FnOnce(&mut Render) -> R) -> R {
-        let font = &rt.fonts[0];
-
         let mut queue = Queue { items: vec![] };
         let mut ctx = Render {
             queue: &mut queue,
@@ -54,7 +52,7 @@ impl Renderer {
             scale: 1.0,
 
             style: Computed {
-                font,
+                font: fontdb::ID::dummy(),
                 font_size: 16.0,
                 font_color: tiny_skia::Color::BLACK,
                 text_stroke: None,
@@ -90,7 +88,6 @@ impl Renderer {
         let no_xform = tiny_skia::Transform::identity();
 
         let mut queue = Queue { items: vec![] };
-        let font = &rt.fonts[0];
 
         let mut ctx = Render {
             queue: &mut queue,
@@ -102,7 +99,7 @@ impl Renderer {
             scale,
 
             style: Computed {
-                font,
+                font: fontdb::ID::dummy(),
                 font_size: 16.0,
                 font_color: tiny_skia::Color::BLACK,
                 text_stroke: None,
@@ -405,20 +402,28 @@ impl RenderSurface {
 /// This is generally accessed via [Render].cache
 #[derive(Debug)]
 pub struct RenderCache {
+    pub fontdb: FontDB,
     text: HashMap<RenderKey, TextImage>,
     icon: HashMap<(Box<str>, u32), Option<OwnedImage>>,
     failed_chars: HashSet<char>,
-    last_expire: time::Instant,
+    last_expire: Instant,
 }
 
 impl RenderCache {
     pub fn new() -> Self {
         Self {
+            fontdb: FontDB::load(),
             text: HashMap::new(),
             icon: HashMap::new(),
             failed_chars: HashSet::new(),
-            last_expire: time::Instant::now(),
+            last_expire: Instant::now(),
         }
+    }
+
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.icon.clear();
+        self.failed_chars.clear();
     }
 
     pub fn debug_stats(&self) {
@@ -465,19 +470,19 @@ impl RenderCache {
         &mut self,
         name: Box<str>,
         target_size: u32,
-        populate: impl FnOnce(&str) -> Option<OwnedImage>,
+        populate: impl FnOnce(&mut FontDB, &str) -> Option<OwnedImage>,
     ) -> Option<&OwnedImage> {
         self.icon
             .entry((name, target_size))
-            .or_insert_with_key(|(name, _)| populate(name))
+            .or_insert_with_key(|(name, _)| populate(&mut self.fontdb, name))
             .as_ref()
     }
 
-    pub fn prune(&mut self, as_of: time::Instant) {
-        if self.last_expire > as_of - time::Duration::from_secs(30) {
+    pub fn prune(&mut self, as_of: Instant) {
+        if self.last_expire > as_of - Duration::from_secs(30) {
             return;
         }
-        if let Some(min) = as_of.checked_sub(time::Duration::from_secs(13)) {
+        if let Some(min) = as_of.checked_sub(Duration::from_secs(13)) {
             let had = self.text.len();
             self.text.retain(|_k, v| v.last_used > min);
             log::debug!("Cache pruned from {} to {} entries", had, self.text.len());
@@ -591,7 +596,7 @@ pub struct Render<'a> {
     pub err_name: &'a str,
     queue: &'a mut Queue,
 
-    pub style: Computed<'a>,
+    pub style: Computed,
 
     /// A width of 1.0 in draw coordinates represents (scale) pixels on the screen
     pub scale: f32,
@@ -644,14 +649,10 @@ impl<'a> Render<'a> {
         }
     }
 
-    pub fn with_font<'b>(&'b mut self, font: Option<&'b FontMapped>) -> Render<'b> {
+    pub fn as_mut<'b>(&'b mut self) -> Render<'b> {
         Render {
             queue: &mut *self.queue,
             cache: &mut *self.cache,
-            style: Computed {
-                font: font.unwrap_or(&self.style.font),
-                ..self.style
-            },
             ..*self
         }
     }

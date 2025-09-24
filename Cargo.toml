@@ -40,8 +40,9 @@ toml = "0.9"
 xdg = "*"
 
 # GUI
+fontdb = "0.23"
 png = "0.18"
-resvg = { version = "0.45", default-features = false }
+resvg = { version = "0.45", default-features = false, features = ['text'] }
 smithay-client-toolkit = { version = "0.20", default-features = false }
 #smithay-client-toolkit = { version = "*", default-features = false, path = "../smithay-client-toolkit" }
 tiny-skia = "0.11"

@@ -1,4 +1,4 @@
-use crate::render::Render;
+use crate::{font::FontDB, render::Render};
 use std::{
     fs::{self, File},
     io,
@@ -17,13 +17,23 @@ impl OwnedImage {
         tiny_skia::Pixmap::as_ref(&self.pixmap)
     }
 
-    pub fn from_file<R: io::Read>(mut file: R, tsize: u32, rescale: bool) -> Option<Self> {
+    pub fn from_file<R: io::Read>(
+        mut file: R,
+        tsize: u32,
+        rescale: bool,
+        fontdb: Option<&FontDB>,
+    ) -> Option<Self> {
         let mut buf = Vec::new();
         file.read_to_end(&mut buf).ok()?;
-        Self::from_data(&buf, tsize, rescale)
+        Self::from_data(&buf, tsize, rescale, fontdb)
     }
 
-    pub fn from_data(buf: &[u8], tsize: u32, rescale: bool) -> Option<Self> {
+    pub fn from_data(
+        buf: &[u8],
+        tsize: u32,
+        rescale: bool,
+        fontdb: Option<&FontDB>,
+    ) -> Option<Self> {
         Self::from_png(buf)
             .map(|img| {
                 if rescale {
@@ -32,7 +42,7 @@ impl OwnedImage {
                     img
                 }
             })
-            .or_else(|| Self::from_svg(buf, tsize))
+            .or_else(|| Self::from_svg(buf, tsize, fontdb))
     }
 
     pub fn from_png(data: &[u8]) -> Option<Self> {
@@ -98,8 +108,12 @@ impl OwnedImage {
         }
     }
 
-    pub fn from_svg(data: &[u8], height: u32) -> Option<Self> {
-        let tree = resvg::usvg::Tree::from_data(data, &Default::default()).ok()?;
+    pub fn from_svg(data: &[u8], height: u32, fontdb: Option<&FontDB>) -> Option<Self> {
+        let opts = resvg::usvg::Options {
+            fontdb: fontdb.map(FontDB::db_arc).unwrap_or_default(),
+            ..Default::default()
+        };
+        let tree = resvg::usvg::Tree::from_data(data, &opts).ok()?;
         let svg_width = tree.size().width();
         let svg_height = tree.size().height();
         let scale = height as f32 / svg_height;
@@ -116,7 +130,7 @@ impl OwnedImage {
     }
 }
 
-fn open_icon(xdg: &xdg::BaseDirectories, name: &str, target_size: u32) -> io::Result<File> {
+fn open_icon(name: &str, target_size: u32, xdg: &xdg::BaseDirectories) -> io::Result<File> {
     if name.contains('/') {
         match File::open(&name) {
             Ok(file) => return Ok(file),
@@ -242,10 +256,10 @@ pub fn render(ctx: &mut Render, name: Box<str>) -> Result<(), ()> {
 
     let img = ctx
         .cache
-        .get_icon(name, tsize, |name| {
-            open_icon(&ctx.runtime.xdg, name, tsize)
+        .get_icon(name, tsize, |fonts, name| {
+            open_icon(name, tsize, &ctx.runtime.xdg)
                 .ok()
-                .and_then(|file| OwnedImage::from_file(file, tsize, true))
+                .and_then(|file| OwnedImage::from_file(file, tsize, true, Some(fonts)))
         })
         .ok_or(())?
         .pixmap

@@ -1,5 +1,4 @@
 use crate::{
-    font::FontMapped,
     render::{Rect, Render},
     state::Runtime,
     value::Value,
@@ -10,8 +9,8 @@ use tiny_skia::{Color, Point};
 
 /// Style information that is inherited from the parent item
 #[derive(Debug, Copy, Clone)]
-pub struct Computed<'a> {
-    pub font: &'a FontMapped,
+pub struct Computed {
+    pub font: fontdb::ID,
     pub font_size: f32,
     pub font_color: Color,
     pub text_stroke: Option<Color>,
@@ -46,8 +45,8 @@ impl ItemFormat {
                 t.iter()
                     .filter(|(k, _)| match &***k {
                         "align" | "bg" | "bg-alpha" | "border" | "border-alpha"
-                        | "border-color" | "fg" | "fg-alpha" | "font" | "halign" | "margin"
-                        | "max-width" | "min-width" | "padding" | "text-outline"
+                        | "border-color" | "fg" | "fg-alpha" | "font" | "font-size" | "halign"
+                        | "margin" | "max-width" | "min-width" | "padding" | "text-outline"
                         | "text-outline-alpha" | "text-outline-width" | "valign" => true,
                         _ => false,
                     })
@@ -121,11 +120,17 @@ impl ItemFormat {
                 }
                 _ => &*font,
             };
-            let font = runtime.fonts.iter().find(|f| f.name == font);
+            let font = ctx.cache.fontdb.query(font);
+
             (font, size)
         });
 
-        let mut ctx = ctx.with_font(font);
+        let font_size = font_size.or_else(|| get("font-size")?.parse().ok());
+
+        let mut ctx = ctx.as_mut();
+        if let Some(font) = font {
+            ctx.style.font = font;
+        }
         ctx.style.font_size = font_size.unwrap_or(ctx.style.font_size);
 
         ctx.style.align = ctx.style.align.merge(&align);

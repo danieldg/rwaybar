@@ -596,7 +596,7 @@ impl Item {
             Module::FontTest { offset, interested } => {
                 use std::fmt::Write;
                 interested.add(&ctx.runtime);
-                let font = ctx.style.font.as_ref();
+                let font = ctx.cache.fontdb.face(ctx.style.font);
                 let glyphs = font.number_of_glyphs();
                 let offset = offset.get();
                 let mut glyph_to_char = vec![0u32; glyphs as usize];
