@@ -2,15 +2,17 @@ use crate::{
     icon::OwnedImage,
     render::{Rect, Render, RenderCache},
     style::Formatting,
+    util::Cell,
 };
 use log::info;
-use std::{mem, sync::Arc, time::Instant};
+use std::{collections::HashMap, mem, sync::Arc, time::Instant};
 use tiny_skia::{Color, Point, Transform};
 use ttf_parser::{Face, GlyphId};
 
 #[derive(Debug)]
 pub struct FontDB {
     fontdb: Option<Arc<fontdb::Database>>,
+    queries: Cell<HashMap<Box<str>, Option<fontdb::ID>>>,
     fallback_ids: Vec<fontdb::ID>,
 }
 
@@ -20,6 +22,7 @@ impl FontDB {
         db.load_system_fonts();
         Self {
             fontdb: Some(Arc::new(db)),
+            queries: Default::default(),
             fallback_ids: Vec::new(),
         }
     }
@@ -49,6 +52,9 @@ impl FontDB {
     }
 
     pub fn query(&self, name: &str) -> Option<fontdb::ID> {
+        if let Some(res) = self.queries.take_in(|q| q.get(name).cloned()) {
+            return res;
+        }
         let db = self.fontdb.as_ref().unwrap();
         if name.starts_with('/') {
             for face in db.faces() {
@@ -57,16 +63,20 @@ impl FontDB {
                         if p.as_os_str() == name =>
                     {
                         // Note: Path::eq is stupidly slow compared to OsStr::eq
+                        self.queries
+                            .take_in(|q| q.insert(name.into(), Some(face.id)));
                         return Some(face.id);
                     }
                     _ => {}
                 }
             }
         }
-        db.query(&fontdb::Query {
+        let rv = db.query(&fontdb::Query {
             families: &[fontdb::Family::Name(name)],
             ..Default::default()
-        })
+        });
+        self.queries.take_in(|q| q.insert(name.into(), rv));
+        rv
     }
 
     pub fn face(&mut self, id: fontdb::ID) -> Face<'_> {
@@ -104,10 +114,14 @@ impl FontDB {
     }
 
     fn take(&mut self) -> Self {
-        Self {
-            fontdb: self.fontdb.take(),
-            fallback_ids: mem::take(&mut self.fallback_ids),
-        }
+        mem::replace(
+            self,
+            Self {
+                fontdb: Default::default(),
+                queries: Default::default(),
+                fallback_ids: Default::default(),
+            },
+        )
     }
 }
 
@@ -116,7 +130,7 @@ pub fn scale_from_pt(face: &Face, pt: f32) -> f32 {
 }
 
 #[derive(Debug, Clone)]
-pub struct CGlyph {
+struct CGlyph {
     pub id: GlyphId,
     /// For normal glyphs, scales from font units (integer) to render coordinates.
     /// If pixmap is Some, then scales from pixmap pixel to final pixel
@@ -128,7 +142,10 @@ pub struct CGlyph {
     pub position: Point,
     pub fid: fontdb::ID,
     pub color: Color,
+
+    /// At most one of pixmap and path is populated by gen_path
     pub pixmap: Option<OwnedImage>,
+    /// At most one of pixmap and path is populated by gen_path
     pub path: Option<tiny_skia::Path>,
 }
 
@@ -139,7 +156,7 @@ fn layout_font(
     rgba: Color,
     text: &str,
     markup: bool,
-) -> (Vec<CGlyph>, Point) {
+) -> (Vec<CGlyph>, Point, FontDB) {
     let mut db = cache.fontdb.take();
     db.face1(fid);
     let mut font = db.face2(fid);
@@ -301,7 +318,7 @@ fn layout_font(
             }
             if fallback.is_none() {
                 cache.set_failed(c);
-                info!("Cannot find font for '{}'", c);
+                info!("Cannot find font for '{c}'; consider adding a fallback font for it");
                 continue;
             }
             prev = None;
@@ -327,9 +344,7 @@ fn layout_font(
         y: ypos - desc,
     };
 
-    cache.fontdb = db;
-
-    (to_draw, text_size)
+    (to_draw, text_size, db)
 }
 
 impl CGlyph {
@@ -372,8 +387,19 @@ impl CGlyph {
         self.position += delta;
     }
 
-    fn bbox(&mut self, db: &mut FontDB, stroke: f32) -> Rect {
-        let font = db.face(self.fid);
+    fn gen_path<'a>(
+        &mut self,
+        cache: &mut Option<(fontdb::ID, Face<'a>)>,
+        db: &'a FontDB,
+        stroke: f32,
+    ) -> Rect {
+        let font = match cache {
+            &mut Some((cid, ref font)) if cid == self.fid => font,
+            opt => {
+                *opt = None;
+                &opt.get_or_insert((self.fid, db.face2(self.fid))).1
+            }
+        };
         struct Draw(tiny_skia::PathBuilder);
         let mut path = Draw(tiny_skia::PathBuilder::new());
         impl ttf_parser::OutlineBuilder for Draw {
@@ -393,13 +419,11 @@ impl CGlyph {
                 self.0.close();
             }
         }
-        if let Some(_bounds) = font.outline_glyph(self.id, &mut path) {
+        if let Some(gbox) = font.outline_glyph(self.id, &mut path) {
             let xform = Transform::from_translate(self.position.x, self.position.y);
             let xform = xform.pre_scale(self.scale, self.scale);
-            self.path = path.0.finish().and_then(|p| p.transform(xform))
-        }
+            self.path = path.0.finish().and_then(|p| p.transform(xform));
 
-        if let Some(gbox) = font.glyph_bounding_box(self.id) {
             let mut g_tl = Point {
                 x: gbox.x_min as f32,
                 y: -gbox.y_max as f32,
@@ -419,6 +443,8 @@ impl CGlyph {
                 g_br.y + stroke,
             );
         }
+        // Note: there is also paint_color_glyph, but that's a lot more work and it doesn't
+        // integrate well with the stroke setting
 
         let target_ppem = self.scale * font.units_per_em() as f32;
         let target_h = self.scale * font.height() as f32;
@@ -496,7 +522,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
     let clip_w = ctx.render_extents.right - ctx.render_pos.x;
     let clip_h = ctx.render_extents.height();
 
-    let (mut to_draw, text_size) = layout_font(
+    let (mut to_draw, text_size, db) = layout_font(
         ctx.style.font,
         ctx.style.font_size,
         ctx.cache,
@@ -525,6 +551,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
     }
 
     if to_draw.is_empty() || ctx.bounds_only {
+        ctx.cache.fontdb = db;
         return;
     }
 
@@ -546,6 +573,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         ..tiny_skia::Paint::default()
     });
 
+    let mut face = None;
     for mut glyph in to_draw {
         glyph.translate(render_pos);
         glyph.scale(scale);
@@ -568,7 +596,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
             continue;
         }
 
-        let bbox = glyph.bbox(&mut ctx.cache.fontdb, 1.0 + stroke_width);
+        let bbox = glyph.gen_path(&mut face, &db, 1.0 + stroke_width);
         if !bbox.is_valid() {
             continue;
         }
@@ -628,4 +656,5 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         );
         ctx.push_image(pbox.tl(), pixmap);
     }
+    ctx.cache.fontdb = db;
 }
