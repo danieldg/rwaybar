@@ -86,7 +86,8 @@ Key | Value | Details
 `border-color` | `red` or `#ff0000` | Border color (without transparency)
 `fg` | `red` or `#ff0000` | Foreground color (without transparency)
 `fg-alpha` | 0.7 (70% opaque) | Foreground opacity
-`font` | A font name and size |
+`font` | A font name and size | Size is optional.  A font path may be provided instead of a name.
+`font-size` | Font size in points | Decimal sizes (11.4) are supported.
 `halign` | `20%` | Horizontal alignment (only used when min-width is present)
 `margin` | `1 2 3 4` (pixels) | Margin width for the top, right, bottom, and left sides.  Like CSS, you can omit some of the values if they are the same.
 `max-width` | `30%` or `40` (pixels) | Minimum width for this block.  If the contents are larger, they will be cropped.
@@ -96,6 +97,12 @@ Key | Value | Details
 `text-outline-alpha` | `0.5` | Opacity of the outline
 `text-outline-width` | `2.0` | Width of the outline (in pixels)
 `valign` | `20%` | Vertical alignment (of text)
+
+### Alternative fonts
+
+The `font-list` property of a `[global]` block can contain a list of fonts to
+try if the stated font does not contain a glyph for a character.  This is
+usually required to display emojis, symbols, and non-latin scripts.
 
 ## Actions
 
@@ -146,18 +153,6 @@ Key | Expanded | Value | Details
 `oneline` | No | true/false | True if the value should have newlines stripped
 
 The actual text displayed is `{`modulename`.text}` with a tooltip of `{`modulename`.tooltip}`.
-
-# Fonts
-
-The fonts used to render text must currently be defined by declaring a name and
-filename in the `[fonts]` section.  You can find the font filenames used for
-specific named fonts by using the following command:
-
-`fc-list -f '%{family}: %{file}\n'|sort`
-
-If a given font does not contain glyphs for a given character, other fonts are
-tried in the order they are listed.  This configuration may be used to select
-particular fonts for emojis or other special characters.
 
 # Modules
 
