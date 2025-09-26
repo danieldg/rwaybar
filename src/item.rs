@@ -2,7 +2,7 @@
 #[cfg(feature = "dbus")]
 use crate::tray;
 use crate::{
-    data::{BarData, ItemReference, IterationItem, Module},
+    data::{BarData, ItemReference, IterationItem, Module, Orientation},
     event::EventSink,
     font::render_font_item,
     icon,
@@ -191,7 +191,7 @@ impl Item {
                     condition: None,
                     tooltip: None,
                     spacing: "".into(),
-                    vertical: false,
+                    orientation: Orientation::Horizontal,
                 },
             };
         }
@@ -301,7 +301,7 @@ impl Item {
                 items,
                 tooltip,
                 spacing,
-                vertical,
+                orientation,
             } => {
                 if let Some(cond) = condition {
                     if !cond.is_empty() {
@@ -324,16 +324,20 @@ impl Item {
                 for item in items {
                     item.render_clamped(ctx, rv);
 
-                    if *vertical {
-                        group.next_v(ctx);
-                        if spacing > 0.0 {
-                            ctx.render_pos.y = (ctx.render_pos.y + spacing).ceil();
+                    match orientation {
+                        Orientation::Vertical => {
+                            group.next_v(ctx);
+                            if spacing > 0.0 {
+                                ctx.render_pos.y = (ctx.render_pos.y + spacing).ceil();
+                            }
                         }
-                    } else {
-                        group.next_h(ctx);
-                        if spacing > 0.0 {
-                            ctx.render_pos.x = (ctx.render_pos.x + spacing).ceil();
+                        Orientation::Horizontal => {
+                            group.next_h(ctx);
+                            if spacing > 0.0 {
+                                ctx.render_pos.x = (ctx.render_pos.x + spacing).ceil();
+                            }
                         }
+                        Orientation::Stacked => group.next_s(ctx),
                     }
                 }
                 ctx.render_pos = group.bounds;

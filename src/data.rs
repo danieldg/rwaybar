@@ -153,9 +153,8 @@ pub enum Module {
         items: Vec<Rc<Item>>,
         tooltip: Option<Rc<Item>>,
         spacing: Box<str>,
-        vertical: bool,
+        orientation: Orientation,
         // TODO crop ordering: allow specific items to be cropped first
-        // TODO use min-width to force earlier cropping
     },
     Icon {
         name: Box<str>,
@@ -225,6 +224,13 @@ pub enum Module {
         value: Cell<Value<'static>>,
         interested: NotifierList,
     },
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum Orientation {
+    Vertical,
+    Horizontal,
+    Stacked,
 }
 
 #[derive(Debug)]
@@ -506,12 +512,13 @@ impl Module {
                     .map(Rc::new);
 
                 let condition = toml_to_string(value.get("condition")).map(Into::into);
-                let vertical = match value.get("orientation").and_then(|v| v.as_str()) {
-                    Some("vertical") | Some("v") => true,
-                    None | Some("horizontal") | Some("h") => false,
+                let orientation = match value.get("orientation").and_then(|v| v.as_str()) {
+                    Some("vertical") | Some("v") => Orientation::Vertical,
+                    Some("stack") | Some("stacked") | Some("s") => Orientation::Stacked,
+                    None | Some("horizontal") | Some("h") => Orientation::Horizontal,
                     Some(x) => {
                         error!("Invalid orientation: '{}'", x);
-                        false
+                        Orientation::Horizontal
                     }
                 };
                 let items = [value.get("item"), value.get("items")]
@@ -535,7 +542,7 @@ impl Module {
                     items,
                     tooltip,
                     spacing,
-                    vertical,
+                    orientation,
                 }
             }
             Some("icon") => {

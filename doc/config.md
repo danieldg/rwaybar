@@ -347,6 +347,7 @@ Key | Expanded | Value | Details
 ----|----------|-------|--------
 `condition` | Yes | empty or non-empty | If this value is set but empty, the group will not be displayed
 `spacing` | Yes | number of pixels | Spacing between each item in the group.  May be negative.
+`orientation` | No | horizontal (default), vertical, or stacked (each item directly drawn over the prior)
 
 ## icon
 

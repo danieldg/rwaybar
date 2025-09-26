@@ -637,6 +637,15 @@ impl Group {
         ctx.render_pos.x = self.origin.x;
         self.bounds.y = ctx.render_pos.y;
     }
+    pub fn next_s(&mut self, ctx: &mut Render) {
+        if ctx.render_pos.x > self.bounds.x {
+            self.bounds.x = ctx.render_pos.x;
+        }
+        if ctx.render_pos.y > self.bounds.y {
+            self.bounds.y = ctx.render_pos.y;
+        }
+        ctx.render_pos = self.origin;
+    }
 }
 
 impl<'a> Render<'a> {
