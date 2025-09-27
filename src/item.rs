@@ -4,7 +4,7 @@ use crate::tray;
 use crate::{
     data::{BarData, ItemReference, IterationItem, Module, Orientation},
     event::EventSink,
-    font::render_font_item,
+    font::{render_font_item, TextSettings},
     icon,
     render::{Rect, Render},
     state::Runtime,
@@ -633,7 +633,14 @@ impl Item {
                     }
                 }
                 text.pop();
-                render_font_item(ctx, &text, true);
+                render_font_item(
+                    ctx,
+                    &text,
+                    TextSettings {
+                        markup: true,
+                        wrap: false,
+                    },
+                );
             }
             Module::Icon {
                 name,
@@ -671,6 +678,7 @@ impl Item {
             // All other modules are rendered as text
             _ => {
                 let markup = self.format.markup;
+                let wrap = self.format.wrap;
                 let oneline = self.format.oneline;
                 let mut text = self
                     .data
@@ -680,7 +688,7 @@ impl Item {
                     text = text.replace('\n', " ").into();
                 }
 
-                render_font_item(ctx, &text, markup);
+                render_font_item(ctx, &text, TextSettings { markup, wrap });
 
                 match &self.data {
                     Module::Formatted {
@@ -798,8 +806,9 @@ impl PopupDesc {
                 }
 
                 let markup = source.format.markup;
+                let wrap = source.format.wrap;
 
-                render_font_item(ctx, &value, markup);
+                render_font_item(ctx, &value, TextSettings { markup, wrap });
                 ctx.render_pos.x += 2.0;
                 ctx.render_pos.y += 2.0;
             }

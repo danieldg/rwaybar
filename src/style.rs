@@ -23,6 +23,7 @@ pub struct Computed {
 pub struct ItemFormat {
     pub markup: bool,
     pub oneline: bool,
+    pub wrap: bool,
     pub cfg: Option<toml::Value>,
 }
 
@@ -36,6 +37,10 @@ impl ItemFormat {
             .unwrap_or(false);
         rv.oneline = config
             .get("oneline")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        rv.wrap = config
+            .get("wrap")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
@@ -406,6 +411,10 @@ impl Formatting {
             }
         }
 
+        if let (true, Some(Width::Pixels(n))) = (ctx.render_flex, format.min_width) {
+            inner_clip.right = inner_clip.right.max(start_pos.x + n);
+        }
+
         let mark = ctx.start_group();
         ctx.render_pos = start_pos;
         ctx.render_extents = inner_clip;
@@ -440,6 +449,7 @@ impl Formatting {
                     inner_x_offset = 0.0;
                 }
             }
+            end_pos.x = start_pos.x + min_width;
         } else {
             inner_x_offset = 0.0;
         }

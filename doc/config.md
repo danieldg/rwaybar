@@ -151,8 +151,11 @@ Key | Expanded | Value | Details
 ----|----------|-------|---------
 `markup` | No | true/false | True if the value contains HTML-style markup
 `oneline` | No | true/false | True if the value should have newlines stripped
+`wrap` | No | true/false | True if the text should automatically wrap
 
 The actual text displayed is `{`modulename`.text}` with a tooltip of `{`modulename`.tooltip}`.
+
+You should specify a min-width value if enabling wrapping on a popup.
 
 # Modules
 

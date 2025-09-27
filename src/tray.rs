@@ -2,7 +2,7 @@ use crate::{
     data::IterationItem,
     dbus::DBus,
     event::EventSink,
-    font::render_font_item,
+    font::{render_font_item, TextSettings},
     item::{Item, PopupDesc},
     render::{Rect, Render},
     state::{NotifierList, Runtime},
@@ -888,7 +888,11 @@ impl TrayPopup {
 
         let xbase = ctx.render_pos.x;
 
-        render_font_item(ctx, self.title.as_deref().unwrap_or_default(), false);
+        render_font_item(
+            ctx,
+            self.title.as_deref().unwrap_or_default(),
+            TextSettings::default(),
+        );
 
         let mut xsize = ctx.render_pos.x;
         ctx.render_pos.x = xbase;
@@ -896,7 +900,14 @@ impl TrayPopup {
         if let Some(tooltip) = self.tooltip.as_ref() {
             if !tooltip.is_empty() {
                 ctx.render_pos.x += 8.0;
-                render_font_item(ctx, &tooltip, true);
+                render_font_item(
+                    ctx,
+                    &tooltip,
+                    TextSettings {
+                        markup: true,
+                        wrap: false,
+                    },
+                );
                 xsize = xsize.max(ctx.render_pos.x);
                 ctx.render_pos.x = xbase;
             }
@@ -943,7 +954,7 @@ impl TrayPopup {
                     ctx.render_pos.y += 7.0;
                 } else {
                     ctx.render_pos.x = indent;
-                    render_font_item(ctx, &item.label, false);
+                    render_font_item(ctx, &item.label, Default::default());
                     let end = ctx.render_pos.y;
                     xsize = xsize.max(ctx.render_pos.x);
                     rendered_ids.push((ctx.render_pos.y, end, item.id));

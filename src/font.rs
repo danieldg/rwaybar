@@ -191,6 +191,7 @@ fn layout_font(
     rgba: Color,
     text: &str,
     markup: bool,
+    wrap: Option<f32>,
 ) -> (Vec<CGlyph>, Point, FontDB) {
     let mut db = cache.fontdb.take();
     db.face1(fid);
@@ -210,6 +211,7 @@ fn layout_font(
     }
 
     let mut iter = CharIndices::new(text);
+    let mut wrap_i = None;
 
     let mut to_draw = Vec::with_capacity(text.len());
     while let Some((i, mut c)) = iter.next() {
@@ -218,6 +220,16 @@ fn layout_font(
             xpos = 0.0;
             ypos += line_height as f32;
             continue;
+        }
+        if wrap.is_some_and(|wpos| xpos > wpos) {
+            if let Some((wpos, i, draw_end)) = wrap_i.take() {
+                iter = CharIndices::new_at(text, i);
+                to_draw.truncate(draw_end);
+                xmax = xmax.max(wpos);
+                xpos = 0.0;
+                ypos += line_height as f32;
+                continue;
+            }
         }
         if c == '\t' {
             c = ' ';
@@ -260,6 +272,10 @@ fn layout_font(
                 }
                 continue;
             }
+        }
+
+        if c == ' ' && xpos != 0.0 {
+            wrap_i = Some((xpos, iter.offset, to_draw.len()));
         }
 
         if fid != font_fid {
@@ -543,7 +559,13 @@ fn to_color_u32(color: Color) -> u32 {
     u32::from_ne_bytes([c.red(), c.green(), c.blue(), c.alpha()])
 }
 
-pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
+#[derive(Debug, Default, Copy, Clone)]
+pub struct TextSettings {
+    pub markup: bool,
+    pub wrap: bool,
+}
+
+pub fn render_font_item(ctx: &mut Render, text: &str, TextSettings { markup, wrap }: TextSettings) {
     if text.is_empty() {
         return;
     }
@@ -561,6 +583,7 @@ pub fn render_font_item(ctx: &mut Render, text: &str, markup: bool) {
         ctx.style.font_color,
         &text,
         markup,
+        wrap.then_some(clip_w),
     );
 
     if text_size.x > clip_w {
