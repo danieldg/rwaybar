@@ -149,6 +149,41 @@ struct CGlyph {
     pub path: Option<tiny_skia::Path>,
 }
 
+#[derive(Clone)]
+struct CharIndices<'a> {
+    offset: usize,
+    iter: std::str::Chars<'a>,
+}
+
+impl<'a> CharIndices<'a> {
+    fn new(s: &'a str) -> Self {
+        Self {
+            offset: 0,
+            iter: s.chars(),
+        }
+    }
+
+    fn new_at(s: &'a str, offset: usize) -> Self {
+        Self {
+            offset,
+            iter: s[offset..].chars(),
+        }
+    }
+}
+
+impl<'a> Iterator for CharIndices<'a> {
+    type Item = (usize, char);
+
+    fn next(&mut self) -> Option<(usize, char)> {
+        let pre = self.iter.as_str().len();
+        let c = self.iter.next()?;
+        let post = self.iter.as_str().len();
+        let offset = self.offset;
+        self.offset += pre - post;
+        Some((offset, c))
+    }
+}
+
 fn layout_font(
     fid: fontdb::ID,
     size_pt: f32,
@@ -160,6 +195,7 @@ fn layout_font(
     let mut db = cache.fontdb.take();
     db.face1(fid);
     let mut font = db.face2(fid);
+    let mut font_fid = fid;
     let scale = scale_from_pt(&font, size_pt);
     let mut xpos = 0.0f32;
     let mut xmax = 0.0f32;
@@ -168,19 +204,15 @@ fn layout_font(
     let line_height = ypos - desc;
     let mut prev = None;
     let mut stack = Vec::new();
-    let mut skip = 0;
     if false {
         // Avoid creating a stack if not needed by falling back on unwrap
         stack.push((fid, size_pt, rgba));
     }
 
-    let mut font_fid = fid;
+    let mut iter = CharIndices::new(text);
 
     let mut to_draw = Vec::with_capacity(text.len());
-    for (i, mut c) in text.char_indices() {
-        if skip > i {
-            continue;
-        }
+    while let Some((i, mut c)) = iter.next() {
         if c == '\n' {
             xmax = xmax.max(xpos);
             xpos = 0.0;
@@ -194,7 +226,7 @@ fn layout_font(
         if markup && c == '<' {
             if let Some(eot) = text[i..].find('>') {
                 let tag = &text[i..][..eot][1..];
-                skip = i + eot + 1;
+                iter = CharIndices::new_at(text, i + eot + 1);
                 if tag.starts_with('/') {
                     stack.pop();
                 } else {
@@ -243,7 +275,7 @@ fn layout_font(
         if markup && c == '&' {
             if let Some(eot) = text[i..].find(';') {
                 let tag = &text[i..][..eot][1..];
-                skip = i + eot + 1;
+                iter = CharIndices::new_at(text, i + eot + 1);
                 if tag.starts_with("#0x") || tag.starts_with("#0X") {
                     match u32::from_str_radix(&tag[3..], 16)
                         .ok()
